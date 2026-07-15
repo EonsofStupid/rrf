@@ -41,6 +41,17 @@ Results are emitted as a report + trend series so every change is measured and
 the bake-off winner is data. Backends compared: candle (in-proc), llama.cpp,
 vLLM, and (experimental) candle-vllm.
 
+### The measurement harness
+
+```sh
+cargo run --release --bin rrf-bench -- --docs 50000 --queries 500 --store estate
+```
+
+Measures the full ingestion machine (embed → index → persist) and hybrid query
+latency (p50/p95/p99) against either store (`mem` | `estate`). External
+baselines run *outside* this tree on the same corpus/queries and are compared
+on the emitted numbers; measured results live in [BENCHMARKS](BENCHMARKS.md).
+
 ## The ingestion daemon (scale)
 
 The tokio, signal-driven ingestion path is tested for:

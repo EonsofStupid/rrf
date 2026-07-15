@@ -7,6 +7,7 @@ members = [
     "crates/reranker",
     "crates/classifier",
     "crates/connectome",
+    "crates/connxism",
     "crates/rrf-net",
     "crates/rrf-flow",
 ]
@@ -29,6 +30,7 @@ recall = { path = "crates/recall" }
 reranker = { path = "crates/reranker" }
 classifier = { path = "crates/classifier" }
 connectome = { path = "crates/connectome" }
+connxism = { path = "crates/connxism" }
 rrf-net = { path = "crates/rrf-net" }
 rrf-flow = { path = "crates/rrf-flow" }
 
@@ -44,9 +46,12 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 futures = "0.3"
 uuid = { version = "1", features = ["v4", "serde"] }
 
+rocksdb = { version = "0.24", default-features = false, features = ["bindgen-runtime", "lz4"] }
+
 # Dev / test / bench
 proptest = "1"
 criterion = { version = "0.5", default-features = false, features = ["cargo_bench_support"] }
+tempfile = "3"
 
 [profile.release]
 lto = "thin"

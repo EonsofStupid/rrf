@@ -82,19 +82,24 @@ impl Recall for FlatRecall {
             .read()
             .map_err(|_| RrfError::Recall("store lock poisoned".into()))?;
 
-        let mut scored: Vec<Candidate> = map
+        // Score everything cheaply first; clone payloads only for the winners.
+        let mut scored: Vec<(&Id, f32)> = map
             .values()
-            .map(|r| {
-                let mut c =
-                    Candidate::new(r.id.clone(), r.text.clone(), query.cosine(&r.embedding));
-                c.metadata = r.metadata.clone();
-                c
-            })
+            .map(|r| (&r.id, query.cosine(&r.embedding)))
             .collect();
-
-        scored.sort_by(|a, b| b.score.total_cmp(&a.score));
+        scored.sort_by(|a, b| b.1.total_cmp(&a.1));
         scored.truncate(top_k);
-        Ok(scored)
+
+        Ok(scored
+            .into_iter()
+            .filter_map(|(id, score)| {
+                map.get(id).map(|r| {
+                    let mut c = Candidate::new(r.id.clone(), r.text.clone(), score);
+                    c.metadata = r.metadata.clone();
+                    c
+                })
+            })
+            .collect())
     }
 
     async fn len(&self) -> Result<usize> {

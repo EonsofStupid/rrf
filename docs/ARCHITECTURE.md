@@ -33,8 +33,12 @@ rrf-core ──────────────── the contract: domain t
    └─────────── embedder     perception: text → vectors (deterministic; DevPULSE)
 
 connectome ────────────── the visual/relational map (graph model + render)
+connxism ──────────────── the kvs-connectome: persistent estate (RocksDB) —
+                          nodes, warp points, connectors, docs, vectors,
+                          BM25 postings, tags, shapes, trends
 rrf-net ───────────────── a2a / node surface (in-proc bus + TCP transport)
-rrf-flow ──────────────── orchestrator + `rrf` daemon + demo (depends on all)
+rrf-flow ──────────────── orchestrator + ingestion machine + `rrf` daemon +
+                          `rrf-bench` harness (depends on all)
 ```
 
 `rrf-core` is the single source of truth. No crate depends on another
@@ -44,12 +48,33 @@ component crate's internals — only on the traits and types in `rrf-core`.
 ## The flow (one pass)
 
 ```
-query ─▶ embedder.embed_one ─▶ recall.search(recall_k) ─▶ reranker.rerank(rerank_k)
+query ─▶ embedder.embed_one ─▶ recall.hybrid_search(recall_k) ─▶ reranker.rerank(rerank_k)
         ─▶ classifier.classify ─▶ RecallResult ─▶ connectome.map ─▶ ConnectomeGraph
 ```
 
 Each arrow is a trait call. Replace any stage's implementation and the flow is
-unchanged.
+unchanged. Recall is **hybrid**: stores with a lexical index (the estate's BM25
+postings) fuse dense and lexical rankings via **reciprocal rank fusion**; pure
+vector stores fall back to dense search through the trait default.
+
+## The estate (connXism)
+
+One operator estate == one RocksDB. The relationship model: an **operator**
+shares a **connector** (a third-party source — mail, drive, documents, a
+database — usually fronting a large data repo); **ingestion** pulls it into
+the estate; **nodes** (agent endpoints) get **layer-2 a2a warp points**
+(local / TCP / MCP mesh) so the operator-facing host works seamlessly behind
+the scenes. Documents carry **tags** and a **shape** fingerprint; the estate
+records **trend** series about itself. `estate_map` renders all of it as one
+connectome.
+
+## Ingestion (built for scale)
+
+A tokio-native machine: bounded intake (backpressure by construction),
+size/linger batching, concurrent batches under a semaphore, every transition
+published on a watch channel (`Idle → Ingesting → Draining → Indexed`), and
+graceful drain on close — signal-safe by design. Throughput and counters are
+observable live and recordable as estate trends.
 
 ## Inference backends (the pluggable boundary)
 

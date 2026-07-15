@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum NodeKind {
-    /// The user's query — the root of the map.
+    /// The user's query — the root of a flow map.
     Query,
     /// A pipeline stage (embedder, recall, reranker, classifier).
     Stage,
@@ -14,6 +14,18 @@ pub enum NodeKind {
     Candidate,
     /// The reason-ready verdict.
     Readiness,
+    /// An operator estate — the root of an estate map.
+    Estate,
+    /// An agent/compute endpoint (reached via its warp points).
+    NetNode,
+    /// A shared third-party source of information.
+    Connector,
+    /// A tag over documents.
+    Tag,
+    /// A schema/modality shape held by the estate.
+    Shape,
+    /// A metric time-series.
+    Trend,
 }
 
 /// What a relationship represents.
@@ -26,6 +38,14 @@ pub enum EdgeKind {
     Ranked,
     /// A stage producing the verdict.
     Verdict,
+    /// Estate membership (estate → node/connector/tag/shape/trend).
+    Member,
+    /// A layer-2 a2a warp point (node → address); label carries transport.
+    Warp,
+    /// Tag membership (tag → document); `weight` carries the tagged count.
+    Tagged,
+    /// Provenance (connector → what it ingested); `weight` carries doc count.
+    Fed,
 }
 
 /// A node in the connectome.
@@ -116,6 +136,12 @@ impl ConnectomeGraph {
                 NodeKind::Stage => "lightblue",
                 NodeKind::Candidate => "palegreen",
                 NodeKind::Readiness => "salmon",
+                NodeKind::Estate => "khaki",
+                NodeKind::NetNode => "lightsteelblue",
+                NodeKind::Connector => "plum",
+                NodeKind::Tag => "lightgrey",
+                NodeKind::Shape => "wheat",
+                NodeKind::Trend => "paleturquoise",
             };
             let label = n.label.replace('"', "'");
             s.push_str(&format!(

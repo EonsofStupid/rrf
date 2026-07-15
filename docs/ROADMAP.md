@@ -8,12 +8,23 @@ The clean-authored workspace: the four component traits, weightless defaults,
 the connectome map, the a2a surface, and the end-to-end flow + `rrf` daemon.
 All component tests pass; the demo exercises the pipeline.
 
-## Phase 1 — Rigorous foundation 🟡
+## Phase 1 — Rigorous foundation 🟢
 Make everything after this measurable and gated.
 - ADRs + `ARCHITECTURE` / `TESTING` / `ROADMAP` docs.
 - CI: `fmt`, `clippy -D warnings`, `nextest`, coverage, `cargo-deny`.
 - Property tests (invariants) + criterion benches on existing crates.
 - MSRV pin; supply-chain policy (`deny.toml`).
+
+## Phase 1.5 — The estate (connXism) 🟢
+- `connxism`: one RocksDB per estate — nodes + layer-2 a2a warp points,
+  connectors + resumable sync state, docs/vectors/BM25 postings, tags,
+  shapes census, trend series.
+- Hybrid recall: dense + lexical fused by reciprocal rank fusion; the flow
+  is hybrid end-to-end (`hybrid_search` in the contract).
+- The ingestion machine: bounded intake, batch/linger, concurrent batches,
+  observable state (`Idle → Ingesting → Draining → Indexed`), graceful drain.
+- `estate_map`: the whole estate rendered as one connectome.
+- `rrf-bench`: ingest throughput + hybrid query latency, real numbers.
 
 ## Phase 2 — Backend abstraction + bake-off ⬜
 - `Generator` trait in `rrf-core`; backend features `candle` / `llamacpp` /

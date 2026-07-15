@@ -19,13 +19,19 @@
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
+mod estate_map;
 mod flow;
 mod handler;
+mod ingest;
 mod sample;
 mod serve;
 
+pub use estate_map::estate_map;
 pub use flow::{FlowBuilder, FlowConfig, ReasonReadyFlow};
 pub use handler::FlowNode;
+pub use ingest::{
+    spawn_ingest, IngestConfig, IngestHandle, IngestPhase, IngestStats, IngestStatus,
+};
 pub use sample::sample_corpus;
 pub use serve::{serve, wait_for_shutdown, ServeOptions};
 

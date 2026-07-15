@@ -67,6 +67,22 @@ pub trait Recall: Send + Sync {
     /// Nearest-neighbour search; returns up to `top_k` candidates, best first.
     async fn search(&self, query: &Embedding, top_k: usize) -> Result<Vec<Candidate>>;
 
+    /// Hybrid search: dense vector similarity fused with lexical relevance.
+    ///
+    /// Stores that maintain a lexical index (e.g. BM25 postings) override this
+    /// and fuse the two rankings (typically by reciprocal rank fusion). The
+    /// default falls back to pure vector [`Recall::search`], so every store is
+    /// hybrid-callable.
+    async fn hybrid_search(
+        &self,
+        query_text: &str,
+        query: &Embedding,
+        top_k: usize,
+    ) -> Result<Vec<Candidate>> {
+        let _ = query_text;
+        self.search(query, top_k).await
+    }
+
     /// Number of records currently held.
     async fn len(&self) -> Result<usize>;
 

@@ -61,14 +61,15 @@ lexical reranker, heuristic classifier) so the whole flow compiles and runs
 
 | Crate         | Role                                                   |
 |---------------|--------------------------------------------------------|
-| `rrf-core`    | Shared domain types + the four engine traits (contract)|
+| `rrf-core`    | Shared domain types + the engine traits (the contract) |
 | `embedder`    | `Embedder` — DevPULSE (Qwen) + deterministic default   |
 | `recall`      | `Recall` — in-memory vector store (cosine), pluggable  |
-| `reranker`    | `Reranker` — DevPULSE (Nemotron) + lexical default     |
+| `reranker`    | `Reranker` — DevPULSE (Nemotron) + BM25 default        |
 | `classifier`  | `Classifier` — the Reason Ready daemon                 |
 | `connectome`  | The visual map: graph model + JSON/DOT render          |
+| `connxism`    | The kvs-connectome: persistent estate (RocksDB) — nodes, warp points, connectors, hybrid vector+BM25 recall, tags, shapes, trends |
 | `rrf-net`     | a2a / node networking surface                          |
-| `rrf-flow`    | Orchestrator + `rrf` daemon binary                     |
+| `rrf-flow`    | Orchestrator + ingestion machine + `rrf` daemon + `rrf-bench` |
 
 ## Quick start
 
@@ -78,6 +79,11 @@ cargo run --example demo -p rrf-flow
 
 # Run the embedded daemon (tokio, ctrl-c / SIGTERM aware).
 cargo run --bin rrf
+# …persistently, over an estate:
+RRF_ESTATE=./my-estate cargo run --bin rrf
+
+# Measure it (ingest throughput + hybrid query latency, real numbers):
+cargo run --release --bin rrf-bench -- --docs 50000 --queries 500 --store estate
 ```
 
 ## Status

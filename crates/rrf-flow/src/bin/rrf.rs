@@ -7,15 +7,31 @@
 
 use std::sync::Arc;
 
-use rrf_flow::{init_tracing, sample_corpus, serve, ReasonReadyFlow, ServeOptions};
+use rrf_flow::{estate_map, init_tracing, sample_corpus, serve, ReasonReadyFlow, ServeOptions};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     init_tracing();
 
-    // Wire the default (weightless) engine and seed the sample corpus so the
-    // daemon answers `ask` immediately. Swap in DevPULSE components here.
-    let flow = ReasonReadyFlow::default_engine();
+    // With RRF_ESTATE set, memory is the persistent kvs estate (hybrid
+    // dense + lexical recall); otherwise the in-memory default. Swap in
+    // DevPULSE components here as they land.
+    let flow = match std::env::var("RRF_ESTATE").ok() {
+        Some(path) => {
+            let estate = connxism::Estate::open(&path, "rrf")?;
+            let map = estate_map(&estate)?;
+            tracing::info!(
+                estate = %estate.info().name,
+                nodes = map.nodes.len(),
+                edges = map.edges.len(),
+                "opened estate"
+            );
+            ReasonReadyFlow::builder()
+                .recall(Arc::new(estate.recall()))
+                .build()
+        }
+        None => ReasonReadyFlow::default_engine(),
+    };
     let n = flow.index(sample_corpus()).await?;
     tracing::info!(indexed = n, "seeded sample corpus");
 

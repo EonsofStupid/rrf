@@ -73,9 +73,16 @@ impl ReasonReadyFlow {
     }
 
     /// Run one full pass for `query`: embed → recall → rerank → classify.
+    ///
+    /// Recall is *hybrid*: stores that maintain a lexical index fuse dense and
+    /// lexical rankings (reciprocal rank fusion); pure vector stores fall back
+    /// to dense search via the trait's default.
     pub async fn ask(&self, query: &str) -> Result<RecallResult> {
         let q = self.embedder.embed_one(query).await?;
-        let recalled = self.recall.search(&q, self.config.recall_k).await?;
+        let recalled = self
+            .recall
+            .hybrid_search(query, &q, self.config.recall_k)
+            .await?;
         let ranked = self
             .reranker
             .rerank(query, recalled, self.config.rerank_k)
