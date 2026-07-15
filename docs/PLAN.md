@@ -88,7 +88,8 @@ Legend: ✅ done · 🔨 phase assigned · ⏸ deliberately later · ❓ needs y
 
 | Capability | rrf representation | Phase |
 |---|---|---|
-| Readiness gate | `classifier` ✅ → learned DevPULSE classifier | P7 🔨 |
+| **RRD — the reason-ready object JIT (shape + tags)** | `rrd` crate: shape registry, per-shape compiled plans (inline-cache semantics), RROs — see **ADR-0002** | **P4** 🔨 |
+| Readiness gate | `classifier` ✅ → judges structured RROs, then learned DevPULSE classifier | P4/P7 🔨 |
 | Visible reasoning map | `connectome` ✅ → live UI feed over a2a `map` verb | P4 🔨 |
 | Connector sync drivers (mail/drive/db → estate) | `connectors` crate: driver trait + cursors (state machinery ✅) | P4 🔨 |
 | MCP mesh warp transport | `rrf-net::mcp` — warp points become live jump targets | P5 🔨 |
@@ -110,10 +111,14 @@ typed query builder, optimistic transactions, second KV backend proving the
 seam. *Gate:* route→recall e2e beats flat hybrid on a linked corpus, measured;
 transaction isolation tests.
 
-**P4 — Live flow** — durable changefeeds, live subscriptions over a2a,
-connector driver trait + first two drivers (filesystem, IMAP-class), live
-connectome UI feed. *Gate:* subscription latency measured; connector sync
-resumes from cursor after kill.
+**P4 — RRD & the live flow** — the reason-ready object JIT (ADR-0002: shape
+registry, per-shape compiled plans, RROs; classifier consumes structured
+evidence), durable changefeeds, live subscriptions over a2a, connector driver
+trait + first two drivers (filesystem, IMAP-class), live connectome UI feed.
+*Gate:* RRD invariants (one compile per shape, deterministic distill,
+observable hit-rate) property-tested; readiness verdicts over RROs beat
+text-coverage verdicts on a labeled set; connector sync resumes from cursor
+after kill.
 
 **P5 — Surface & ops** — gRPC (tonic), auth capabilities, snapshots,
 kill-9 crash-recovery proof suite, optimizer, Docker + frictionless deploy.
@@ -133,12 +138,26 @@ bake-off decides the Clyffy engine with data, not preference.
 **P8 — Scale-out** — replication, sharding over the mesh, estate federation.
 Only after P2–P7 are proven; distributed correctness is earned, not assumed.
 
+## Recovered designs (committed so they can never be lost again)
+
+- **RRD — the reason-ready object JIT** (*"in layman: shape and tags"*):
+  reconstructed from the author's definition and committed as **ADR-0002**.
+  Home: P4. The research sessions were never committed anywhere; this ADR is
+  now the durable source of truth — refine it there.
+- **The two-phase index-marriage pattern** (from `VECTOR_SEAM.md` +
+  `MERGE_WIRING_SPEC.md` on the reference tree's `merge-a3-vector-organ`
+  branch): durable pending-intent row inside the transaction → idempotent
+  out-of-band apply into the (non-transactional) vector segment →
+  read-your-writes by overlaying un-applied pendings at query time. This is
+  exactly how P2's ANN index marries RocksDB transactional writes — adopted
+  as the P2 write-path design (pattern re-authored, no code ported).
+
 ## Open items needing you
 
-1. **silver** — not in any repo I have. Which repo, or describe it → it gets a
-   phase.
-2. **RRD (your JIT)** — if it's the WASM-runtime shape, P6 is its home; if it's
-   something else (query JIT? kernel codegen?), point me at the design.
+1. **silver** — not in any committed tree of any repo I have (all branches
+   swept). Which repo, or describe it → it gets a phase.
+2. **ADR-0002 review** — confirm the RRD reconstruction matches the 3-year
+   vision; correct it in the ADR, not in chat.
 3. **DevPULSE weights** — when Qwen/Nemotron tuned checkpoints exist, P7 wires
    them; until then the plug-points stay honest about being unloaded.
 

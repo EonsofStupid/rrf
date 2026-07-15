@@ -1,0 +1,95 @@
+# ADR-0002 — RRD: the Reason-Ready Object JIT
+
+**Status:** accepted (design committed 2026-07-15; refine with the author's
+review). This design predates this repo by years — it lived in research
+sessions and was never committed anywhere. This document ends that. In the
+author's words: *"In layman, it's shape and tags."* Reason-ready **objects**,
+not reason-ready text.
+
+## The idea
+
+LLMs reason best over **structured, typed, provenance-carrying objects** —
+schemas, fields, tags — not over undifferentiated text soup. (This is the same
+direction Anthropic's interfaces push: typed content blocks, tool schemas,
+structured outputs.) But real estates ingest arbitrary payloads from
+connectors: mail, rows, files, events. Something must turn *arbitrary
+payloads* into *reason-ready objects* — fast, consistently, at ingest scale.
+
+That something is **RRD — the reason-ready JIT.**
+
+The JIT analogy is exact, not decorative. Dynamic-language JITs (V8 et al.)
+watch objects at runtime, group them by **hidden class — literally called a
+"shape"** — compile a specialized fast path per shape, and cache it (inline
+caches). Objects of a seen shape hit the compiled path; a new shape triggers
+compilation once, then everything of that shape is fast.
+
+RRD does this to data:
+
+```
+payload ──▶ shape inference ──▶ shape-cache lookup ──┬─ HIT ──▶ run compiled plan ──▶ RRO
+            (Shape::of ✅)      (the inline cache)   └─ MISS ─▶ compile plan for shape,
+                                                                cache it, run it ──▶ RRO
+```
+
+- **Shape** = the schema fingerprint of a payload (field → type). Already
+  live in the estate (`connxism::Shape`, the shape census CF).
+- **Plan** (the compiled artifact) = per-shape distillation: which fields are
+  identity / content / salience / time; which tag rules apply; what the
+  resulting object schema is. Compiled **once per shape**, cached, reused for
+  every payload of that shape — that is the JIT.
+- **Tags** = classification emitted by plans (and by operators), the second
+  axis of specialization. Already live in the estate (tags CF).
+- **RRO (Reason-Ready Object)** = the output: a typed object
+  `{ id, shape_id, schema, fields (typed), tags, provenance (connector, doc,
+  estate), salience, readiness_hints }`.
+
+## Why this is load-bearing for the whole engine
+
+- **The classifier stops guessing.** Today readiness is judged over raw
+  candidate text. Over RROs it judges *structured evidence*: which schema
+  fields are present, per-field coverage, provenance quality. The readiness
+  gate becomes explainable — and trainable (the DevPULSE classifier's
+  features are RRO fields, not tokens).
+- **The reranker gets features** (field matches, tag agreement, provenance
+  weight) beyond lexical/dense scores.
+- **The connectome renders it natively** — shape and tag nodes are already
+  first-class in the map. RRD makes them *the* organizing principle instead
+  of passive census data.
+- **JIT telemetry falls out of the event stream:** `rrd.compile` (shape
+  miss), `rrd.hit`, cache hit-rate as a DuckDB trend — the estate literally
+  reports how "warmed up" its understanding of an operator's data is.
+
+## Design (phase P4)
+
+New crate **`rrd`** (component, depends only on `rrf-core`; estate
+integration via `connxism`):
+
+- `ShapeRegistry` — shapes get stable ids + stats (promotes the existing
+  census to a registry; persisted in `meta`/`shapes`).
+- `Plan` — serializable per-shape distillation: field roles, tag rules,
+  salience weights. Stored in a `plans` CF keyed by shape key. Versioned.
+- `Distiller` (the JIT core) — `distill(payload) -> Rro`: shape-infer →
+  cache lookup → compile-on-miss → execute. Compilation v1 is rule-derived
+  (heuristics over field names/types + operator-supplied tag taxonomy);
+  the seam allows a learned compiler later (DevPULSE).
+- `Rro` — the typed object, serde-serializable, addressable in the estate
+  (`rro` CF or materialized on demand), consumed by classifier/reranker/
+  connectome/a2a.
+- Ingestion machine gains an optional RRD stage: payload → RRO → index both.
+
+## Invariants (testable)
+
+1. Same shape ⇒ same plan (cache hit; compile exactly once per shape version).
+2. `distill` is deterministic for a given (payload, plan version).
+3. RROs always carry provenance; no orphan objects.
+4. Shape drift (field added) ⇒ new shape id, new plan — never silent reuse.
+5. Cache hit-rate is observable (`rrd.*` events) and trends upward on a
+   stable corpus.
+
+## Open for the author's review
+
+- The exact expansion of "RRD" (the acronym) — the design above stands
+  regardless.
+- Tag taxonomy source: operator-defined, plan-derived, or both (assumed both).
+- Whether RROs are always materialized (storage cost) or distilled on read
+  (latency cost) — assumed: cache hot shapes, distill cold ones on read.
