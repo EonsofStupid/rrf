@@ -1,0 +1,21 @@
+[package]
+name = "reranker"
+description = "Reason Ready — true-relevance ordering. Lexical default + DevPULSE (Nemotron) plug-point."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[features]
+default = []
+# Enables the candle-backed DevPULSE (Nemotron) reranker.
+candle = []
+
+[dependencies]
+rrf-core = { workspace = true }
+async-trait = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt"] }

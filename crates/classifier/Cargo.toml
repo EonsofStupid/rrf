@@ -1,0 +1,15 @@
+[package]
+name = "classifier"
+description = "Reason Ready — the Reason Ready daemon. Judges whether context is sufficient to reason on."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[dependencies]
+rrf-core = { workspace = true }
+async-trait = { workspace = true }
+tokio = { workspace = true, features = ["rt", "sync", "macros"] }
+tracing = { workspace = true }

@@ -1,0 +1,16 @@
+/target
+**/*.rs.bk
+Cargo.lock.bak
+
+# Model weights / caches — DevPULSE artifacts live outside the tree
+/models
+/weights
+*.safetensors
+*.gguf
+*.onnx
+
+# Editor / OS
+.DS_Store
+.idea/
+.vscode/
+*.swp
