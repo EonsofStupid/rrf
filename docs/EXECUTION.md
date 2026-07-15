@@ -56,6 +56,19 @@ store doing *less* work over HTTP.
 | 6 | Out-of-band graph apply (applier thread + pending overlay + quiesce, per the recovered compaction pattern) | ingest ≥ 5k docs/sec with ANN on; read-your-writes test; accuracy + ms-latency held post-quiesce; catch-up time reported honestly | ✅ ingest **10.8–11k docs/sec** (2× the gate, above pre-ANN); p50 1.06/1.88 ms @ 50k/100k; accuracy 1.000 @ 100k (0.998 @ 50k — one fusion-cutoff miss, noted); catch-up 31 s/71 s reported. Found+fixed: Estate drop stopped the applier (bench/daemon now hold the estate). |
 | 7 | Scalar quantization, weighted sparse, payload filters | per-PLAN gates | ⬜ queued next sprint |
 
+## Sprint 3 — P3: Connectome relations (active)
+
+| # | Step | Verification gate | Status |
+|---|---|---|---|
+| 1 | Relations CF: RELATE-style `(from, verb, to)`, both directions, blind puts | unit tests: relate/unrelate/out/in roundtrip | ✅ |
+| 2 | Traversal: typed spec (verbs, depth, limit), BFS | traversal tests incl. depth/verb filters | ✅ |
+| 3 | Route→recall: traverse → `scoped_search` (exact dense by point-lookup + scoped BM25, RRF-fused) | scoped search returns only in-scope docs | ✅ |
+| 4 | **The measured gate**: ambiguous linked corpus — routed disambiguates what flat hybrid cannot | **flat accuracy@1 = 0.025 vs routed = 1.000** (40 queries, 1500-doc noise floor, ANN path live) — printed from the in-tree gate test | ✅ |
+| 5 | Green close + docs + push | CI-green tree | ✅ |
+
+Deferred honestly to Sprint 4: optimistic transactions (WriteBatch atomicity
+already covers batch writes), second KV backend, full typed query builder.
+
 ## Sprint log
 
 - **S1 opened 2026-07-15.** Sliver/RRD design recovered into ADR-0002 during

@@ -140,6 +140,22 @@ Searches during catch-up stay correct via the pending overlay (exact scores
 over unapplied vectors, removals masked — property- and integration-tested);
 "durably ingested" and "fully indexed" are two moments and both get printed.
 
+## P3: the map resolves the route (2026-07-15)
+
+RELATE-style relations + BFS traversal + `scoped_search` (exact hybrid
+inside a routed neighborhood). The gate corpus is *deliberately ambiguous*:
+every query's golden doc has a decoy carrying the same anchor term, near-
+identical text — but only the golden is RELATEd to the query's project.
+
+| | accuracy@1 (40 ambiguous queries, 1.5k noise floor) |
+|---|---|
+| flat hybrid (no map) | **0.025** |
+| **routed (map → treasure)** | **1.000** |
+
+Content alone cannot tell twins apart; relationships can. This is the
+fusion law measured: the map resolves the route, the treasure answers
+inside it. Reproduce: `cargo test -p connxism --test routing -- --nocapture`.
+
 ## Baselines & the regression gate
 
 Recorded container baselines live in `baselines/` (config + numbers, JSON).

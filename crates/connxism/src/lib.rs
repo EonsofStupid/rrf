@@ -22,6 +22,7 @@ pub mod index;
 pub mod keys;
 pub mod model;
 mod pending;
+mod rels;
 mod store;
 
 pub use estate::Estate;
@@ -30,6 +31,7 @@ pub use model::{
     now_ms, now_ns, ConnectorInfo, ConnectorKind, EstateInfo, NodeInfo, Shape, StoredDoc,
     SyncState, SyncStatus, Transport, TrendPoint, WarpPoint,
 };
+pub use rels::{Relation, TraversalSpec};
 pub use store::ConnXRecall;
 
 /// Re-export so downstream crates can name the trait without a second dep.

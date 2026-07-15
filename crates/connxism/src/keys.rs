@@ -21,7 +21,7 @@
 
 /// All column families, in creation order.
 pub const COLUMN_FAMILIES: &[&str] = &[
-    CF_META, CF_NODES, CF_CONNS, CF_DOCS, CF_VECS, CF_TERMS, CF_TAGS, CF_TRENDS,
+    CF_META, CF_NODES, CF_CONNS, CF_DOCS, CF_VECS, CF_TERMS, CF_TAGS, CF_TRENDS, CF_RELS,
 ];
 
 /// Estate metadata + counters.
@@ -40,6 +40,8 @@ pub const CF_TERMS: &str = "terms";
 pub const CF_TAGS: &str = "tags";
 /// Metric time-series.
 pub const CF_TRENDS: &str = "trends";
+/// Relations (RELATE-style edges), both directions.
+pub const CF_RELS: &str = "rels";
 
 /// meta: the estate info blob.
 pub const META_ESTATE: &[u8] = b"estate";
@@ -110,6 +112,57 @@ pub fn trend_prefix(metric: &str) -> Vec<u8> {
 pub fn split_compound(key: &[u8]) -> Option<(&[u8], &[u8])> {
     let pos = key.iter().position(|&b| b == SEP)?;
     Some((&key[..pos], &key[pos + 1..]))
+}
+
+/// Direction marker for outbound relation rows.
+pub const REL_OUT: u8 = b'o';
+/// Direction marker for inbound relation rows.
+pub const REL_IN: u8 = b'i';
+
+/// Encode a relation row: `dir  anchor \x00 verb \x00 other`.
+///
+/// Every RELATE writes two rows — an `o` row anchored on `from` and an `i`
+/// row anchored on `to` — so traversal in either direction is one sorted
+/// prefix scan, and every write stays a blind put.
+pub fn rel_key(dir: u8, anchor: &str, verb: &str, other: &str) -> Vec<u8> {
+    let mut k = Vec::with_capacity(1 + anchor.len() + 1 + verb.len() + 1 + other.len());
+    k.push(dir);
+    k.extend_from_slice(anchor.as_bytes());
+    k.push(SEP);
+    k.extend_from_slice(verb.as_bytes());
+    k.push(SEP);
+    k.extend_from_slice(other.as_bytes());
+    k
+}
+
+/// Prefix scanning every relation of `anchor` in one direction (all verbs).
+pub fn rel_prefix(dir: u8, anchor: &str) -> Vec<u8> {
+    let mut k = Vec::with_capacity(1 + anchor.len() + 1);
+    k.push(dir);
+    k.extend_from_slice(anchor.as_bytes());
+    k.push(SEP);
+    k
+}
+
+/// Prefix scanning `anchor`'s relations under one verb.
+pub fn rel_verb_prefix(dir: u8, anchor: &str, verb: &str) -> Vec<u8> {
+    let mut k = Vec::with_capacity(1 + anchor.len() + 1 + verb.len() + 1);
+    k.push(dir);
+    k.extend_from_slice(anchor.as_bytes());
+    k.push(SEP);
+    k.extend_from_slice(verb.as_bytes());
+    k.push(SEP);
+    k
+}
+
+/// Decode `verb \x00 other` from a relation key's suffix (after the prefix).
+pub fn rel_suffix(key: &[u8], prefix_len: usize) -> Option<(String, String)> {
+    let rest = key.get(prefix_len..)?;
+    let (verb, other) = split_compound(rest)?;
+    Some((
+        String::from_utf8_lossy(verb).into_owned(),
+        String::from_utf8_lossy(other).into_owned(),
+    ))
 }
 
 /// Encode an embedding as little-endian f32 bytes.

@@ -79,6 +79,73 @@ impl ConnXRecall {
             .await
             .map_err(|e| RrfError::Recall(format!("join: {e}")))?
     }
+
+    /// Hybrid recall **inside a scope** — the treasure half of the fusion
+    /// law. The scope is a routed neighborhood (`Estate::traverse`); dense
+    /// scoring is *exact* over it (point lookups, no ANN approximation) and
+    /// lexical BM25 is filtered to it, fused as usual. Ids in the scope that
+    /// aren't documents are ignored.
+    pub async fn scoped_search(
+        &self,
+        query_text: &str,
+        query: &Embedding,
+        top_k: usize,
+        scope: Vec<String>,
+    ) -> Result<Vec<Candidate>> {
+        if top_k == 0 || scope.is_empty() {
+            return Ok(Vec::new());
+        }
+        let db = self.db.clone();
+        let params = self.params;
+        let q = query.clone();
+        let terms = content_tokens(query_text);
+
+        tokio::task::spawn_blocking(move || {
+            use std::collections::HashSet;
+            let in_scope: HashSet<&str> = scope.iter().map(String::as_str).collect();
+
+            // Dense: exact cosine over the scope by point lookup.
+            let vecs_cf = db.cf(CF_VECS)?;
+            let mut dense: Vec<(String, f32)> = Vec::new();
+            for id in &scope {
+                if let Some(bytes) = db.0.get_cf(vecs_cf, id.as_bytes()).map_err(rocks_err)? {
+                    let emb = Embedding(keys::decode_vec(&bytes));
+                    dense.push((id.clone(), q.cosine(&emb)));
+                }
+            }
+            dense.sort_by(|a, b| b.1.total_cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+
+            // Lexical: BM25, filtered to the scope.
+            let mut lexical = if terms.is_empty() {
+                Vec::new()
+            } else {
+                lexical_blocking(&db, params, &terms, usize::MAX)?
+            };
+            lexical.retain(|c| in_scope.contains(c.id.as_str()));
+
+            // Fuse and fetch winners' payloads.
+            let lists = [
+                dense.iter().map(|(id, _)| id.clone()).collect::<Vec<_>>(),
+                lexical
+                    .iter()
+                    .map(|c| c.id.as_str().to_string())
+                    .collect::<Vec<_>>(),
+            ];
+            let fused = reciprocal_rank_fusion(&lists, RRF_K);
+
+            let mut out = Vec::with_capacity(top_k);
+            for (doc_id, score) in fused.into_iter().take(top_k) {
+                if let Some(doc) = db.get_json::<StoredDoc>(CF_DOCS, doc_id.as_bytes())? {
+                    let mut c = Candidate::new(doc.id, doc.text, score);
+                    c.metadata = doc.metadata;
+                    out.push(c);
+                }
+            }
+            Ok(out)
+        })
+        .await
+        .map_err(|e| RrfError::Recall(format!("join: {e}")))?
+    }
 }
 
 #[async_trait]

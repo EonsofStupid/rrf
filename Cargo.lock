@@ -227,6 +227,7 @@ name = "connxism"
 version = "0.0.1"
 dependencies = [
  "async-trait",
+ "embedder",
  "proptest",
  "recall",
  "rocksdb",
