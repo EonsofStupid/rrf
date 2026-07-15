@@ -65,7 +65,16 @@ New crate **`rrd`** (component, depends only on `rrf-core`; estate
 integration via `connxism`):
 
 - `ShapeRegistry` — shapes get stable ids + stats (promotes the existing
-  census to a registry; persisted in `meta`/`shapes`).
+  census to a registry; persisted in `meta`/`shapes`). The registry is a
+  **lattice, not a flat set** — this is the *sliver* scheme: **modes are the
+  base shapes** (mail, record/row, document, event, location, media), and
+  every observed shape attaches under its mode as a **sliver** — a thin
+  specialization that inherits the mode plan and overrides only what its
+  extra fields demand. Shapes *evolve*: drift produces a sibling sliver,
+  recurring slivers get promoted with their own compiled plan, dead slivers
+  age out. Tagging is hybrid with identification — tags emitted by mode-level
+  rules refine sliver placement, and sliver placement scopes which tag rules
+  fire.
 - `Plan` — serializable per-shape distillation: field roles, tag rules,
   salience weights. Stored in a `plans` CF keyed by shape key. Versioned.
 - `Distiller` (the JIT core) — `distill(payload) -> Rro`: shape-infer →
@@ -90,6 +99,10 @@ integration via `connxism`):
 
 - The exact expansion of "RRD" (the acronym) — the design above stands
   regardless.
+- **Sliver** (recovered 2026-07-15, author's definition): the hybrid
+  tagging/shape-identification scheme — modes as base shapes, observed
+  shapes evolving beneath them. Captured in `ShapeRegistry` above; confirm
+  the mode list.
 - Tag taxonomy source: operator-defined, plan-derived, or both (assumed both).
 - Whether RROs are always materialized (storage cost) or distilled on read
   (latency cost) — assumed: cache hot shapes, distill cold ones on read.

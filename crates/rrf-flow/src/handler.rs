@@ -7,7 +7,7 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use rrf_core::Result;
+use rrf_core::{Document, Result};
 use rrf_net::{Handler, Message, NodeId};
 
 use crate::flow::ReasonReadyFlow;
@@ -49,6 +49,20 @@ impl Handler for FlowNode {
                 let query = msg.body.get("query").and_then(|v| v.as_str()).unwrap_or("");
                 let (_result, graph) = self.flow.ask_with_map(query).await?;
                 Ok(Some(msg.reply(serde_json::to_value(&graph)?)))
+            }
+
+            // `index`: ingest a batch of documents over a2a.
+            // Body: {"docs": [{"id": "...", "text": "..."}, ...]}
+            "index" => {
+                let docs: Vec<Document> = msg
+                    .body
+                    .get("docs")
+                    .cloned()
+                    .map(serde_json::from_value)
+                    .transpose()?
+                    .unwrap_or_default();
+                let total = self.flow.index(docs).await?;
+                Ok(Some(msg.reply(serde_json::json!({ "total": total }))))
             }
 
             _ => Ok(None),

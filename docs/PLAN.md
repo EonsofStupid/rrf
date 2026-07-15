@@ -154,10 +154,12 @@ Only after P2–P7 are proven; distributed correctness is earned, not assumed.
 
 ## Open items needing you
 
-1. **silver** — not in any committed tree of any repo I have (all branches
-   swept). Which repo, or describe it → it gets a phase.
-2. **ADR-0002 review** — confirm the RRD reconstruction matches the 3-year
-   vision; correct it in the ADR, not in chat.
+1. ~~**silver**~~ — **resolved 2026-07-15**: *sliver*, the hybrid
+   tagging/shape-identification scheme (modes as base shapes, shapes evolve
+   as slivers beneath them). Captured in ADR-0002's `ShapeRegistry` lattice;
+   confirm the mode list there.
+2. **ADR-0002 review** — confirm the RRD + sliver reconstruction matches the
+   3-year vision; correct it in the ADR, not in chat.
 3. **DevPULSE weights** — when Qwen/Nemotron tuned checkpoints exist, P7 wires
    them; until then the plug-points stay honest about being unloaded.
 

@@ -37,6 +37,9 @@ struct Baseline {
     ingest_docs_per_sec: f64,
     query_p50_ms: f64,
     query_p95_ms: f64,
+    /// Fraction of planted golden docs retrieved in top-k (protocol ≥ planted-v1).
+    #[serde(default)]
+    accuracy_at_k: f64,
 }
 
 /// The configuration a baseline is only comparable under.
@@ -48,7 +51,21 @@ struct BaselineConfig {
     batch: usize,
     concurrency: usize,
     top_k: usize,
+    /// Corpus/metric protocol version; numbers are never compared across
+    /// protocols.
+    #[serde(default = "protocol_v0")]
+    protocol: String,
 }
+
+fn protocol_v0() -> String {
+    "v0".to_string()
+}
+
+/// Current corpus/metric protocol: each query carries a unique anchor term
+/// (df = 1 across the corpus) planted in exactly one golden doc; accuracy@k
+/// = fraction of queries whose golden doc is retrieved. A correct engine
+/// scores 1.0; approximate or broken retrieval falls below.
+const PROTOCOL: &str = "planted-v1";
 
 /// Base roots composed into a realistic synthetic vocabulary (~8k distinct
 /// terms — real corpora are zipfian over 10⁴–10⁶ terms, not a handful).
@@ -113,10 +130,40 @@ fn synth_doc(i: usize, seed: &mut u64) -> Document {
     Document::new(words.join(" ")).with_id(format!("doc-{i}"))
 }
 
-fn synth_query(seed: &mut u64) -> String {
-    let len = 2 + (xorshift(seed) % 3) as usize;
-    let words: Vec<String> = (0..len).map(|_| synth_term(seed)).collect();
-    words.join(" ")
+/// One retrieval target: the query text and the id of its planted golden doc.
+struct PlantedQuery {
+    query: String,
+    gold_id: String,
+}
+
+/// Build the planted-v1 corpus: `docs` noise documents plus one golden doc
+/// per query. Each query gets a unique anchor term (`anchorN`, df = 1 in the
+/// whole corpus — noise vocabulary can never produce it) plus two common
+/// terms; its golden doc contains the anchor, the common terms, and noise.
+fn build_corpus(docs: usize, queries: usize, seed: &mut u64) -> (Vec<Document>, Vec<PlantedQuery>) {
+    let mut corpus: Vec<Document> = (0..docs).map(|i| synth_doc(i, seed)).collect();
+    let mut planted = Vec::with_capacity(queries);
+
+    for q in 0..queries {
+        let anchor = format!("anchorq{q}");
+        let common_a = synth_term(seed);
+        let common_b = synth_term(seed);
+
+        let mut words = vec![anchor.clone(), common_a.clone(), common_b.clone()];
+        for _ in 0..20 {
+            words.push(synth_term(seed));
+        }
+        let gold_id = format!("gold-{q}");
+        // Insert goldens spread through the corpus, not appended at the end.
+        let pos = (xorshift(seed) as usize) % (corpus.len() + 1);
+        corpus.insert(pos, Document::new(words.join(" ")).with_id(gold_id.clone()));
+
+        planted.push(PlantedQuery {
+            query: format!("{anchor} {common_a} {common_b}"),
+            gold_id,
+        });
+    }
+    (corpus, planted)
 }
 
 fn arg(name: &str, default: usize) -> usize {
@@ -169,71 +216,158 @@ async fn main() -> anyhow::Result<()> {
         serde_json::json!({ "store": store_kind, "docs": docs, "queries": queries }),
     );
 
+    let remote = opt_arg_str("--remote");
     let embedder: Arc<dyn Embedder> = Arc::new(DeterministicEmbedder::new());
 
-    // Keep the estate dir alive for the whole run.
-    let tmp;
-    let store: Arc<dyn Recall> = match store_kind.as_str() {
-        "estate" => {
-            tmp = tempfile::tempdir()?;
-            let estate = connxism::Estate::open(tmp.path(), "bench")?;
-            Arc::new(estate.recall())
+    // planted-v1 corpus: noise docs + one golden doc per query.
+    let mut seed = 0x5EED_u64;
+    let (corpus, planted) = build_corpus(docs, queries, &mut seed);
+    let total_docs = corpus.len();
+
+    // --export <path>: dump the corpus + queries with precomputed embeddings
+    // as JSONL so external baselines run on IDENTICAL inputs, then exit.
+    if let Some(path) = opt_arg_str("--export") {
+        use std::io::Write;
+        let mut f = std::io::BufWriter::new(std::fs::File::create(&path)?);
+        for d in &corpus {
+            let v = embedder.embed_one(&d.text).await?;
+            let line = serde_json::json!({
+                "kind": "doc", "id": d.id.as_str(), "text": d.text, "vector": v.0,
+            });
+            writeln!(f, "{line}")?;
         }
-        _ => Arc::new(FlatRecall::new()),
+        for pq in &planted {
+            let v = embedder.embed_one(&pq.query).await?;
+            let line = serde_json::json!({
+                "kind": "query", "query": pq.query, "gold_id": pq.gold_id, "vector": v.0,
+            });
+            writeln!(f, "{line}")?;
+        }
+        f.flush()?;
+        println!(
+            "exported {} docs + {} queries → {path}",
+            total_docs,
+            planted.len()
+        );
+        return Ok(());
+    }
+
+    let mode = remote.clone().unwrap_or_else(|| "local".into());
+    println!(
+        "# rrf-bench — protocol={PROTOCOL} store={store_kind} mode={mode} docs={total_docs} batch={batch} concurrency={concurrency}\n"
+    );
+
+    let (ingest_dps, ingest_secs, lat_us, hits): (f64, f64, Vec<u128>, usize) = match &remote {
+        // ---- remote: full pipeline over the a2a layer-2 protocol ----
+        Some(addr) => {
+            let t0 = Instant::now();
+            for chunk in corpus.chunks(batch) {
+                let msg = rrf_net::Message::request(
+                    "bench",
+                    "rrf",
+                    "index",
+                    serde_json::json!({ "docs": chunk }),
+                );
+                let reply = rrf_net::tcp::request(addr.as_str(), &msg).await?;
+                anyhow::ensure!(
+                    reply.body.get("total").is_some(),
+                    "index reply missing total"
+                );
+            }
+            let secs = t0.elapsed().as_secs_f64();
+
+            let mut lat = Vec::with_capacity(queries);
+            let mut hit = 0usize;
+            for pq in &planted {
+                let msg = rrf_net::Message::request(
+                    "bench",
+                    "rrf",
+                    "ask",
+                    serde_json::json!({ "query": pq.query }),
+                );
+                let t = Instant::now();
+                let reply = rrf_net::tcp::request(addr.as_str(), &msg).await?;
+                lat.push(t.elapsed().as_micros());
+                let found = reply.body["candidates"]
+                    .as_array()
+                    .map(|c| {
+                        c.iter()
+                            .any(|cand| cand["id"].as_str() == Some(pq.gold_id.as_str()))
+                    })
+                    .unwrap_or(false);
+                hit += usize::from(found);
+            }
+            (total_docs as f64 / secs.max(1e-9), secs, lat, hit)
+        }
+
+        // ---- local: ingestion machine + store-level hybrid search ----
+        None => {
+            // Keep the estate dir alive for the whole run.
+            let _tmp;
+            let store: Arc<dyn Recall> = match store_kind.as_str() {
+                "estate" => {
+                    let tmp = tempfile::tempdir()?;
+                    let estate = connxism::Estate::open(tmp.path(), "bench")?;
+                    _tmp = tmp;
+                    Arc::new(estate.recall())
+                }
+                _ => Arc::new(FlatRecall::new()),
+            };
+
+            let handle = spawn_ingest(
+                embedder.clone(),
+                store.clone(),
+                IngestConfig {
+                    batch_size: batch,
+                    concurrency,
+                    ..IngestConfig::default()
+                },
+            );
+            let t0 = Instant::now();
+            for doc in corpus {
+                handle.submit(doc).await?;
+            }
+            let stats = handle.finish().await?;
+            let secs = t0.elapsed().as_secs_f64();
+
+            assert_eq!(stats.indexed as usize, total_docs, "all docs must index");
+            assert_eq!(store.len().await? as usize, total_docs);
+
+            let mut lat = Vec::with_capacity(queries);
+            let mut hit = 0usize;
+            for pq in &planted {
+                let emb = embedder.embed_one(&pq.query).await?;
+                let t = Instant::now();
+                let results = store.hybrid_search(&pq.query, &emb, top_k).await?;
+                lat.push(t.elapsed().as_micros());
+                assert!(
+                    !results.is_empty(),
+                    "queries over a populated store must hit"
+                );
+                let found = results.iter().any(|c| c.id.as_str() == pq.gold_id);
+                hit += usize::from(found);
+            }
+            (stats.docs_per_sec, secs, lat, hit)
+        }
     };
 
-    println!(
-        "# rrf-bench — store={store_kind} docs={docs} batch={batch} concurrency={concurrency}\n"
-    );
-
-    // ---- ingest: full machine (embed → index → persist) ----
-    let handle = spawn_ingest(
-        embedder.clone(),
-        store.clone(),
-        IngestConfig {
-            batch_size: batch,
-            concurrency,
-            ..IngestConfig::default()
-        },
-    );
-    let mut seed = 0x5EED_u64;
-    let t0 = Instant::now();
-    for i in 0..docs {
-        handle.submit(synth_doc(i, &mut seed)).await?;
-    }
-    let stats = handle.finish().await?;
-    let ingest_secs = t0.elapsed().as_secs_f64();
-
-    assert_eq!(stats.indexed as usize, docs, "all docs must index");
-    assert_eq!(store.len().await? as usize, docs);
+    let accuracy = hits as f64 / queries.max(1) as f64;
 
     println!("## ingest");
     println!("| metric | value |");
     println!("|---|---|");
-    println!("| documents | {docs} |");
+    println!("| documents | {total_docs} |");
     println!("| wall time | {ingest_secs:.2} s |");
-    println!("| throughput | {:.0} docs/sec |", stats.docs_per_sec);
-    println!("| batches | {} |", stats.batches);
-    println!("| errors | {} |", stats.errors);
+    println!("| throughput | {ingest_dps:.0} docs/sec |");
 
-    // ---- query: hybrid latency ----
-    let mut lat_us: Vec<u128> = Vec::with_capacity(queries);
-    let mut qseed = 0xFACADE_u64;
-    for _ in 0..queries {
-        let q = synth_query(&mut qseed);
-        let emb = embedder.embed_one(&q).await?;
-        let t = Instant::now();
-        let hits = store.hybrid_search(&q, &emb, top_k).await?;
-        lat_us.push(t.elapsed().as_micros());
-        assert!(!hits.is_empty(), "queries over a populated store must hit");
-    }
+    let mut lat_us = lat_us;
     lat_us.sort_unstable();
-
     let p50 = percentile(&lat_us, 0.50);
     let p95 = percentile(&lat_us, 0.95);
-    println!("\n## query (hybrid, top-{top_k}, {queries} queries)");
-    println!("| percentile | latency |");
+    println!("\n## query (hybrid, top-{top_k}, {queries} planted queries)");
+    println!("| metric | value |");
     println!("|---|---|");
+    println!("| **accuracy@{top_k} (golden retrieved)** | **{accuracy:.3}** |");
     println!("| p50 | {p50:.2} ms |");
     println!("| p95 | {p95:.2} ms |");
     println!("| p99 | {:.2} ms |", percentile(&lat_us, 0.99));
@@ -246,27 +380,36 @@ async fn main() -> anyhow::Result<()> {
         "bench.result",
         serde_json::json!({
             "store": store_kind,
-            "ingest_docs_per_sec": stats.docs_per_sec,
+            "mode": mode,
+            "protocol": PROTOCOL,
+            "ingest_docs_per_sec": ingest_dps,
             "query_p50_ms": p50,
             "query_p95_ms": p95,
+            "accuracy_at_k": accuracy,
         }),
     );
 
     // ---- baseline configuration & tracking ----
     let config = BaselineConfig {
-        store: store_kind.clone(),
+        store: if remote.is_some() {
+            format!("{store_kind}+a2a")
+        } else {
+            store_kind.clone()
+        },
         docs,
         queries,
         batch,
         concurrency,
         top_k,
+        protocol: PROTOCOL.to_string(),
     };
     let current = Baseline {
         config,
         recorded_at_ms: rrf_core::events::now_ms(),
-        ingest_docs_per_sec: stats.docs_per_sec,
+        ingest_docs_per_sec: ingest_dps,
         query_p50_ms: p50,
         query_p95_ms: p95,
+        accuracy_at_k: accuracy,
     };
 
     if let Some(path) = write_baseline_path {
@@ -349,6 +492,14 @@ fn compare(stored: &Baseline, current: &Baseline, tol: f64) -> Comparison {
         current.query_p95_ms,
         false,
     );
+    // Accuracy: judged with the same machinery so the report stays uniform.
+    // Baselines recorded before planted-v1 carry 0.0 and always pass.
+    check(
+        "accuracy@k",
+        stored.accuracy_at_k,
+        current.accuracy_at_k,
+        true,
+    );
 
     Comparison { report, failed }
 }
@@ -366,12 +517,39 @@ mod tests {
                 batch: 256,
                 concurrency: 4,
                 top_k: 10,
+                protocol: PROTOCOL.to_string(),
             },
             recorded_at_ms: 1,
             ingest_docs_per_sec: 100_000.0,
             query_p50_ms: 80.0,
             query_p95_ms: 90.0,
+            accuracy_at_k: 1.0,
         }
+    }
+
+    #[test]
+    fn planted_corpus_anchors_are_unique() {
+        let mut seed = 7_u64;
+        let (corpus, planted) = build_corpus(200, 20, &mut seed);
+        assert_eq!(corpus.len(), 220);
+        for pq in &planted {
+            let anchor = pq.query.split(' ').next().unwrap();
+            let holders: Vec<&str> = corpus
+                .iter()
+                .filter(|d| d.text.split(' ').any(|w| w == anchor))
+                .map(|d| d.id.as_str())
+                .collect();
+            assert_eq!(holders, vec![pq.gold_id.as_str()], "anchor df must be 1");
+        }
+    }
+
+    #[test]
+    fn accuracy_regression_is_caught() {
+        let mut bad = base();
+        bad.accuracy_at_k = 0.5;
+        assert!(compare(&base(), &bad, 0.25)
+            .failed
+            .contains(&"accuracy@k".to_string()));
     }
 
     #[test]

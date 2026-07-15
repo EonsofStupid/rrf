@@ -5,10 +5,12 @@
     "queries": 500,
     "batch": 256,
     "concurrency": 4,
-    "top_k": 10
+    "top_k": 10,
+    "protocol": "planted-v1"
   },
-  "recorded_at_ms": 1784147584614,
-  "ingest_docs_per_sec": 7280.9270421717265,
-  "query_p50_ms": 113.265,
-  "query_p95_ms": 120.944
+  "recorded_at_ms": 1784150002148,
+  "ingest_docs_per_sec": 6623.562203563761,
+  "query_p50_ms": 188.537,
+  "query_p95_ms": 207.99,
+  "accuracy_at_k": 1.0
 }
