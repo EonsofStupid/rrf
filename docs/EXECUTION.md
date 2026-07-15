@@ -83,6 +83,15 @@ already covers batch writes), second KV backend, full typed query builder.
 Deferred honestly: push-streaming subscriptions (poll-based lands first),
 IMAP-class driver (needs a live mailbox; the driver trait is its socket).
 
+## Sprint 5 — RRD-first & the evolving shape baseline (closed same day)
+
+| # | Step | Verification gate | Status |
+|---|---|---|---|
+| 1 | `rrd::baseline`: recency-weighted shape distributions per context; speculative prediction (inline-cache), entropy predictability, PSI drift vs committed snapshots, O(1) decay | unit gates: hit-rate → 1.0 on stable stream; mono ≈ 1.0 vs mega < 0.05 predictability; PSI fires on regime change while identity flips slowly; snapshot/restore roundtrip | ✅ |
+| 2 | **RRD literally first — ingest**: sync runs stamp→gates→shape→predict *before* embedding; blocked docs never reach the model (`SyncReport::blocked`); L2 tags route on survivor embeddings | sync tests green; ordering enforced in code | ✅ |
+| 3 | **RRD literally first — query**: `flow.ask` stage 1 is `rrd` (gate + mode); blocked queries return gated with zero model cost; intent tags on every `RecallResult` | flow compiles + stage evented first | ✅ |
+| 4 | Baseline persists in the estate and grows across sessions (`x:rrd:baseline`); predictability exported as estate trend + `connector.synced` event fields | cross-session gate: fresh Rrd restores snapshot, first-prediction hits, hit-rate never regresses across sessions | ✅ |
+
 ## Sprint log
 
 - **S1 opened 2026-07-15.** Sliver/RRD design recovered into ADR-0002 during

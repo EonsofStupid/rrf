@@ -332,6 +332,24 @@ impl Estate {
         self.pending.quiesce();
     }
 
+    // ---- component state --------------------------------------------------------
+
+    /// Persist engine-component state (e.g. the RRD shape baseline) under the
+    /// meta column family, namespaced with an `x:` prefix.
+    pub fn put_component_json<T: serde::Serialize>(&self, key: &str, value: &T) -> Result<()> {
+        self.db
+            .put_json(CF_META, format!("x:{key}").as_bytes(), value)
+    }
+
+    /// Load engine-component state stored via
+    /// [`Estate::put_component_json`].
+    pub fn get_component_json<T: serde::de::DeserializeOwned>(
+        &self,
+        key: &str,
+    ) -> Result<Option<T>> {
+        self.db.get_json(CF_META, format!("x:{key}").as_bytes())
+    }
+
     // ---- changefeed ------------------------------------------------------------
 
     /// Read changefeed entries with `seq >= since_seq`, oldest first, up to

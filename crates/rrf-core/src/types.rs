@@ -241,4 +241,7 @@ pub struct RecallResult {
     pub candidates: Vec<Candidate>,
     /// The reason-ready verdict.
     pub readiness: Readiness,
+    /// Intent tags routed by RRD at the front door (empty without RRD).
+    #[serde(default)]
+    pub intent: Vec<String>,
 }

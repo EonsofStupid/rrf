@@ -810,6 +810,7 @@ dependencies = [
  "embedder",
  "recall",
  "reranker",
+ "rrd",
  "rrf-core",
  "rrf-net",
  "serde",

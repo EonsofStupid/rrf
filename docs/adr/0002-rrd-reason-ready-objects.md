@@ -83,6 +83,43 @@ state absorbs the standing task list. Intent + tags are how RRD evolves.
 non-technical operators without rewarding underspecified work — consumes
 RROs + readiness; it lives host-side, not in this engine.)
 
+## The shape baseline: snapshot of normal, evolving forever (2026-07-15)
+
+*"We start building a snapshot — a baseline, in layman — of shapes, and
+improve predictability."* Implemented in `rrd::baseline`, grounded in three
+proven bodies of practice:
+
+1. **Compiler feedback vectors (V8-class JITs).** RRD is *the instant first
+   thing*: every payload and every query hits the ladder at first touch,
+   **before any embedding is paid for** — blocked payloads never reach the
+   model (measured in `SyncReport::blocked`). Each context (connector,
+   channel, session) accumulates type feedback exactly like a call site's
+   feedback slot, and its **monomorphic → polymorphic → megamorphic** state
+   is a first-class number: `predictability = 1 − normalized entropy` of its
+   shape distribution.
+2. **Reference profiles + PSI (ML-observability practice).** The baseline
+   commits versioned **snapshots** — the durable "this is normal" — and
+   measures each context's recent window against its snapshot with the
+   population stability index. `PSI > 0.25` emits `rrd.drift`: the world
+   changed at that source. Snapshots persist in the estate
+   (`x:rrd:baseline`) and restore on session start — the baseline survives
+   restarts and **grows across sessions** (gated by test).
+3. **Speculative inline caching.** Before identifying a payload's shape, RRD
+   *predicts* it from the context's distribution; the observation settles the
+   ledger. The per-context **hit-rate curve is the measured "predictability
+   is improving"** — it locks to ~1.0 on stable sources within one sync and
+   is exported as an estate trend (`connector.<id>.predictability`).
+   Recency-weighted decay (O(1), growing-unit) makes the baseline adapt on
+   regime change: **drift alerts fast, identity changes slow** — both by
+   design and both tested.
+
+Ordering is enforced in code, not convention: the connector sync runs
+distill (stamp→L0→L1→shape→predict) *before* embedding and routes L2 tags on
+the survivor embeddings afterward; the query flow runs RRD as its first
+stage (`flow.stage = "rrd"`), returns gated results for blocked queries
+without ever invoking the embedder, and stamps routed **intent** tags onto
+every `RecallResult`.
+
 ## Design (phase P4)
 
 New crate **`rrd`** (component, depends only on `rrf-core`; estate

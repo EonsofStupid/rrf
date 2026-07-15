@@ -45,8 +45,10 @@ impl Default for FlowConfig {
     }
 }
 
-/// The assembled engine: embedder → recall → reranker → classifier → connectome.
+/// The assembled engine: **RRD first**, then embedder → recall → reranker →
+/// classifier → connectome.
 pub struct ReasonReadyFlow {
+    rrd: Option<Arc<rrd::Rrd>>,
     embedder: Arc<dyn Embedder>,
     recall: Arc<dyn Recall>,
     reranker: Arc<dyn Reranker>,
@@ -97,9 +99,47 @@ impl ReasonReadyFlow {
         use std::time::Instant;
         let pass = Instant::now();
 
+        // RRD is literally the instant first thing: stamp + gate ladder on
+        // the query BEFORE any model cost. A blocked query never reaches the
+        // embedder — it returns gated, with the verdict on the record.
+        let mut query_rro = None;
+        if let Some(rrd) = &self.rrd {
+            let t = Instant::now();
+            let stamp = rrd::SourceStamp {
+                channel: Some("query".to_string()),
+                ..rrd::SourceStamp::default()
+            };
+            let rro = rrd.distill_stamped("query", query, &rrf_core::Metadata::new(), None, stamp);
+            stage(
+                "rrd",
+                t,
+                serde_json::json!({ "gate": rro.gate, "mode": rro.mode.name() }),
+            );
+            if rro.gate == rrd::GateVerdict::Block {
+                return Ok(RecallResult {
+                    query: query.to_string(),
+                    candidates: Vec::new(),
+                    readiness: rrf_core::Readiness::not_ready(
+                        1.0,
+                        "gated",
+                        "blocked by the RRD deterministic gate before any model ran",
+                    ),
+                    intent: Vec::new(),
+                });
+            }
+            query_rro = Some(rro);
+        }
+
         let t = Instant::now();
         let q = self.embedder.embed_one(query).await?;
         stage("embed", t, serde_json::json!({ "dim": q.dim() }));
+
+        // Intent: the L2 half of the query's distillation, on the embedding
+        // we just paid for anyway.
+        let intent: Vec<String> = match (&self.rrd, &query_rro) {
+            (Some(rrd), Some(_)) => rrd.route_tags(&q).into_iter().map(|t| t.tag).collect(),
+            _ => Vec::new(),
+        };
 
         let t = Instant::now();
         let recalled = self
@@ -140,6 +180,7 @@ impl ReasonReadyFlow {
             query: query.to_string(),
             candidates: ranked,
             readiness,
+            intent,
         })
     }
 
@@ -175,6 +216,7 @@ impl ReasonReadyFlow {
 /// Fluent builder for [`ReasonReadyFlow`]. Any component left unset falls back
 /// to its weightless default.
 pub struct FlowBuilder {
+    rrd: Option<Arc<rrd::Rrd>>,
     embedder: Option<Arc<dyn Embedder>>,
     recall: Option<Arc<dyn Recall>>,
     reranker: Option<Arc<dyn Reranker>>,
@@ -192,12 +234,19 @@ impl FlowBuilder {
     /// A builder with all-default components.
     pub fn new() -> Self {
         FlowBuilder {
+            rrd: None,
             embedder: None,
             recall: None,
             reranker: None,
             classifier: None,
             config: FlowConfig::default(),
         }
+    }
+
+    /// Attach RRD as the flow's front door (query gating + intent routing).
+    pub fn rrd(mut self, rrd: Arc<rrd::Rrd>) -> Self {
+        self.rrd = Some(rrd);
+        self
     }
 
     /// Override the embedder (e.g. the DevPULSE / Qwen model).
@@ -233,6 +282,7 @@ impl FlowBuilder {
     /// Assemble the flow, filling any unset component with its default.
     pub fn build(self) -> ReasonReadyFlow {
         ReasonReadyFlow {
+            rrd: self.rrd,
             embedder: self
                 .embedder
                 .unwrap_or_else(|| Arc::new(DeterministicEmbedder::new()) as Arc<dyn Embedder>),

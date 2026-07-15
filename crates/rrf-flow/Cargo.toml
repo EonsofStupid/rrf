@@ -21,6 +21,7 @@ reranker = { workspace = true }
 classifier = { workspace = true }
 connectome = { workspace = true }
 connxism = { workspace = true }
+rrd = { workspace = true }
 rrf-net = { workspace = true }
 async-trait = { workspace = true }
 serde = { workspace = true }

@@ -19,6 +19,7 @@
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
+pub mod baseline;
 pub mod gates;
 pub mod mode;
 pub mod plan;
@@ -34,6 +35,7 @@ use std::sync::{Arc, RwLock};
 
 use rrf_core::{Embedding, Metadata};
 
+pub use baseline::{BaselineSnapshot, ShapeBaseline, DRIFT_THRESHOLD};
 pub use gates::{ActionGate, DeepEvaluator, GateVerdict, L0Config, LexicalSignals, SourceStamp};
 pub use mode::Mode;
 pub use plan::{FieldRole, Plan};
@@ -50,6 +52,7 @@ pub struct Rrd {
     plans: RwLock<HashMap<u64, Arc<Plan>>>,
     router: SemanticRouter,
     l0: gates::L0Config,
+    baseline: RwLock<ShapeBaseline>,
     hits: AtomicU64,
     compiles: AtomicU64,
 }
@@ -67,9 +70,65 @@ impl Rrd {
             plans: RwLock::new(HashMap::new()),
             router,
             l0: gates::L0Config::default(),
+            baseline: RwLock::new(ShapeBaseline::new()),
             hits: AtomicU64::new(0),
             compiles: AtomicU64::new(0),
         }
+    }
+
+    /// Route tags for an embedding directly (the post-embed half when the
+    /// caller runs the RRD-first split: gate+shape before embedding, tags
+    /// after). Same router, same space.
+    pub fn route_tags(&self, embedding: &Embedding) -> Vec<RoutedTag> {
+        self.router.route(embedding)
+    }
+
+    /// Commit and return a baseline snapshot for persistence (the estate
+    /// stores it; restarts restore it — the baseline grows across sessions).
+    pub fn baseline_snapshot(&self) -> BaselineSnapshot {
+        let snap = self.baseline.write().expect("baseline lock").snapshot();
+        rrf_core::events::emit(
+            "rrd.baseline.snapshot",
+            serde_json::json!({
+                "version": snap.version,
+                "observations": snap.observations,
+                "contexts": snap.contexts.len(),
+            }),
+        );
+        snap
+    }
+
+    /// Restore a persisted baseline snapshot (live state + drift reference).
+    pub fn restore_baseline(&self, snapshot: BaselineSnapshot) {
+        *self.baseline.write().expect("baseline lock") = ShapeBaseline::restore(snapshot);
+    }
+
+    /// Predictability of a context: `1 − normalized entropy` of its shape
+    /// distribution (1.0 = monomorphic, → 0.0 = megamorphic).
+    pub fn predictability(&self, context: &str) -> f64 {
+        self.baseline
+            .read()
+            .expect("baseline lock")
+            .predictability(context)
+    }
+
+    /// Speculative-prediction hit-rate for a context — the measured
+    /// "predictability is improving" curve.
+    pub fn hit_rate(&self, context: &str) -> f64 {
+        self.baseline
+            .read()
+            .expect("baseline lock")
+            .hit_rate(context)
+    }
+
+    /// PSI drift of a context's recent window vs the committed snapshot.
+    pub fn drift(&self, context: &str) -> f64 {
+        self.baseline.read().expect("baseline lock").drift(context)
+    }
+
+    /// Lifetime observations folded into the baseline (0 = fresh instance).
+    pub fn baseline_observations(&self) -> u64 {
+        self.baseline.read().expect("baseline lock").observations()
     }
 
     /// Distill one payload into an RRO with default (empty) source stamp and
@@ -131,6 +190,22 @@ impl Rrd {
         };
 
         // Structural + L2 follow.
+        // The baseline context: where this payload came from.
+        let context = stamp
+            .channel
+            .clone()
+            .or_else(|| stamp.source.clone())
+            .or_else(|| stamp.project.clone())
+            .unwrap_or_else(|| "global".to_string());
+
+        // Speculate BEFORE identifying: the inline-cache prediction.
+        let predicted = self
+            .baseline
+            .read()
+            .expect("baseline lock")
+            .predict(&context)
+            .map(|(s, _)| s);
+
         // 1. Shape (the hidden class) + mode: structural, model-free.
         let shape = ShapeFingerprint::of(metadata);
         let mode = mode::identify(metadata);
@@ -139,6 +214,24 @@ impl Rrd {
             .write()
             .expect("registry lock")
             .observe(&shape, mode);
+
+        // Settle the speculation ledger and watch for drift. The baseline is
+        // how RRD evolves: every observation sharpens the next prediction.
+        {
+            let mut baseline = self.baseline.write().expect("baseline lock");
+            baseline.observe(&context, sliver_id, predicted);
+            let drift = baseline.drift(&context);
+            if drift > baseline::DRIFT_THRESHOLD {
+                rrf_core::events::emit(
+                    "rrd.drift",
+                    serde_json::json!({
+                        "context": context,
+                        "psi": drift,
+                        "predictability": baseline.predictability(&context),
+                    }),
+                );
+            }
+        }
 
         // 2. Inline cache: compile once per sliver, reuse forever after.
         let plan = if is_new {

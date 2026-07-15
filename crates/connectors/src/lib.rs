@@ -28,8 +28,11 @@ pub use jsonl::JsonlDriver;
 
 use async_trait::async_trait;
 use connxism::{ConnXRecall, Estate, SyncState, SyncStatus};
-use rrd::Rrd;
+use rrd::{GateVerdict, Rrd, SourceStamp};
 use rrf_core::{Document, Embedder, Recall, Result, RrfError};
+
+/// Estate key the RRD shape baseline persists under.
+const BASELINE_KEY: &str = "rrd:baseline";
 
 /// One resumable pull from a source.
 pub struct Batch {
@@ -55,6 +58,9 @@ pub trait Driver: Send + Sync {
 pub struct SyncReport {
     /// Documents ingested by this run.
     pub ingested: u64,
+    /// Documents blocked by the RRD gate ladder **before** any embedding
+    /// cost was paid.
+    pub blocked: u64,
     /// Batches pulled.
     pub batches: u64,
     /// Final cursor (persisted in the connector's [`SyncState`]).
@@ -78,9 +84,18 @@ pub async fn sync(
         .connector(connector_id)?
         .ok_or_else(|| RrfError::msg(format!("no such connector: {connector_id}")))?;
 
+    // The baseline persists in the estate and grows across sessions: restore
+    // it into a fresh Rrd before the first observation of this run.
+    if rrd.baseline_observations() == 0 {
+        if let Some(snap) = estate.get_component_json::<rrd::BaselineSnapshot>(BASELINE_KEY)? {
+            rrd.restore_baseline(snap);
+        }
+    }
+
     let mut cursor = conn.sync.cursor.clone();
     let mut docs_synced = conn.sync.docs_synced;
     let mut ingested = 0u64;
+    let mut blocked = 0u64;
     let mut batches = 0u64;
 
     estate.update_sync(
@@ -100,15 +115,40 @@ pub async fn sync(
         }
         batches += 1;
 
-        // Embed once; the same vectors serve recall AND RRD tag routing.
-        let texts: Vec<String> = batch.docs.iter().map(|d| d.text.clone()).collect();
+        // RRD IS FIRST — the instant a payload arrives: stamp, gate ladder,
+        // shape/mode, baseline prediction. All of it BEFORE any embedding
+        // cost is paid; blocked payloads never reach the model.
+        let mut kept: Vec<(&Document, rrd::Rro)> = Vec::with_capacity(batch.docs.len());
+        for doc in &batch.docs {
+            let stamp = SourceStamp {
+                channel: Some(connector_id.to_string()),
+                source: Some(doc.id.as_str().to_string()),
+                ..SourceStamp::default()
+            };
+            let rro = rrd.distill_stamped(doc.id.as_str(), &doc.text, &doc.metadata, None, stamp);
+            if rro.gate == GateVerdict::Block {
+                blocked += 1;
+                continue;
+            }
+            kept.push((doc, rro));
+        }
+        if kept.is_empty() {
+            cursor = batch.next_cursor.clone();
+            if cursor.is_none() {
+                break;
+            }
+            continue;
+        }
+
+        // Embed only the survivors; the same vectors serve recall AND the
+        // L2 tag routing (post-embed half of the split distill).
+        let texts: Vec<String> = kept.iter().map(|(d, _)| d.text.clone()).collect();
         let embeddings = embedder.embed(&texts).await?;
 
-        let mut records = Vec::with_capacity(batch.docs.len());
-        let mut post = Vec::with_capacity(batch.docs.len()); // (doc_id, tags, mode)
-        for (doc, emb) in batch.docs.iter().zip(&embeddings) {
-            let rro = rrd.distill(doc.id.as_str(), &doc.text, &doc.metadata, Some(emb));
-            let mut tags: Vec<String> = rro.tags.iter().map(|t| t.tag.clone()).collect();
+        let mut records = Vec::with_capacity(kept.len());
+        let mut post = Vec::with_capacity(kept.len()); // (doc_id, tags)
+        for ((doc, rro), emb) in kept.iter().zip(&embeddings) {
+            let mut tags: Vec<String> = rrd.route_tags(emb).into_iter().map(|t| t.tag).collect();
             tags.push(format!("mode:{}", rro.mode.name()));
             post.push((doc.id.as_str().to_string(), tags));
 
@@ -167,17 +207,30 @@ pub async fn sync(
         &format!("connector.{connector_id}.docs_synced"),
         docs_synced as f64,
     )?;
+    estate.record_trend(
+        &format!("connector.{connector_id}.predictability"),
+        rrd.predictability(connector_id),
+    )?;
+
+    // Commit the evolved baseline back to the estate: the snapshot IS the
+    // durable "this is normal" the next session restores and grows.
+    estate.put_component_json(BASELINE_KEY, &rrd.baseline_snapshot())?;
+
     rrf_core::events::emit(
         "connector.synced",
         serde_json::json!({
             "connector": connector_id,
             "ingested": ingested,
+            "blocked": blocked,
             "batches": batches,
+            "predictability": rrd.predictability(connector_id),
+            "hit_rate": rrd.hit_rate(connector_id),
         }),
     );
 
     Ok(SyncReport {
         ingested,
+        blocked,
         batches,
         cursor,
     })

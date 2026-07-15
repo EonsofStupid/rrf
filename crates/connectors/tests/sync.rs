@@ -158,3 +158,98 @@ async fn interrupted_sync_resumes_from_cursor_without_duplicates() {
     // RRD shaped the rows: record-mode tags present.
     assert_eq!(estate.docs_by_tag("mode:record").unwrap().len(), 10);
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn baseline_evolves_and_persists_across_sessions() {
+    let src = tempfile::tempdir().unwrap();
+    let feed_a = src.path().join("a.jsonl");
+    let feed_b = src.path().join("b.jsonl");
+    // Two feeds, one stable shape: the connector's stream is monomorphic.
+    let mk = |n: usize, off: usize| -> String {
+        (0..n)
+            .map(|i| {
+                format!(
+                    r#"{{"id":"x{}","text":"row {} payload","kind":"row","amount":{}}}"#,
+                    i + off,
+                    i + off,
+                    i
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    std::fs::write(&feed_a, mk(20, 0)).unwrap();
+    std::fs::write(&feed_b, mk(20, 100)).unwrap();
+
+    let dir = tempfile::tempdir().unwrap();
+
+    // Session 1: first sync — the baseline learns the connector's shape.
+    let (hit_rate_1, predictability_1) = {
+        let estate = Estate::open(dir.path(), "evolve").unwrap();
+        let recall = estate.recall();
+        let rrd = Rrd::new();
+        let embed = DeterministicEmbedder::new();
+        register(&estate, "c-ev", "jsonl", "a.jsonl");
+        sync(
+            &estate,
+            &recall,
+            &rrd,
+            &embed,
+            &JsonlDriver::new(&feed_a, 5),
+            "c-ev",
+        )
+        .await
+        .unwrap();
+        (rrd.hit_rate("c-ev"), rrd.predictability("c-ev"))
+    }; // estate dropped: session ends
+
+    assert!(
+        predictability_1 > 0.99,
+        "a monomorphic connector must read as predictable: {predictability_1}"
+    );
+    assert!(
+        hit_rate_1 > 0.9,
+        "prediction locks on within one sync: {hit_rate_1}"
+    );
+
+    // Session 2: FRESH Rrd, reopened estate — the persisted snapshot restores
+    // and the very first prediction of the new session already hits.
+    {
+        let estate = Estate::open(dir.path(), "evolve").unwrap();
+        let recall = estate.recall();
+        let rrd = Rrd::new();
+        assert_eq!(
+            rrd.baseline_observations(),
+            0,
+            "fresh instance knows nothing"
+        );
+        let embed = DeterministicEmbedder::new();
+        register(&estate, "c-ev2", "jsonl", "b.jsonl");
+        // Point the same restored baseline at a new connector id? No — reuse
+        // the SAME context: sync c-ev again over feed_b via a new connector
+        // row is a different context. Re-register c-ev with the new feed.
+        register(&estate, "c-ev", "jsonl", "b.jsonl");
+        let report = sync(
+            &estate,
+            &recall,
+            &rrd,
+            &embed,
+            &JsonlDriver::new(&feed_b, 5),
+            "c-ev",
+        )
+        .await
+        .unwrap();
+        assert_eq!(report.ingested, 20);
+        assert!(
+            rrd.baseline_observations() > 20,
+            "restored baseline carries session-1 history: {}",
+            rrd.baseline_observations()
+        );
+        // Same shape stream, warm baseline: every prediction this session hits.
+        assert!(
+            rrd.hit_rate("c-ev") >= hit_rate_1,
+            "predictability must not regress across sessions: {} vs {hit_rate_1}",
+            rrd.hit_rate("c-ev")
+        );
+    }
+}
