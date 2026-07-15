@@ -21,6 +21,7 @@ mod estate;
 pub mod index;
 pub mod keys;
 pub mod model;
+mod pending;
 mod store;
 
 pub use estate::Estate;

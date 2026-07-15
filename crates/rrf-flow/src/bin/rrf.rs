@@ -26,6 +26,9 @@ async fn main() -> anyhow::Result<()> {
     // With RRF_ESTATE set, memory is the persistent kvs estate (hybrid
     // dense + lexical recall); otherwise the in-memory default. Swap in
     // DevPULSE components here as they land.
+    // The estate must outlive the daemon: it owns the out-of-band ANN
+    // applier thread (dropping it stops graph maintenance).
+    let mut _estate_keeper = None;
     let flow = match std::env::var("RRF_ESTATE").ok() {
         Some(path) => {
             let estate = connxism::Estate::open(&path, "rrf")?;
@@ -36,9 +39,11 @@ async fn main() -> anyhow::Result<()> {
                 edges = map.edges.len(),
                 "opened estate"
             );
-            ReasonReadyFlow::builder()
+            let flow = ReasonReadyFlow::builder()
                 .recall(Arc::new(estate.recall()))
-                .build()
+                .build();
+            _estate_keeper = Some(estate);
+            flow
         }
         None => ReasonReadyFlow::default_engine(),
     };

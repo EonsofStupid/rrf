@@ -109,17 +109,17 @@ impl Embedding {
         &self.0
     }
 
-    /// Dot product. Returns 0.0 on dimension mismatch.
+    /// Dot product (unrolled kernel). Returns 0.0 on dimension mismatch.
     pub fn dot(&self, other: &Embedding) -> f32 {
         if self.0.len() != other.0.len() {
             return 0.0;
         }
-        self.0.iter().zip(&other.0).map(|(a, b)| a * b).sum()
+        crate::simd::dot(&self.0, &other.0)
     }
 
     /// L2 norm.
     pub fn norm(&self) -> f32 {
-        self.0.iter().map(|x| x * x).sum::<f32>().sqrt()
+        crate::simd::norm_sq(&self.0).sqrt()
     }
 
     /// Cosine similarity in `[-1, 1]`; 0.0 if either vector is zero-length.

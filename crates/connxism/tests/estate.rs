@@ -185,3 +185,53 @@ async fn estate_persists_across_reopen() {
         .await;
     assert!(err.is_err(), "dim guard must persist across reopen");
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn read_your_writes_through_pending_overlay() {
+    let dir = tempfile::tempdir().unwrap();
+    let estate = Estate::open(dir.path(), "ryw").unwrap();
+    let recall = estate.recall();
+
+    // Seed past the ANN threshold so dense search uses the graph + overlay.
+    let seed: Vec<_> = (0..1500)
+        .map(|i| {
+            rec(
+                &format!("seed{i}"),
+                &[(i % 97) as f32, 1.0, 0.5],
+                "background noise document",
+            )
+        })
+        .collect();
+    recall.upsert(seed).await.unwrap();
+
+    // A fresh upsert must be findable IMMEDIATELY (before the applier runs).
+    recall
+        .upsert(vec![rec(
+            "fresh",
+            &[0.0, 0.0, 42.0],
+            "fresh unique payload",
+        )])
+        .await
+        .unwrap();
+    let hits = recall
+        .search(&Embedding(vec![0.0, 0.0, 1.0]), 3)
+        .await
+        .unwrap();
+    assert_eq!(hits[0].id.as_str(), "fresh", "read-your-writes must hold");
+
+    // A fresh remove must mask immediately, too.
+    recall.remove(&"fresh".into()).await.unwrap();
+    let hits = recall
+        .search(&Embedding(vec![0.0, 0.0, 1.0]), 3)
+        .await
+        .unwrap();
+    assert!(hits.iter().all(|c| c.id.as_str() != "fresh"));
+
+    // And after quiesce, results are identical (graph caught up).
+    recall.quiesce().await.unwrap();
+    let hits = recall
+        .search(&Embedding(vec![0.0, 0.0, 1.0]), 3)
+        .await
+        .unwrap();
+    assert!(hits.iter().all(|c| c.id.as_str() != "fresh"));
+}

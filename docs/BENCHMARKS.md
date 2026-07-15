@@ -119,12 +119,26 @@ The engine now answers **faster than the popular baseline's pure-vector ANN
 (3.2–4.9 ms) while also running BM25 + reciprocal-rank fusion** — and keeps
 exact-retrieval accuracy the baseline could not reach (1.000 vs 0.572–0.606).
 
-**The honest cost:** durable ingest dropped 8,883 → 488 docs/sec — graph
-construction currently runs single-threaded inside the writer path
-(~2 ms/vector). Known, quantified, and the two-phase design already carries
-the fix: apply graph inserts out-of-band (compaction-style, the recovered
-reference pattern) and/or parallel batch build. That is the next
-optimization; until it lands, the recorded baseline reflects reality.
+**The ingest cost, then the fix (same day):** synchronous graph build first
+dropped durable ingest 8,883 → 488 docs/sec. Moving graph apply
+**out-of-band** (applier thread + pending overlay for read-your-writes +
+`quiesce`, the recovered compaction pattern) plus unrolled dot kernels
+restored and then beat it:
+
+| | sync build | **out-of-band** |
+|---|---|---|
+| durable ingest | 488 docs/sec | **10,800–10,953 docs/sec** |
+| query p50 (post-quiesce) | 1.40 / 2.09 ms | **1.06 / 1.88 ms** (50k/100k) |
+| accuracy@10 | 1.000 | **1.000 @ 100k**; 0.998 @ 50k¹ |
+| index catch-up (reported separately) | — | 31 s @ 50k / 71 s @ 100k |
+
+¹ One golden in 500 lost to the fusion cutoff (a doc ranked in *both* lists
+can out-fuse a lexical-only rank-1 at the top-k boundary) — a scoring-depth
+tuning question, recorded rather than hidden.
+
+Searches during catch-up stay correct via the pending overlay (exact scores
+over unapplied vectors, removals masked — property- and integration-tested);
+"durably ingested" and "fully indexed" are two moments and both get printed.
 
 ## Baselines & the regression gate
 

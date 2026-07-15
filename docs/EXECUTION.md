@@ -52,8 +52,9 @@ store doing *less* work over HTTP.
 | 2 | Estate integration, two-phase (durable vecs → post-commit apply → rebuild-on-open) | estate tests incl. persistence/reopen | ✅ |
 | 3 | Gate run @50k + @100k | accuracy 1.000 held; p50 **1.40 ms / 2.09 ms** (was 188.5 ms — 135×); baseline re-recorded | ✅ |
 | 4 | Ingest cost honesty | 8,883 → 488 docs/sec recorded; fix path = out-of-band graph apply (compaction-style) | ✅ recorded, fix queued |
-| 5 | SIMD kernels, scalar quantization, weighted sparse, payload filters | per-PLAN gates | ⬜ |
-| 6 | Out-of-band graph apply (restore ingest throughput) | ingest ≥ 5k docs/sec with ANN on; accuracy/latency held | ⬜ |
+| 5 | Unrolled dot kernels (ANN traversal + Embedding) | no regression; tests hold | ✅ graph build ~3× faster; query p50 improved (1.40→1.06 ms @ 50k) |
+| 6 | Out-of-band graph apply (applier thread + pending overlay + quiesce, per the recovered compaction pattern) | ingest ≥ 5k docs/sec with ANN on; read-your-writes test; accuracy + ms-latency held post-quiesce; catch-up time reported honestly | ✅ ingest **10.8–11k docs/sec** (2× the gate, above pre-ANN); p50 1.06/1.88 ms @ 50k/100k; accuracy 1.000 @ 100k (0.998 @ 50k — one fusion-cutoff miss, noted); catch-up 31 s/71 s reported. Found+fixed: Estate drop stopped the applier (bench/daemon now hold the estate). |
+| 7 | Scalar quantization, weighted sparse, payload filters | per-PLAN gates | ⬜ queued next sprint |
 
 ## Sprint log
 

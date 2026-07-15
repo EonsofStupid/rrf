@@ -303,16 +303,25 @@ async fn main() -> anyhow::Result<()> {
 
         // ---- local: ingestion machine + store-level hybrid search ----
         None => {
-            // Keep the estate dir alive for the whole run.
+            // Keep the estate dir AND the estate itself alive for the whole
+            // run — Estate owns the out-of-band applier thread; dropping it
+            // stops graph maintenance.
             let _tmp;
+            let _estate_keeper;
             let store: Arc<dyn Recall> = match store_kind.as_str() {
                 "estate" => {
                     let tmp = tempfile::tempdir()?;
                     let estate = connxism::Estate::open(tmp.path(), "bench")?;
-                    _tmp = tmp;
-                    Arc::new(estate.recall())
+                    let r: Arc<dyn Recall> = Arc::new(estate.recall());
+                    _tmp = Some(tmp);
+                    _estate_keeper = Some(estate);
+                    r
                 }
-                _ => Arc::new(FlatRecall::new()),
+                _ => {
+                    _tmp = None;
+                    _estate_keeper = None;
+                    Arc::new(FlatRecall::new())
+                }
             };
 
             let handle = spawn_ingest(
@@ -333,6 +342,15 @@ async fn main() -> anyhow::Result<()> {
 
             assert_eq!(stats.indexed as usize, total_docs, "all docs must index");
             assert_eq!(store.len().await? as usize, total_docs);
+
+            // Out-of-band index maintenance: wait for catch-up and report it
+            // honestly (durable ingest and searchable-at-full-speed are two
+            // different moments; both get printed).
+            let tq = Instant::now();
+            store.quiesce().await?;
+            let catchup = tq.elapsed().as_secs_f64();
+            println!("| index catch-up (quiesce) | {catchup:.2} s |");
+            println!("| time to fully indexed | {:.2} s |", secs + catchup);
 
             let mut lat = Vec::with_capacity(queries);
             let mut hit = 0usize;

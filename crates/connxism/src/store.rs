@@ -39,6 +39,7 @@ const ANN_MIN_CORPUS: usize = 1024;
 pub struct ConnXRecall {
     db: Db,
     ann: Arc<StdRwLock<AnnIndex>>,
+    pending: Arc<crate::pending::Pending>,
     writer: Arc<Mutex<()>>,
     params: Bm25Params,
 }
@@ -49,6 +50,7 @@ impl Estate {
         ConnXRecall {
             db: self.db.clone(),
             ann: self.ann.clone(),
+            pending: self.pending.clone(),
             writer: Arc::new(Mutex::new(())),
             params: Bm25Params::default(),
         }
@@ -88,7 +90,7 @@ impl Recall for ConnXRecall {
         // Serialize writers: counters/census are read-modify-write.
         let _guard = self.writer.lock().await;
         let db = self.db.clone();
-        let ann = self.ann.clone();
+        let pending = self.pending.clone();
         tokio::task::spawn_blocking(move || {
             // Two-phase: durable write commits first…
             let for_index: Vec<(Id, Embedding)> = records
@@ -96,11 +98,11 @@ impl Recall for ConnXRecall {
                 .map(|r| (r.id.clone(), r.embedding.clone()))
                 .collect();
             upsert_blocking(&db, records)?;
-            // …then the graph applies, before upsert returns — so a committed
-            // record is immediately searchable (read-your-writes).
-            let mut graph = ann.write().expect("ann lock");
+            // …then graph ops enqueue for the out-of-band applier. Ingest is
+            // never blocked by graph construction; searches stay correct by
+            // overlaying the pending set (read-your-writes).
             for (id, emb) in for_index {
-                graph.insert(id, &emb);
+                pending.push_upsert(id, emb);
             }
             Ok(())
         })
@@ -114,8 +116,9 @@ impl Recall for ConnXRecall {
         }
         let db = self.db.clone();
         let ann = self.ann.clone();
+        let pending = self.pending.clone();
         let q = query.clone();
-        tokio::task::spawn_blocking(move || dense_blocking(&db, &ann, &q, top_k, true))
+        tokio::task::spawn_blocking(move || dense_blocking(&db, &ann, &pending, &q, top_k, true))
             .await
             .map_err(|e| RrfError::Recall(format!("join: {e}")))?
     }
@@ -131,6 +134,7 @@ impl Recall for ConnXRecall {
         }
         let db = self.db.clone();
         let ann = self.ann.clone();
+        let pending = self.pending.clone();
         let params = self.params;
         let q = query.clone();
         let terms = content_tokens(query_text);
@@ -138,7 +142,7 @@ impl Recall for ConnXRecall {
 
         tokio::task::spawn_blocking(move || {
             // Two rankings over the same estate…
-            let dense = dense_blocking(&db, &ann, &q, depth, false)?;
+            let dense = dense_blocking(&db, &ann, &pending, &q, depth, false)?;
             let lexical = if terms.is_empty() {
                 Vec::new()
             } else {
@@ -182,11 +186,21 @@ impl Recall for ConnXRecall {
     async fn remove(&self, id: &Id) -> Result<()> {
         let _guard = self.writer.lock().await;
         let db = self.db.clone();
-        let ann = self.ann.clone();
+        let pending = self.pending.clone();
         let id = id.clone();
         tokio::task::spawn_blocking(move || {
             remove_blocking(&db, id.as_str())?;
-            ann.write().expect("ann lock").remove(&id);
+            pending.push_remove(id);
+            Ok(())
+        })
+        .await
+        .map_err(|e| RrfError::Recall(format!("join: {e}")))?
+    }
+
+    async fn quiesce(&self) -> Result<()> {
+        let pending = self.pending.clone();
+        tokio::task::spawn_blocking(move || {
+            pending.quiesce();
             Ok(())
         })
         .await
@@ -316,11 +330,14 @@ fn scan_postings(db: &Db, term: &str) -> Result<Postings> {
 }
 
 /// Dense search: the ANN graph above [`ANN_MIN_CORPUS`], exact scan below.
-/// When `fetch_payload` is false, candidates carry ids and scores only
-/// (fusion fetches winners' payloads afterwards).
+/// Graph results are merged with the **pending overlay** (not-yet-applied
+/// upserts scored exactly, pending removals masked) so a committed write is
+/// searchable before the applier reaches it. When `fetch_payload` is false,
+/// candidates carry ids and scores only (fusion fetches winners' payloads).
 fn dense_blocking(
     db: &Db,
     ann: &Arc<StdRwLock<AnnIndex>>,
+    pending: &Arc<crate::pending::Pending>,
     query: &Embedding,
     top_k: usize,
     fetch_payload: bool,
@@ -334,8 +351,23 @@ fn dense_blocking(
                 .into_iter()
                 .map(|(id, score)| (id.as_str().to_string(), score))
                 .collect();
+
+            // Overlay: pending wins by id; removals mask stale graph hits.
+            let (ups, dels) = pending.overlay(query);
+            if !ups.is_empty() || !dels.is_empty() {
+                use std::collections::HashSet;
+                let masked: HashSet<&str> = dels.iter().map(|d| d.as_str()).collect();
+                let overlaid: HashSet<&str> = ups.iter().map(|(id, _)| id.as_str()).collect();
+                scored.retain(|(id, _)| {
+                    !masked.contains(id.as_str()) && !overlaid.contains(id.as_str())
+                });
+                scored.extend(ups.into_iter().map(|(id, s)| (id.as_str().to_string(), s)));
+                scored.sort_by(|a, b| b.1.total_cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+                scored.truncate(top_k);
+            }
         } else {
-            // Tiny corpus: exact scan is faster and exact.
+            // Tiny corpus: exact scan of the durable vectors — already
+            // current (writes land in `vecs` before enqueueing), no overlay.
             let vecs_cf = db.cf(CF_VECS)?;
             scored = Vec::new();
             for item in db.0.iterator_cf(vecs_cf, rocksdb::IteratorMode::Start) {

@@ -10,6 +10,7 @@
 
 pub mod error;
 pub mod events;
+pub mod simd;
 pub mod text;
 pub mod traits;
 pub mod types;

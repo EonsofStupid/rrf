@@ -76,9 +76,13 @@ pub(crate) fn rocks_err(e: rocksdb::Error) -> RrfError {
 pub struct Estate {
     pub(crate) db: Db,
     /// The ANN graph over the estate's vectors. Two-phase by contract: the
-    /// `vecs` column family is the durable source of truth; this index is
-    /// applied after each committed write and rebuilt from `vecs` on open.
+    /// `vecs` column family is the durable source of truth; the graph is
+    /// applied **out-of-band** by the applier thread and rebuilt from `vecs`
+    /// on open. Searches overlay the pending set for read-your-writes.
     pub(crate) ann: Arc<StdRwLock<AnnIndex>>,
+    /// Not-yet-applied graph ops + the applier's signaling.
+    pub(crate) pending: Arc<crate::pending::Pending>,
+    applier: Option<std::thread::JoinHandle<()>>,
     info: EstateInfo,
 }
 
@@ -124,9 +128,15 @@ impl Estate {
             }
         }
 
+        let ann = Arc::new(StdRwLock::new(ann));
+        let pending = crate::pending::Pending::new();
+        let applier = pending.spawn_applier(ann.clone());
+
         Ok(Estate {
             db,
-            ann: Arc::new(StdRwLock::new(ann)),
+            ann,
+            pending,
+            applier: Some(applier),
             info,
         })
     }
@@ -317,6 +327,11 @@ impl Estate {
 
     // ---- internals -------------------------------------------------------------
 
+    /// Block until the applier has drained every pending graph op.
+    pub fn quiesce(&self) {
+        self.pending.quiesce();
+    }
+
     fn scan_json<T: serde::de::DeserializeOwned>(&self, cf: &str) -> Result<Vec<T>> {
         let handle = self.db.cf(cf)?;
         let mut out = Vec::new();
@@ -325,5 +340,16 @@ impl Estate {
             out.push(serde_json::from_slice(&v)?);
         }
         Ok(out)
+    }
+}
+
+impl Drop for Estate {
+    fn drop(&mut self) {
+        // Stop the applier cleanly; unapplied pendings are already durable in
+        // the vecs column family and reappear via rebuild-on-open.
+        self.pending.stop();
+        if let Some(handle) = self.applier.take() {
+            let _ = handle.join();
+        }
     }
 }

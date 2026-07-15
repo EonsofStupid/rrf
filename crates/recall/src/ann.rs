@@ -119,12 +119,7 @@ impl AnnIndex {
     }
 
     fn dist_to(&self, node: u32, query: &[f32]) -> f32 {
-        let v = self.vec_of(node);
-        let mut dot = 0.0f32;
-        for (a, b) in v.iter().zip(query) {
-            dot += a * b;
-        }
-        1.0 - dot
+        1.0 - rrf_core::simd::dot(self.vec_of(node), query)
     }
 
     fn next_level(&mut self) -> usize {
@@ -329,10 +324,7 @@ impl AnnIndex {
                 break;
             }
             let dominated = kept.iter().any(|s| {
-                let mut dot = 0.0f32;
-                for (a, b) in self.vec_of(c.node).iter().zip(self.vec_of(s.node)) {
-                    dot += a * b;
-                }
+                let dot = rrf_core::simd::dot(self.vec_of(c.node), self.vec_of(s.node));
                 (1.0 - dot) < c.dist
             });
             if !dominated {

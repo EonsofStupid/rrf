@@ -96,6 +96,13 @@ pub trait Recall: Send + Sync {
         let _ = id;
         Ok(())
     }
+
+    /// Wait until background index maintenance (if any) has caught up with
+    /// every accepted write. Stores with out-of-band index apply override
+    /// this; fully-synchronous stores are always caught up (the default).
+    async fn quiesce(&self) -> Result<()> {
+        Ok(())
+    }
 }
 
 /// True-relevance ordering over recall candidates. DevPULSE backbone: Nemotron.
