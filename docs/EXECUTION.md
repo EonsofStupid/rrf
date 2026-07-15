@@ -29,9 +29,9 @@ store doing *less* work over HTTP.
 | 1 | This outline | committed | ✅ |
 | 2 | **accuracy@k** in `rrf-bench`: planted golden docs (one unique-marked golden per query; accuracy = golden in top-k) | unit test on planting; metric printed + evented | ✅ estate **1.000**, mem-dense 0.936 (hybrid is the difference) |
 | 3 | **a2a remote path**: `rrf-bench --remote <addr>` queries a live `rrf` daemon over layer-2 TCP (full pipeline per query) | remote run returns identical accuracy to local; latency recorded | ✅ remote **1.000** == local; p50 191 ms vs 188 ms local (+3 ms for the wire); ingest 6,480 docs/sec over a2a |
-| 4 | **Baseline harness** (outside the tree): same corpus, same precomputed vectors, into ChromaDB embedded + ChromaDB HTTP server | baseline ingest/query/accuracy numbers emitted | ⬜ |
-| 5 | **The bake-off**: rrf (local + a2a) vs baseline (embedded + HTTP), identical inputs | results table + methodology in BENCHMARKS.md; no metric asserted without a run | ⬜ |
-| 6 | Green close: fmt/clippy/tests, baselines re-gated, commit+push | CI-green tree | ⬜ |
+| 4 | **Baseline harness** (outside the tree): same corpus, same precomputed vectors, into ChromaDB embedded + ChromaDB HTTP server | baseline ingest/query/accuracy numbers emitted | ✅ 566–586 docs/sec, acc 0.572–0.606, p50 3–5 ms |
+| 5 | **The bake-off**: rrf (local + a2a) vs baseline (embedded + HTTP), identical inputs | results table + methodology in BENCHMARKS.md; no metric asserted without a run | ✅ 11.7× durable ingest, 1.000 vs 0.606 accuracy, +3 ms wire cost; ANN latency gap quantified → P2 |
+| 6 | Green close: fmt/clippy/tests, baselines re-gated, commit+push | CI-green tree | ✅ |
 
 **Methodology guards (so the comparison is honest):**
 - Identical corpus and identical pre-computed vectors for both systems — this
@@ -52,4 +52,10 @@ quantization, sparse postings, payload filters. Gates in PLAN.md.
 ## Sprint log
 
 - **S1 opened 2026-07-15.** Sliver/RRD design recovered into ADR-0002 during
-  the sprint. Steps update here as their gates actually run.
+  the sprint.
+- **S1 closed 2026-07-15.** All six gates ran and passed; results recorded in
+  [BENCHMARKS.md](BENCHMARKS.md) §Bake-off. Headlines: hybrid accuracy
+  **1.000** (vs 0.572–0.606 baseline on identical inputs), **11.7×** durable
+  ingest, a2a wire cost **+3 ms** at identical accuracy. Known loss: exact-
+  scan query latency vs ANN (~190 ms vs 3–5 ms @ 50k) — quantified, feeds
+  Sprint 2 (P2 ANN).
