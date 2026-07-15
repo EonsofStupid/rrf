@@ -51,19 +51,13 @@ impl Reranker for LexicalReranker {
         }
 
         // Per-candidate tokenization + document frequencies across the set.
-        let docs: Vec<Vec<String>> = candidates
-            .iter()
-            .map(|c| content_tokens(&c.text))
-            .collect();
+        let docs: Vec<Vec<String>> = candidates.iter().map(|c| content_tokens(&c.text)).collect();
         let n = docs.len() as f32;
         let avgdl = (docs.iter().map(|d| d.len()).sum::<usize>() as f32 / n).max(1.0);
 
         let mut df: HashMap<&str, u32> = HashMap::new();
         for term in q_terms.iter().map(String::as_str) {
-            let count = docs
-                .iter()
-                .filter(|d| d.iter().any(|t| t == term))
-                .count() as u32;
+            let count = docs.iter().filter(|d| d.iter().any(|t| t == term)).count() as u32;
             df.insert(term, count);
         }
 
@@ -110,7 +104,10 @@ mod tests {
             Candidate::new("2", "a recipe for banana bread", 0.5),
             Candidate::new("3", "postgres upgrade migration steps and rollback", 0.5),
         ];
-        let out = rr.rerank("postgres migration upgrade", cands, 3).await.unwrap();
+        let out = rr
+            .rerank("postgres migration upgrade", cands, 3)
+            .await
+            .unwrap();
         assert_eq!(out[0].id.as_str(), "3");
         assert_eq!(out.last().unwrap().id.as_str(), "2");
     }

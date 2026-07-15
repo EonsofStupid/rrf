@@ -113,7 +113,10 @@ mod tests {
             "postgres migration upgrade rollback steps",
             1.0,
         )];
-        let r = c.classify("postgres migration upgrade", &ctx).await.unwrap();
+        let r = c
+            .classify("postgres migration upgrade", &ctx)
+            .await
+            .unwrap();
         assert!(r.ready);
     }
 

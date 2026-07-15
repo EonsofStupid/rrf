@@ -19,6 +19,7 @@ license = "LicenseRef-ReasonReady-Proprietary"
 authors = ["EonsofStupid <jessay@gmail.com>"]
 repository = "https://github.com/eonsofstupid/rrf"
 homepage = "https://github.com/eonsofstupid/rrf"
+publish = false
 
 [workspace.dependencies]
 # Internal crates
@@ -42,6 +43,10 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 futures = "0.3"
 uuid = { version = "1", features = ["v4", "serde"] }
+
+# Dev / test / bench
+proptest = "1"
+criterion = { version = "0.5", default-features = false, features = ["cargo_bench_support"] }
 
 [profile.release]
 lto = "thin"

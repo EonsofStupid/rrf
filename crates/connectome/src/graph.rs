@@ -71,7 +71,13 @@ impl ConnectomeGraph {
     }
 
     /// Add a node.
-    pub fn node(&mut self, id: impl Into<String>, kind: NodeKind, label: impl Into<String>, score: Option<f32>) {
+    pub fn node(
+        &mut self,
+        id: impl Into<String>,
+        kind: NodeKind,
+        label: impl Into<String>,
+        score: Option<f32>,
+    ) {
         self.nodes.push(Node {
             id: id.into(),
             kind,
@@ -81,7 +87,13 @@ impl ConnectomeGraph {
     }
 
     /// Add an edge.
-    pub fn edge(&mut self, from: impl Into<String>, to: impl Into<String>, kind: EdgeKind, weight: f32) {
+    pub fn edge(
+        &mut self,
+        from: impl Into<String>,
+        to: impl Into<String>,
+        kind: EdgeKind,
+        weight: f32,
+    ) {
         self.edges.push(Edge {
             from: from.into(),
             to: to.into(),

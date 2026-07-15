@@ -41,7 +41,12 @@ impl Connectome {
 
     /// Build the map for a single pass: the query, the pipeline, the ranked
     /// candidates, and the readiness verdict.
-    pub fn map(&self, query: &str, candidates: &[Candidate], readiness: &Readiness) -> ConnectomeGraph {
+    pub fn map(
+        &self,
+        query: &str,
+        candidates: &[Candidate],
+        readiness: &Readiness,
+    ) -> ConnectomeGraph {
         let mut g = ConnectomeGraph::new();
 
         // Query root.
@@ -67,11 +72,25 @@ impl Connectome {
         // Verdict.
         let verdict_label = format!(
             "{} ({:.0}%)",
-            if readiness.ready { "READY" } else { &readiness.label },
+            if readiness.ready {
+                "READY"
+            } else {
+                &readiness.label
+            },
             readiness.confidence * 100.0
         );
-        g.node("readiness", NodeKind::Readiness, verdict_label, Some(readiness.confidence));
-        g.edge("stage:classifier", "readiness", EdgeKind::Verdict, readiness.confidence);
+        g.node(
+            "readiness",
+            NodeKind::Readiness,
+            verdict_label,
+            Some(readiness.confidence),
+        );
+        g.edge(
+            "stage:classifier",
+            "readiness",
+            EdgeKind::Verdict,
+            readiness.confidence,
+        );
 
         g
     }

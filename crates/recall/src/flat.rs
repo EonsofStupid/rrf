@@ -85,7 +85,8 @@ impl Recall for FlatRecall {
         let mut scored: Vec<Candidate> = map
             .values()
             .map(|r| {
-                let mut c = Candidate::new(r.id.clone(), r.text.clone(), query.cosine(&r.embedding));
+                let mut c =
+                    Candidate::new(r.id.clone(), r.text.clone(), query.cosine(&r.embedding));
                 c.metadata = r.metadata.clone();
                 c
             })

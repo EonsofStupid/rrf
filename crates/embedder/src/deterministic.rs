@@ -31,9 +31,7 @@ impl DeterministicEmbedder {
 
     /// Construct with a chosen dimension (must be > 0).
     pub fn with_dim(dim: usize) -> Self {
-        Self {
-            dim: dim.max(1),
-        }
+        Self { dim: dim.max(1) }
     }
 
     fn embed_text(&self, text: &str) -> Embedding {
@@ -76,7 +74,10 @@ mod tests {
         let e = DeterministicEmbedder::new();
         let q = e.embed_one("the cat sat on the mat").await.unwrap();
         let near = e.embed_one("a cat is sitting on a mat").await.unwrap();
-        let far = e.embed_one("quantum chromodynamics lagrangian").await.unwrap();
+        let far = e
+            .embed_one("quantum chromodynamics lagrangian")
+            .await
+            .unwrap();
         assert!(q.cosine(&near) > q.cosine(&far));
         assert_eq!(q.dim(), DeterministicEmbedder::DEFAULT_DIM);
     }

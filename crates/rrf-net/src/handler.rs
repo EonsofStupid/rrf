@@ -26,7 +26,9 @@ pub struct PingHandler {
 impl Handler for PingHandler {
     async fn handle(&self, msg: Message) -> Result<Option<Message>> {
         if msg.verb == "ping" {
-            Ok(Some(msg.reply(serde_json::json!({ "pong": true, "node": self.me.as_str() }))))
+            Ok(Some(msg.reply(
+                serde_json::json!({ "pong": true, "node": self.me.as_str() }),
+            )))
         } else {
             Ok(None)
         }
