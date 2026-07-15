@@ -1,0 +1,11 @@
+[2m2026-07-15T23:57:57.203431Z[0m [32m INFO[0m [2mrrf[0m[2m:[0m event stream enabled (JSONL) [3mpath[0m[2m=[0m"/home/user/rrf/.rrf/events.jsonl"
+[2m2026-07-15T23:57:57.231966Z[0m [32m INFO[0m [2mrrf[0m[2m:[0m opened estate [3mestate[0m[2m=[0mrrf [3mnodes[0m[2m=[0m1 [3medges[0m[2m=[0m0
+[2m2026-07-15T23:57:57.232598Z[0m [32m INFO[0m [2mrrf[0m[2m:[0m seeded sample corpus [3mindexed[0m[2m=[0m6
+[2m2026-07-15T23:57:57.232607Z[0m [32m INFO[0m [2mrrf_flow::serve[0m[2m:[0m component [3mstage[0m[2m=[0m"embedder" [3mmodel[0m[2m=[0m"deterministic-hash"
+[2m2026-07-15T23:57:57.232611Z[0m [32m INFO[0m [2mrrf_flow::serve[0m[2m:[0m component [3mstage[0m[2m=[0m"recall" [3mmodel[0m[2m=[0m"flat-cosine"
+[2m2026-07-15T23:57:57.232612Z[0m [32m INFO[0m [2mrrf_flow::serve[0m[2m:[0m component [3mstage[0m[2m=[0m"reranker" [3mmodel[0m[2m=[0m"bm25-lexical"
+[2m2026-07-15T23:57:57.232614Z[0m [32m INFO[0m [2mrrf_flow::serve[0m[2m:[0m component [3mstage[0m[2m=[0m"classifier" [3mmodel[0m[2m=[0m"heuristic-coverage"
+[2m2026-07-15T23:57:57.232807Z[0m [32m INFO[0m [2mrrf_flow::serve[0m[2m:[0m a2a surface listening [3mbound[0m[2m=[0m127.0.0.1:7878
+[2m2026-07-15T23:57:57.232829Z[0m [32m INFO[0m [2mrrf_flow::serve[0m[2m:[0m reason ready — awaiting shutdown signal
+[2m2026-07-15T23:58:08.754791Z[0m [32m INFO[0m [2mrrf_flow::serve[0m[2m:[0m shutdown signal received — stopping [3msignal[0m[2m=[0m"SIGTERM"
+[2m2026-07-15T23:58:08.754887Z[0m [32m INFO[0m [2mrrf[0m[2m:[0m rrd baseline snapshot committed

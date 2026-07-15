@@ -26,12 +26,26 @@ async fn main() -> anyhow::Result<()> {
     // With RRF_ESTATE set, memory is the persistent kvs estate (hybrid
     // dense + lexical recall); otherwise the in-memory default. Swap in
     // DevPULSE components here as they land.
+    // RRD is the engine's front door: attached to every flow, baseline
+    // restored from the estate so predictions are warm from the first query.
+    let rrd = Arc::new(rrd::Rrd::new());
+
     // The estate must outlive the daemon: it owns the out-of-band ANN
     // applier thread (dropping it stops graph maintenance).
     let mut estate_handle: Option<Arc<connxism::Estate>> = None;
     let flow = match std::env::var("RRF_ESTATE").ok() {
         Some(path) => {
             let estate = Arc::new(connxism::Estate::open(&path, "rrf")?);
+            if let Some(snap) =
+                estate.get_component_json::<rrd::BaselineSnapshot>("rrd:baseline")?
+            {
+                tracing::info!(
+                    version = snap.version,
+                    observations = snap.observations,
+                    "rrd baseline restored"
+                );
+                rrd.restore_baseline(snap);
+            }
             let map = estate_map(&estate)?;
             tracing::info!(
                 estate = %estate.info().name,
@@ -40,12 +54,13 @@ async fn main() -> anyhow::Result<()> {
                 "opened estate"
             );
             let flow = ReasonReadyFlow::builder()
+                .rrd(rrd.clone())
                 .recall(Arc::new(estate.recall()))
                 .build();
             estate_handle = Some(estate);
             flow
         }
-        None => ReasonReadyFlow::default_engine(),
+        None => ReasonReadyFlow::builder().rrd(rrd.clone()).build(),
     };
     let n = flow.index(sample_corpus()).await?;
     tracing::info!(indexed = n, "seeded sample corpus");
@@ -56,6 +71,13 @@ async fn main() -> anyhow::Result<()> {
         estate: estate_handle,
     };
 
+    let estate_for_shutdown = opts.estate.clone();
     serve(Arc::new(flow), opts).await?;
+
+    // Commit the evolved baseline on the way out — the next boot restores it.
+    if let Some(estate) = estate_for_shutdown {
+        estate.put_component_json("rrd:baseline", &rrd.baseline_snapshot())?;
+        tracing::info!("rrd baseline snapshot committed");
+    }
     Ok(())
 }
