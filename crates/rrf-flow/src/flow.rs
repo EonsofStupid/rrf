@@ -11,6 +11,22 @@ use rrf_core::{
     Classifier, Document, Embedder, Recall, RecallResult, Reranker, Result, VectorRecord,
 };
 
+/// Emit one pipeline-stage event: the flow is one engine, and the event
+/// stream shows every stage of every pass (`flow.stage` + `flow.pass`).
+fn stage(name: &str, since: std::time::Instant, mut fields: serde_json::Value) {
+    if let Some(obj) = fields.as_object_mut() {
+        obj.insert(
+            "stage".to_string(),
+            serde_json::Value::String(name.to_string()),
+        );
+        obj.insert(
+            "ms".to_string(),
+            serde_json::json!(since.elapsed().as_micros() as f64 / 1000.0),
+        );
+    }
+    rrf_core::events::emit("flow.stage", fields);
+}
+
 /// How wide each stage runs.
 #[derive(Debug, Clone)]
 pub struct FlowConfig {
@@ -78,16 +94,48 @@ impl ReasonReadyFlow {
     /// lexical rankings (reciprocal rank fusion); pure vector stores fall back
     /// to dense search via the trait's default.
     pub async fn ask(&self, query: &str) -> Result<RecallResult> {
+        use std::time::Instant;
+        let pass = Instant::now();
+
+        let t = Instant::now();
         let q = self.embedder.embed_one(query).await?;
+        stage("embed", t, serde_json::json!({ "dim": q.dim() }));
+
+        let t = Instant::now();
         let recalled = self
             .recall
             .hybrid_search(query, &q, self.config.recall_k)
             .await?;
+        stage(
+            "recall",
+            t,
+            serde_json::json!({ "candidates": recalled.len() }),
+        );
+
+        let t = Instant::now();
         let ranked = self
             .reranker
             .rerank(query, recalled, self.config.rerank_k)
             .await?;
+        stage("rerank", t, serde_json::json!({ "kept": ranked.len() }));
+
+        let t = Instant::now();
         let readiness = self.classifier.classify(query, &ranked).await?;
+        stage(
+            "classify",
+            t,
+            serde_json::json!({ "ready": readiness.ready, "confidence": readiness.confidence }),
+        );
+
+        rrf_core::events::emit(
+            "flow.pass",
+            serde_json::json!({
+                "total_ms": pass.elapsed().as_millis() as u64,
+                "ready": readiness.ready,
+                "candidates": ranked.len(),
+            }),
+        );
+
         Ok(RecallResult {
             query: query.to_string(),
             candidates: ranked,

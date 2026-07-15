@@ -59,6 +59,30 @@ payload ──▶ shape inference ──▶ shape-cache lookup ──┬─ HIT 
   miss), `rrd.hit`, cache hit-rate as a DuckDB trend — the estate literally
   reports how "warmed up" its understanding of an operator's data is.
 
+## The gate ladder (canonical, 2026-07-15 — the operator's cascade)
+
+Every payload climbs a staged ladder; each tier costs ~an order of magnitude
+more than the last, so almost everything resolves cheap. Implemented in
+`rrd::gates`:
+
+| tier | budget | decides | status |
+|---|---|---|---|
+| source stamp | 1–10 µs | identity, session, project, mode, channel, source | ✅ `SourceStamp` on every RRO |
+| L0 deterministic | 10–50 µs | schema (shape), cached plan, taint, size, routing | ✅ (`l0_deterministic` + shape/plan inline cache) |
+| L1 lexical | 0.1–1 ms | unicode anomalies, secret signals, injection signals, operation/effect | ✅ (`l1_lexical`, one scan; flags never silently block) |
+| L2 semantic | 2–20 ms | intent hierarchy, ambiguity, domain, risk, confidence | ✅ core (semantic router on precomputed embedding + ambiguity margin; hierarchy 🔨) |
+| L3 action gate | at **every action** | fresh authorization, capability attenuation, confirmation | seam only (`ActionGate` trait) — lands with P5 auth |
+| L4 deep evaluation | concurrent | larger model, output inspection, behavioral analysis | seam only (`DeepEvaluator` trait) — lands with P7 DevPULSE |
+
+Session semantics (`rrd::trigger`): RRD fires on **conversation start** and
+on **idle-resume** — the re-orientation moments — then routes fresh context
+to intent: the operator *should* pick a mode (Dev / Creative / media), but
+the engine also detects "we need to be in X mode", switches, and the expert
+state absorbs the standing task list. Intent + tags are how RRD evolves.
+(Griff — the operator-voice layer that keeps the host's language plain for
+non-technical operators without rewarding underspecified work — consumes
+RROs + readiness; it lives host-side, not in this engine.)
+
 ## Design (phase P4)
 
 New crate **`rrd`** (component, depends only on `rrf-core`; estate

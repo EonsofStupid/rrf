@@ -26,7 +26,7 @@ use std::time::Instant;
 use embedder::DeterministicEmbedder;
 use recall::FlatRecall;
 use rrf_core::{Document, Embedder, Recall};
-use rrf_flow::{spawn_ingest, IngestConfig};
+use rrf_flow::{spawn_ingest, FlowConfig, IngestConfig, ReasonReadyFlow};
 use serde::{Deserialize, Serialize};
 
 /// The recorded shape of a run: configuration + headline numbers.
@@ -217,6 +217,7 @@ async fn main() -> anyhow::Result<()> {
     );
 
     let remote = opt_arg_str("--remote");
+    let full_flow = std::env::args().any(|a| a == "--full-flow");
     let embedder: Arc<dyn Embedder> = Arc::new(DeterministicEmbedder::new());
 
     // planted-v1 corpus: noise docs + one golden doc per query.
@@ -335,17 +336,40 @@ async fn main() -> anyhow::Result<()> {
 
             let mut lat = Vec::with_capacity(queries);
             let mut hit = 0usize;
-            for pq in &planted {
-                let emb = embedder.embed_one(&pq.query).await?;
-                let t = Instant::now();
-                let results = store.hybrid_search(&pq.query, &emb, top_k).await?;
-                lat.push(t.elapsed().as_micros());
-                assert!(
-                    !results.is_empty(),
-                    "queries over a populated store must hit"
-                );
-                let found = results.iter().any(|c| c.id.as_str() == pq.gold_id);
-                hit += usize::from(found);
+            if full_flow {
+                // The whole engine as one: embed → hybrid recall → rerank →
+                // classify per query, every stage evented (flow.stage).
+                let flow = ReasonReadyFlow::builder()
+                    .embedder(embedder.clone())
+                    .recall(store.clone())
+                    .config(FlowConfig {
+                        recall_k: top_k.max(20),
+                        rerank_k: top_k,
+                    })
+                    .build();
+                for pq in &planted {
+                    let t = Instant::now();
+                    let result = flow.ask(&pq.query).await?;
+                    lat.push(t.elapsed().as_micros());
+                    let found = result
+                        .candidates
+                        .iter()
+                        .any(|c| c.id.as_str() == pq.gold_id);
+                    hit += usize::from(found);
+                }
+            } else {
+                for pq in &planted {
+                    let emb = embedder.embed_one(&pq.query).await?;
+                    let t = Instant::now();
+                    let results = store.hybrid_search(&pq.query, &emb, top_k).await?;
+                    lat.push(t.elapsed().as_micros());
+                    assert!(
+                        !results.is_empty(),
+                        "queries over a populated store must hit"
+                    );
+                    let found = results.iter().any(|c| c.id.as_str() == pq.gold_id);
+                    hit += usize::from(found);
+                }
             }
             (stats.docs_per_sec, secs, lat, hit)
         }

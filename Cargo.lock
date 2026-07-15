@@ -757,6 +757,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "rrd"
+version = "0.0.1"
+dependencies = [
+ "embedder",
+ "proptest",
+ "rrf-core",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "rrf-core"
 version = "0.0.1"
 dependencies = [
