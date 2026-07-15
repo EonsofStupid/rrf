@@ -44,10 +44,16 @@ store doing *less* work over HTTP.
   re-demonstrate under this defined protocol, never as pre-accepted facts.
 - Single shared container, same run window, release builds; environment noted.
 
-## Sprint 2 — P2: Recall at scale (queued)
+## Sprint 2 — P2: Recall at scale (active)
 
-ANN (two-phase write path per the recovered merge-wiring pattern), SIMD,
-quantization, sparse postings, payload filters. Gates in PLAN.md.
+| # | Step | Verification gate | Status |
+|---|---|---|---|
+| 1 | ANN index (layered small-world graph, diversity heuristic, soft deletes) | recall@10 ≥ 0.95 vs exact (property test) | ✅ |
+| 2 | Estate integration, two-phase (durable vecs → post-commit apply → rebuild-on-open) | estate tests incl. persistence/reopen | ✅ |
+| 3 | Gate run @50k + @100k | accuracy 1.000 held; p50 **1.40 ms / 2.09 ms** (was 188.5 ms — 135×); baseline re-recorded | ✅ |
+| 4 | Ingest cost honesty | 8,883 → 488 docs/sec recorded; fix path = out-of-band graph apply (compaction-style) | ✅ recorded, fix queued |
+| 5 | SIMD kernels, scalar quantization, weighted sparse, payload filters | per-PLAN gates | ⬜ |
+| 6 | Out-of-band graph apply (restore ingest throughput) | ingest ≥ 5k docs/sec with ANN on; accuracy/latency held | ⬜ |
 
 ## Sprint log
 

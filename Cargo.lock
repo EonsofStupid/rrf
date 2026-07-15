@@ -228,6 +228,7 @@ version = "0.0.1"
 dependencies = [
  "async-trait",
  "proptest",
+ "recall",
  "rocksdb",
  "rrf-core",
  "serde",

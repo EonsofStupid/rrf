@@ -6,12 +6,15 @@
 //! through a cheap clone of the inner handle.
 
 use std::path::Path;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock as StdRwLock};
 
+use recall::{AnnConfig, AnnIndex};
 use rocksdb::{ColumnFamily, Options, DB};
-use rrf_core::{Result, RrfError};
+use rrf_core::{Embedding, Id, Result, RrfError};
 
-use crate::keys::{self, CF_CONNS, CF_META, CF_NODES, CF_TAGS, CF_TRENDS, COLUMN_FAMILIES};
+use crate::keys::{
+    self, CF_CONNS, CF_META, CF_NODES, CF_TAGS, CF_TRENDS, CF_VECS, COLUMN_FAMILIES,
+};
 use crate::model::{now_ms, ConnectorInfo, EstateInfo, NodeInfo, SyncState, TrendPoint, WarpPoint};
 
 /// Shared handle to the open database. Cloneable; all clones see one DB.
@@ -72,11 +75,17 @@ pub(crate) fn rocks_err(e: rocksdb::Error) -> RrfError {
 /// One operator estate: the kvs-connectome over a single RocksDB.
 pub struct Estate {
     pub(crate) db: Db,
+    /// The ANN graph over the estate's vectors. Two-phase by contract: the
+    /// `vecs` column family is the durable source of truth; this index is
+    /// applied after each committed write and rebuilt from `vecs` on open.
+    pub(crate) ann: Arc<StdRwLock<AnnIndex>>,
     info: EstateInfo,
 }
 
 impl Estate {
-    /// Open (or create) the estate at `path`.
+    /// Open (or create) the estate at `path`. Rebuilds the ANN graph from
+    /// the durable vector column family (the two-phase pattern's recovery
+    /// path — the graph is always reconstructible).
     pub fn open(path: impl AsRef<Path>, name: &str) -> Result<Self> {
         let mut opts = Options::default();
         opts.create_if_missing(true);
@@ -99,7 +108,27 @@ impl Estate {
             }
         };
 
-        Ok(Estate { db, info })
+        // Rebuild the ANN graph from durable vectors.
+        let mut ann = AnnIndex::new(AnnConfig::default());
+        {
+            let handle = db.cf(CF_VECS)?;
+            let mut rebuilt = 0u64;
+            for item in db.0.iterator_cf(handle, rocksdb::IteratorMode::Start) {
+                let (k, v) = item.map_err(rocks_err)?;
+                let id = Id::new(String::from_utf8_lossy(&k).into_owned());
+                ann.insert(id, &Embedding(keys::decode_vec(&v)));
+                rebuilt += 1;
+            }
+            if rebuilt > 0 {
+                tracing::info!(rebuilt, "ann graph rebuilt from durable vectors");
+            }
+        }
+
+        Ok(Estate {
+            db,
+            ann: Arc::new(StdRwLock::new(ann)),
+            info,
+        })
     }
 
     /// Estate metadata.

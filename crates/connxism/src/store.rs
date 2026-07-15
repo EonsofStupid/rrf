@@ -9,9 +9,10 @@
 //! read-modify-write, so writers serialize behind an async mutex.
 
 use std::collections::{BTreeMap, HashMap};
-use std::sync::Arc;
+use std::sync::{Arc, RwLock as StdRwLock};
 
 use async_trait::async_trait;
+use recall::AnnIndex;
 use rrf_core::text::content_tokens;
 use rrf_core::{Candidate, Embedding, Id, Recall, Result, RrfError, VectorRecord};
 use tokio::sync::Mutex;
@@ -29,19 +30,25 @@ const FUSION_DEPTH_FACTOR: usize = 4;
 /// The standard reciprocal-rank-fusion constant.
 const RRF_K: f32 = 60.0;
 
+/// Corpus size below which dense search scans exactly instead of using the
+/// graph (tiny corpora: the scan is faster and exact).
+const ANN_MIN_CORPUS: usize = 1024;
+
 /// Persistent, hybrid (dense + lexical) recall over an estate.
 #[derive(Clone)]
 pub struct ConnXRecall {
     db: Db,
+    ann: Arc<StdRwLock<AnnIndex>>,
     writer: Arc<Mutex<()>>,
     params: Bm25Params,
 }
 
 impl Estate {
-    /// The estate's recall store (shares this estate's database).
+    /// The estate's recall store (shares this estate's database and graph).
     pub fn recall(&self) -> ConnXRecall {
         ConnXRecall {
             db: self.db.clone(),
+            ann: self.ann.clone(),
             writer: Arc::new(Mutex::new(())),
             params: Bm25Params::default(),
         }
@@ -78,12 +85,27 @@ impl Recall for ConnXRecall {
         if records.is_empty() {
             return Ok(());
         }
-        // Serialize writers: postings updates are read-modify-write.
+        // Serialize writers: counters/census are read-modify-write.
         let _guard = self.writer.lock().await;
         let db = self.db.clone();
-        tokio::task::spawn_blocking(move || upsert_blocking(&db, records))
-            .await
-            .map_err(|e| RrfError::Recall(format!("join: {e}")))?
+        let ann = self.ann.clone();
+        tokio::task::spawn_blocking(move || {
+            // Two-phase: durable write commits first…
+            let for_index: Vec<(Id, Embedding)> = records
+                .iter()
+                .map(|r| (r.id.clone(), r.embedding.clone()))
+                .collect();
+            upsert_blocking(&db, records)?;
+            // …then the graph applies, before upsert returns — so a committed
+            // record is immediately searchable (read-your-writes).
+            let mut graph = ann.write().expect("ann lock");
+            for (id, emb) in for_index {
+                graph.insert(id, &emb);
+            }
+            Ok(())
+        })
+        .await
+        .map_err(|e| RrfError::Recall(format!("join: {e}")))?
     }
 
     async fn search(&self, query: &Embedding, top_k: usize) -> Result<Vec<Candidate>> {
@@ -91,8 +113,9 @@ impl Recall for ConnXRecall {
             return Ok(Vec::new());
         }
         let db = self.db.clone();
+        let ann = self.ann.clone();
         let q = query.clone();
-        tokio::task::spawn_blocking(move || dense_blocking(&db, &q, top_k, true))
+        tokio::task::spawn_blocking(move || dense_blocking(&db, &ann, &q, top_k, true))
             .await
             .map_err(|e| RrfError::Recall(format!("join: {e}")))?
     }
@@ -107,6 +130,7 @@ impl Recall for ConnXRecall {
             return Ok(Vec::new());
         }
         let db = self.db.clone();
+        let ann = self.ann.clone();
         let params = self.params;
         let q = query.clone();
         let terms = content_tokens(query_text);
@@ -114,7 +138,7 @@ impl Recall for ConnXRecall {
 
         tokio::task::spawn_blocking(move || {
             // Two rankings over the same estate…
-            let dense = dense_blocking(&db, &q, depth, false)?;
+            let dense = dense_blocking(&db, &ann, &q, depth, false)?;
             let lexical = if terms.is_empty() {
                 Vec::new()
             } else {
@@ -158,10 +182,15 @@ impl Recall for ConnXRecall {
     async fn remove(&self, id: &Id) -> Result<()> {
         let _guard = self.writer.lock().await;
         let db = self.db.clone();
-        let id = id.as_str().to_string();
-        tokio::task::spawn_blocking(move || remove_blocking(&db, &id))
-            .await
-            .map_err(|e| RrfError::Recall(format!("join: {e}")))?
+        let ann = self.ann.clone();
+        let id = id.clone();
+        tokio::task::spawn_blocking(move || {
+            remove_blocking(&db, id.as_str())?;
+            ann.write().expect("ann lock").remove(&id);
+            Ok(())
+        })
+        .await
+        .map_err(|e| RrfError::Recall(format!("join: {e}")))?
     }
 }
 
@@ -286,23 +315,38 @@ fn scan_postings(db: &Db, term: &str) -> Result<Postings> {
     Ok(out)
 }
 
-/// Dense cosine scan. When `fetch_payload` is false, candidates carry ids and
-/// scores only (fusion fetches winners' payloads afterwards).
+/// Dense search: the ANN graph above [`ANN_MIN_CORPUS`], exact scan below.
+/// When `fetch_payload` is false, candidates carry ids and scores only
+/// (fusion fetches winners' payloads afterwards).
 fn dense_blocking(
     db: &Db,
+    ann: &Arc<StdRwLock<AnnIndex>>,
     query: &Embedding,
     top_k: usize,
     fetch_payload: bool,
 ) -> Result<Vec<Candidate>> {
-    let vecs_cf = db.cf(CF_VECS)?;
-    let mut scored: Vec<(String, f32)> = Vec::new();
-    for item in db.0.iterator_cf(vecs_cf, rocksdb::IteratorMode::Start) {
-        let (k, v) = item.map_err(rocks_err)?;
-        let emb = Embedding(keys::decode_vec(&v));
-        scored.push((String::from_utf8_lossy(&k).into_owned(), query.cosine(&emb)));
+    let mut scored: Vec<(String, f32)>;
+    {
+        let graph = ann.read().expect("ann lock");
+        if graph.len() >= ANN_MIN_CORPUS {
+            scored = graph
+                .search(query, top_k, top_k.max(64))
+                .into_iter()
+                .map(|(id, score)| (id.as_str().to_string(), score))
+                .collect();
+        } else {
+            // Tiny corpus: exact scan is faster and exact.
+            let vecs_cf = db.cf(CF_VECS)?;
+            scored = Vec::new();
+            for item in db.0.iterator_cf(vecs_cf, rocksdb::IteratorMode::Start) {
+                let (k, v) = item.map_err(rocks_err)?;
+                let emb = Embedding(keys::decode_vec(&v));
+                scored.push((String::from_utf8_lossy(&k).into_owned(), query.cosine(&emb)));
+            }
+            scored.sort_by(|a, b| b.1.total_cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+            scored.truncate(top_k);
+        }
     }
-    scored.sort_by(|a, b| b.1.total_cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
-    scored.truncate(top_k);
 
     let mut out = Vec::with_capacity(scored.len());
     for (id, score) in scored {

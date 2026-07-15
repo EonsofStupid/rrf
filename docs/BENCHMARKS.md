@@ -99,6 +99,33 @@ produced by this protocol on this container — today's measured multiples are
 **11–15× durable, ~150× in-memory**, and the harness (not memory) is now the
 arbiter of every future claim.
 
+## P2: the ANN index lands (2026-07-15)
+
+Clean-authored layered small-world graph (`recall::AnnIndex`), integrated
+into the estate on the two-phase pattern (durable `vecs` CF is the source of
+truth; graph applied post-commit with read-your-writes; rebuilt from durable
+vectors on open). Unit gate: recall@10 ≥ 0.95 vs exact (property test).
+End-to-end, planted-v1, release, this container:
+
+| scale | metric | exact scan (before) | ANN (after) | change |
+|---|---|---|---|---|
+| 50k | query p50 (hybrid) | 188.5 ms | **1.40 ms** | **135×** |
+| 50k | accuracy@10 | 1.000 | **1.000** | held |
+| 100k | query p50 (hybrid) | ~380 ms (extrapolated O(N)) | **2.09 ms** | ~180× |
+| 100k | accuracy@10 | — | **1.000** | 500/500 goldens |
+| 100k | throughput | ~3 qps | **478 qps** | sequential, full hybrid |
+
+The engine now answers **faster than the popular baseline's pure-vector ANN
+(3.2–4.9 ms) while also running BM25 + reciprocal-rank fusion** — and keeps
+exact-retrieval accuracy the baseline could not reach (1.000 vs 0.572–0.606).
+
+**The honest cost:** durable ingest dropped 8,883 → 488 docs/sec — graph
+construction currently runs single-threaded inside the writer path
+(~2 ms/vector). Known, quantified, and the two-phase design already carries
+the fix: apply graph inserts out-of-band (compaction-style, the recovered
+reference pattern) and/or parallel batch build. That is the next
+optimization; until it lands, the recorded baseline reflects reality.
+
 ## Baselines & the regression gate
 
 Recorded container baselines live in `baselines/` (config + numbers, JSON).

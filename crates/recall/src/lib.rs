@@ -9,8 +9,10 @@
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
+mod ann;
 mod flat;
 
+pub use ann::{AnnConfig, AnnIndex};
 pub use flat::FlatRecall;
 
 /// Re-export so downstream crates can name the trait without a second dep.
