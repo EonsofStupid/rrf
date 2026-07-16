@@ -72,11 +72,18 @@ async fn candle() -> Option<CandleQwenEmbedder> {
     CandleQwenEmbedder::load(QwenEmbedConfig::new(dir)).ok()
 }
 
+/// `None` only when the var is unset. If it IS set, a connect failure is a
+/// **test failure**, not a skip.
+///
+/// The first version of this returned `.ok()`, which turned a real error (vLLM
+/// rejecting the model name with a 404) into a silent green skip. A test that
+/// hides a failure is worse than no test.
 async fn http(var: &str, kind: OpenAiKind) -> Option<OpenAiEmbedder> {
-    let ep = std::env::var(var).ok()?;
-    OpenAiEmbedder::connect(OpenAiEmbedConfig::new(ep, kind))
-        .await
-        .ok()
+    let ep = std::env::var(var).ok().filter(|s| !s.trim().is_empty())?;
+    match OpenAiEmbedder::connect(OpenAiEmbedConfig::new(&ep, kind)).await {
+        Ok(e) => Some(e),
+        Err(e) => panic!("{var}={ep} is set but connecting failed: {e}"),
+    }
 }
 
 #[tokio::test]
@@ -121,6 +128,66 @@ async fn vllm_ranking_is_sane() {
     };
     println!("vllm dim={}", v.dim());
     assert_diagonal_dominates("vllm", fingerprint(&v).await);
+}
+
+/// The strongest cross-engine check available: candle and vLLM running the
+/// **same weights**.
+///
+/// Because the model is identical, this is not a structural comparison — the
+/// vectors themselves must agree. Two independent implementations of Qwen3
+/// (my vendored Rust encoder vs vLLM's CUDA kernels) landing on the same vector
+/// means the whole contract is right in both: RoPE, GQA, the per-head q/k norms,
+/// last-token pooling, left padding, EOS, normalization. Nothing else in the
+/// suite can make that claim.
+///
+/// Requires vLLM serving the SAME dir as RRO_TEST_QWEN_WEIGHTS.
+#[tokio::test]
+#[ignore]
+async fn candle_and_vllm_agree_elementwise_on_same_model() {
+    let Some(c) = candle().await else {
+        eprintln!("SKIP: set RRO_TEST_QWEN_WEIGHTS");
+        return;
+    };
+    let Some(v) = http("RRO_TEST_VLLM", OpenAiKind::Vllm).await else {
+        eprintln!("SKIP: set RRO_TEST_VLLM");
+        return;
+    };
+    if c.dim() != v.dim() {
+        eprintln!(
+            "SKIP: vLLM serves dim {} but candle has {} — not the same model",
+            v.dim(),
+            c.dim()
+        );
+        return;
+    }
+
+    let docs = strings(&[
+        "The capital of China is Beijing.",
+        "Gravity is a force that attracts two bodies towards each other.",
+        "The cat sat on the mat.",
+    ]);
+    let cv = c.embed_documents(&docs).await.unwrap();
+    let vv = v.embed_documents(&docs).await.unwrap();
+
+    for (i, (a, b)) in cv.iter().zip(vv.iter()).enumerate() {
+        let sim = a.cosine(b);
+        println!("  doc {i}: candle vs vllm cosine = {sim:.6}");
+        assert!(
+            sim > 0.99,
+            "same model, same text, but candle and vLLM disagree (cosine {sim}) on doc {i} — \
+             one of the two implementations is wrong"
+        );
+    }
+
+    // Queries too: the instruction prefix must land identically on both paths.
+    let qs = strings(&QUERIES);
+    let cq = c.embed_queries(&qs).await.unwrap();
+    let vq = v.embed_queries(&qs).await.unwrap();
+    for (i, (a, b)) in cq.iter().zip(vq.iter()).enumerate() {
+        let sim = a.cosine(b);
+        println!("  query {i}: candle vs vllm cosine = {sim:.6}");
+        assert!(sim > 0.99, "query {i} diverged: {sim}");
+    }
 }
 
 /// The asymmetry must hold over HTTP too: the endpoint embeds exactly the text

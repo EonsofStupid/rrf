@@ -51,8 +51,14 @@ pub struct OpenAiEmbedConfig {
     pub endpoint: String,
     /// Which server (telemetry + defaults).
     pub kind: OpenAiKind,
-    /// `model` field in the request body.
-    pub model: String,
+    /// `model` field in the request body. `None` = discover it from
+    /// `/v1/models`.
+    ///
+    /// Engines disagree here: vLLM enforces the name (`The model 'local' does
+    /// not exist` → 404) while llama.cpp ignores it entirely. Any hardcoded
+    /// default is therefore wrong for one of them, so the default is to ask the
+    /// server what it serves.
+    pub model: Option<String>,
     /// Texts per HTTP request.
     pub batch: usize,
     /// Truncate + re-normalize to this dim (MRL). `None` = whatever the server
@@ -72,7 +78,7 @@ impl OpenAiEmbedConfig {
         OpenAiEmbedConfig {
             endpoint: endpoint.into(),
             kind,
-            model: "local".to_string(),
+            model: None,
             batch: 32,
             truncate_dim: None,
             query_task: None,
@@ -88,6 +94,8 @@ pub struct OpenAiEmbedder {
     host: String,
     port: u16,
     path: String,
+    /// The resolved model name actually sent on the wire.
+    model: String,
     dim: usize,
     name: String,
 }
@@ -102,12 +110,17 @@ impl OpenAiEmbedder {
     /// rather than at the first query.
     pub async fn connect(cfg: OpenAiEmbedConfig) -> Result<Self> {
         let (host, port, path) = parse_url(&cfg.endpoint)?;
-        let name = format!("{}-{}", cfg.kind.as_str(), cfg.model);
+        let model = match cfg.model.clone() {
+            Some(m) => m,
+            None => discover_model(&host, port, &path, cfg.timeout).await?,
+        };
+        let name = format!("{}-{}", cfg.kind.as_str(), short_model(&model));
         let mut me = OpenAiEmbedder {
             cfg,
             host,
             port,
             path,
+            model,
             dim: 0,
             name,
         };
@@ -156,7 +169,7 @@ impl OpenAiEmbedder {
 
     /// One POST. Returns raw vectors in request order.
     async fn request(&self, texts: &[String]) -> Result<Vec<Vec<f32>>> {
-        let body = serde_json::json!({ "input": texts, "model": self.cfg.model }).to_string();
+        let body = serde_json::json!({ "input": texts, "model": self.model }).to_string();
         let req = format!(
             "POST {} HTTP/1.1\r\nHost: {}:{}\r\nContent-Type: application/json\r\n\
              Content-Length: {}\r\nConnection: close\r\n\r\n{}",
@@ -167,29 +180,8 @@ impl OpenAiEmbedder {
             body
         );
 
-        let raw = tokio::time::timeout(self.cfg.timeout, async {
-            let mut stream = TcpStream::connect((self.host.as_str(), self.port))
-                .await
-                .map_err(|e| embed_err(format!("connect {}:{}: {e}", self.host, self.port)))?;
-            stream
-                .write_all(req.as_bytes())
-                .await
-                .map_err(|e| embed_err(format!("write: {e}")))?;
-            // Connection: close, so read to EOF — no chunked/keep-alive parsing.
-            let mut buf = Vec::new();
-            stream
-                .read_to_end(&mut buf)
-                .await
-                .map_err(|e| embed_err(format!("read: {e}")))?;
-            Ok::<_, RroError>(buf)
-        })
-        .await
-        .map_err(|_| {
-            embed_err(format!(
-                "{} timed out after {:?}",
-                self.cfg.endpoint, self.cfg.timeout
-            ))
-        })??;
+        // Connection: close, so read to EOF — no chunked/keep-alive parsing.
+        let raw = http_roundtrip(&self.host, self.port, &req, self.cfg.timeout).await?;
 
         let text = String::from_utf8_lossy(&raw);
         let (head, json) = text
@@ -210,6 +202,78 @@ impl OpenAiEmbedder {
 
         parse_embeddings(json, texts.len(), &self.cfg.endpoint)
     }
+}
+
+/// Ask the server what it serves and take the first model id.
+///
+/// llama.cpp answers with the full gguf path; vLLM with its
+/// `--served-model-name`. Either is correct for its own engine, which is the
+/// point: discovery works for both without the caller knowing which is behind
+/// the endpoint.
+async fn discover_model(host: &str, port: u16, path: &str, timeout: Duration) -> Result<String> {
+    // /v1/embeddings -> /v1/models
+    let models_path = match path.rfind('/') {
+        Some(i) => format!("{}/models", &path[..i]),
+        None => "/v1/models".to_string(),
+    };
+    let req = format!(
+        "GET {models_path} HTTP/1.1\r\nHost: {host}:{port}\r\nConnection: close\r\n\r\n"
+    );
+    let raw = http_roundtrip(host, port, &req, timeout).await?;
+    let text = String::from_utf8_lossy(&raw);
+    let json = text
+        .split_once("\r\n\r\n")
+        .map(|(_, b)| b)
+        .ok_or_else(|| embed_err("malformed /v1/models response"))?;
+    let v: serde_json::Value = serde_json::from_str(json)
+        .map_err(|e| embed_err(format!("parse /v1/models: {e}")))?;
+    // OpenAI shape: {"data":[{"id":...}]}. llama.cpp also exposes {"models":[{"name":...}]}.
+    let id = v
+        .get("data")
+        .and_then(|d| d.as_array())
+        .and_then(|a| a.first())
+        .and_then(|m| m.get("id"))
+        .and_then(|s| s.as_str())
+        .or_else(|| {
+            v.get("models")
+                .and_then(|d| d.as_array())
+                .and_then(|a| a.first())
+                .and_then(|m| m.get("name").or_else(|| m.get("id")))
+                .and_then(|s| s.as_str())
+        })
+        .ok_or_else(|| {
+            embed_err(format!(
+                "could not discover a model from {host}:{port}{models_path} — set the model \
+                 explicitly (RRO_EMBEDDER_MODEL)"
+            ))
+        })?;
+    Ok(id.to_string())
+}
+
+/// Trim a long model id (llama.cpp returns a full path) for telemetry.
+fn short_model(m: &str) -> String {
+    m.rsplit('/').next().unwrap_or(m).to_string()
+}
+
+/// One request/response over a fresh connection (`Connection: close`).
+async fn http_roundtrip(host: &str, port: u16, req: &str, timeout: Duration) -> Result<Vec<u8>> {
+    tokio::time::timeout(timeout, async {
+        let mut stream = TcpStream::connect((host, port))
+            .await
+            .map_err(|e| embed_err(format!("connect {host}:{port}: {e}")))?;
+        stream
+            .write_all(req.as_bytes())
+            .await
+            .map_err(|e| embed_err(format!("write: {e}")))?;
+        let mut buf = Vec::new();
+        stream
+            .read_to_end(&mut buf)
+            .await
+            .map_err(|e| embed_err(format!("read: {e}")))?;
+        Ok::<_, RroError>(buf)
+    })
+    .await
+    .map_err(|_| embed_err(format!("{host}:{port} timed out after {timeout:?}")))?
 }
 
 /// Pull `data[].embedding` out, preserving request order.
