@@ -43,23 +43,27 @@ fi
 if [[ "${RRO_EMBEDDER:-}" == candle* || "${RRO_RERANKER:-}" == candle* ]]; then
   FEATURES="--features candle"
   export RRO_DEVICE="${RRO_DEVICE:-cpu}"
+  # Which size from the catalog (see fetch-models.sh --list): 0.6b (baseline) | 4b | 8b.
+  EMBED_SIZE="${RRO_EMBED_SIZE:-0.6b}"
+  RERANK_SIZE="${RRO_RERANK_SIZE:-0.6b}"
+  MODELS_DIR="${RRO_MODELS_DIR:-$ROOT/models}"
   if [[ "${RRO_EMBEDDER:-}" == candle* ]]; then
     export RRO_EMBEDDER
-    export RRO_EMBEDDER_WEIGHTS="${RRO_EMBEDDER_WEIGHTS:-$ROOT/models/qwen3-embedding-0.6b}"
-    if ! "$ROOT/scripts/fetch-models.sh" --check embedder >/dev/null 2>&1; then
-      echo "── fetching embedder weights (first run) ──────────────────────"
-      RRO_MODELS_DIR="$(dirname "$RRO_EMBEDDER_WEIGHTS")" "$ROOT/scripts/fetch-models.sh" embedder
+    export RRO_EMBEDDER_WEIGHTS="${RRO_EMBEDDER_WEIGHTS:-$MODELS_DIR/qwen3-embedding-$EMBED_SIZE}"
+    if ! RRO_MODELS_DIR="$MODELS_DIR" "$ROOT/scripts/fetch-models.sh" --check "embed-$EMBED_SIZE" >/dev/null 2>&1; then
+      echo "── fetching embedder weights: embed-$EMBED_SIZE (first run) ────────"
+      RRO_MODELS_DIR="$MODELS_DIR" "$ROOT/scripts/fetch-models.sh" "embed-$EMBED_SIZE"
     fi
   fi
   if [[ "${RRO_RERANKER:-}" == candle* ]]; then
     export RRO_RERANKER
-    export RRO_RERANKER_WEIGHTS="${RRO_RERANKER_WEIGHTS:-$ROOT/models/qwen3-reranker-0.6b}"
-    if ! "$ROOT/scripts/fetch-models.sh" --check reranker >/dev/null 2>&1; then
-      echo "── fetching reranker weights (first run) ──────────────────────"
-      RRO_MODELS_DIR="$(dirname "$RRO_RERANKER_WEIGHTS")" "$ROOT/scripts/fetch-models.sh" reranker
+    export RRO_RERANKER_WEIGHTS="${RRO_RERANKER_WEIGHTS:-$MODELS_DIR/qwen3-reranker-$RERANK_SIZE}"
+    if ! RRO_MODELS_DIR="$MODELS_DIR" "$ROOT/scripts/fetch-models.sh" --check "rerank-$RERANK_SIZE" >/dev/null 2>&1; then
+      echo "── fetching reranker weights: rerank-$RERANK_SIZE (first run) ──────"
+      RRO_MODELS_DIR="$MODELS_DIR" "$ROOT/scripts/fetch-models.sh" "rerank-$RERANK_SIZE"
     fi
   fi
-  echo "models: embedder=${RRO_EMBEDDER:-deterministic} reranker=${RRO_RERANKER:-lexical} device=$RRO_DEVICE"
+  echo "models: embedder=${RRO_EMBEDDER:-deterministic}($EMBED_SIZE) reranker=${RRO_RERANKER:-lexical}($RERANK_SIZE) device=$RRO_DEVICE"
 fi
 
 echo "── building (release${FEATURES:+, $FEATURES}) ─────────────────────────"

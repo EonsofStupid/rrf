@@ -17,30 +17,56 @@ and is UNVERIFIED for real retrieval until this lands._
 
 ## 0.5 Turnkey: get the weights (one command)
 
-The base models are ~1.2 GB of safetensors each — too big to vendor in git — so
-they are pulled on demand and verified byte-exact:
+Weights are too big to vendor in git, so they are pulled on demand and verified
+byte-exact. `scripts/fetch-models.sh` is a size-aware **catalog** of the whole
+Qwen3 family (all apache-2.0):
+
+| name | HF repo | dim | approx |
+|---|---|---|---|
+| `embed-0.6b` (baseline) | `Qwen/Qwen3-Embedding-0.6B` | 1024 | 1.1 GB |
+| `embed-4b` | `Qwen/Qwen3-Embedding-4B` | 2560 | 7.5 GB |
+| `embed-8b` | `Qwen/Qwen3-Embedding-8B` | 4096 | 14 GB |
+| `rerank-0.6b` (baseline) | `Qwen/Qwen3-Reranker-0.6B` | — | 1.1 GB |
+| `rerank-4b` | `Qwen/Qwen3-Reranker-4B` | — | 7.5 GB |
+| `rerank-8b` | `Qwen/Qwen3-Reranker-8B` | — | 15 GB |
 
 ```sh
-./scripts/fetch-models.sh            # embedder + reranker -> ./models/
-./scripts/fetch-models.sh embedder   # or just one
-./scripts/fetch-models.sh --check    # verify what's on disk, download nothing
+./scripts/fetch-models.sh              # the baseline: embed-0.6b + rerank-0.6b
+./scripts/fetch-models.sh 4b           # both 4B models
+./scripts/fetch-models.sh embed-8b     # one model by name
+./scripts/fetch-models.sh --list       # the whole catalog with sizes
+./scripts/fetch-models.sh --check 4b   # verify on disk, download nothing
 ```
 
-It is idempotent and resumable (a byte-exact file is skipped; a partial one is
-resumed), prefers the `huggingface` CLI when present and falls back to
-`curl`/`wget`, and honors `HF_ENDPOINT` (mirror), `HF_REV`, and `HF_TOKEN`. The
-base models — `Qwen/Qwen3-Embedding-0.6B` and `Qwen/Qwen3-Reranker-0.6B`
-(both apache-2.0) — land in `models/qwen3-embedding-0.6b` and
-`models/qwen3-reranker-0.6b`.
+It is idempotent and resumable (a byte-exact file is skipped, a partial resumed —
+the 4B/8B ship as sharded safetensors and every shard is verified), prefers the
+`huggingface` CLI when present and falls back to `curl`/`wget`, and honors
+`HF_ENDPOINT` (mirror), `HF_REV`, and `HF_TOKEN`. Models land in
+`models/qwen3-embedding-<size>` / `models/qwen3-reranker-<size>`.
 
-Then either export `RRO_EMBEDDER=candle-qwen` + `RRO_EMBEDDER_WEIGHTS=…` and
-build `--features candle`, or let the quickstart do all of it:
+One-command boot, size-selectable:
 
 ```sh
-RRO_REAL=1 ./scripts/quickstart.sh   # fetch (if needed) -> build candle -> boot real models
+RRO_REAL=1 ./scripts/quickstart.sh                       # baseline (0.6b) on CPU
+RRO_REAL=1 RRO_EMBED_SIZE=4b RRO_DEVICE=cuda:0 ./scripts/quickstart.sh
 ```
 
-Whichever box the network policy blocks HF on (this dev container does), set
+### Recommended approach
+1. **Start on the 0.6B baseline.** It is CPU-runnable and is the intended
+   fine-tuning base — the fastest path to a *real*, honest bake-off.
+2. **Prove it before trusting a number:** run the card-reference gate
+   (`RRO_TEST_QWEN_WEIGHTS=models/qwen3-embedding-0.6b cargo test -p embedder
+   --features candle --test candle_qwen_gate -- --ignored`). It reproduces the
+   model card's exact similarity scores, so pooling/padding/prompt/EOS/norm are
+   all provably right at once.
+3. **Then scale for the quality ceiling.** 4B/8B are the same trait, the same
+   registry, zero flow change — but they want a GPU (an 8B loads as f32 on CPU =
+   ~32 GB RAM). Set `RRO_DEVICE=cuda:0`.
+4. **Fine-tunes are not in the catalog** — a fine-tuned checkpoint is just a
+   local weights dir; point `RRO_EMBEDDER_WEIGHTS` straight at it. Selection is
+   data (§2), so nothing else changes.
+
+Whichever box the network policy blocks HF on, set
 `HF_ENDPOINT=https://hf-mirror.com` or pre-stage `models/` from a box that can
 reach it — the loaders only ever read a local directory.
 
