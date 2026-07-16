@@ -74,8 +74,8 @@ Method: enumerated from the reference trees (`openapi.json` paths, gRPC
 |---|---|---|
 | Snapshots: create/list/download/upload/recover (full + per-collection + per-shard) | `Estate::snapshot_to` (checkpoint; opens as a working estate) | ✅ core |
 | Distributed: raft consensus, shards, replicas, transfers, recovery (`/cluster/*`) | warp-mesh scale-out | ⬜ P8 |
-| `/metrics` (prometheus), `/healthz` `/livez` `/readyz` | events ✅ + health surface | 🔨 P5 |
-| `/issues` (self-reported problems) | estate diagnostics from trends | ⬜ P5 |
+| `/metrics` (prometheus), `/healthz` `/livez` `/readyz` | zero-dep ops HTTP listener (`serve_ops`, daemon: `RRF_OPS_ADDR`) — prometheus 0.0.4 gauges incl. per-collection; probes 200 (gated over a real socket) + `health` a2a verb / `Client::health` | ✅ |
+| `/issues` (self-reported problems) | `Estate::issues(threshold)` — applier backlog, dim unset, feed/doc divergence — surfaced in the `health` verb and `rrf_issues_total` (gated: fires on backlog, clean when drained) | ✅ |
 | Telemetry endpoint | events/trends ✅ (DuckDB-native) | ✅ different-and-better |
 | API keys / RBAC / JWT | capability tokens on a2a ✅ (L3 v1); RBAC/JWT 🔨 | ✅ v1 |
 | Strict mode / resource limits | estate quotas | ⬜ P5 |

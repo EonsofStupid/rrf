@@ -23,6 +23,7 @@ mod estate_map;
 mod flow;
 mod handler;
 mod ingest;
+pub mod ops;
 mod sample;
 mod serve;
 

@@ -88,6 +88,12 @@ impl Pending {
         (ups, dels)
     }
 
+    /// How many graph ops are queued (plus one mid-apply, if any).
+    pub(crate) fn backlog(&self) -> usize {
+        let s = self.state.lock().expect("pending lock");
+        s.queue.len() + usize::from(s.applying)
+    }
+
     /// Block until every queued op has been applied to the graph.
     pub(crate) fn quiesce(&self) {
         let mut s = self.state.lock().expect("pending lock");

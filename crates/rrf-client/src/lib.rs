@@ -171,6 +171,12 @@ impl Client {
         Ok(cursor)
     }
 
+    /// The node's health snapshot: uptime, estate counters, self-reported
+    /// issues.
+    pub async fn health(&self) -> Result<serde_json::Value> {
+        self.call("health", serde_json::json!({})).await
+    }
+
     /// Pairwise cosine similarity among stored vectors (upper triangle).
     pub async fn similarity_matrix(&self, ids: &[String]) -> Result<Vec<(String, String, f32)>> {
         let body = self

@@ -152,6 +152,15 @@ paths); geo/datetime/uuid/full-text payload index types; nested filters.
 | 6 | `query_batch` + Euclid/Manhattan metrics on `Embedding` | ✅ batch ≡ sequential (asserted) | ✅ |
 | 7 | Green close + docs + push | fmt/clippy/test: 0 warnings, 41 suites green | ✅ |
 
+## Sprint 20 — Ops surface: health verb, /metrics + /healthz HTTP, issues
+
+| # | Step | Verification gate | Status |
+|---|---|---|---|
+| 1 | `Estate::health()` snapshot (docs, feed seq, applier backlog via new `Pending::backlog()`, collections, dims, quantized) + `Estate::issues(threshold)` self-report (dim unset with docs, applier backlog high, feed/doc-count divergence) | issues reports a planted applier backlog; healthy estate reports none | ✅ |
+| 2 | `health` a2a verb (uptime + estate snapshot) + `Client::health` | verb answers with live numbers over TCP | ✅ |
+| 3 | Zero-dep ops HTTP listener (`serve_ops`): GET `/metrics` (prometheus text), `/healthz` `/livez` `/readyz` (200 ok), 404 else; daemon mounts it via `RRF_OPS_ADDR` | raw-socket GET parses: 200 + `rrf_docs_total <n>` gauges; healthz 200 | ✅ |
+| 4 | Green close: fmt/clippy/test, PARITY A5 rows, BENCHMARKS note, push | full workspace green | ✅ |
+
 ## Sprint 19 — The sprint 12–18 surface over the wire + MCP
 
 | # | Step | Verification gate | Status |

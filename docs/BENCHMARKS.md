@@ -402,3 +402,23 @@ query then deletes clean, payload ops visible in local reads (and a bad
 target errors across the wire), drop_collection removes exactly its
 members. All verbs sit behind the same token gate as the rest of the
 surface.
+
+## Sprint 20: ops surface — health, /metrics, issues (2026-07-16)
+
+The estate now reports on itself: `Estate::health()` (docs, feed seq,
+live applier backlog via the new `Pending::backlog()`, collections, dims,
+quantization) and `Estate::issues(threshold)` (applier backlog, dim
+unset, feed/doc divergence). Surfaced twice: a `health` a2a verb
+(uptime + snapshot + issues, `Client::health`) and a **zero-dep** HTTP
+listener (`serve_ops`; daemon: `RRF_OPS_ADDR`) answering prometheus-0.0.4
+`/metrics` (gauges incl. per-collection doc counts) and `/healthz`
+`/livez` `/readyz` probes.
+
+Found and fixed by the gate: `health` initially read the estate-info
+snapshot cached at open — `dim` is written by the first upsert, so the
+cached copy was stale (reported null). Health now re-reads it from the
+database.
+
+Gates: health verb equals live counters over TCP; raw-socket HTTP GETs
+parse (every metrics line numeric, probes 200, 404/405 policed); issues
+fires on a planted backlog and is clean after quiesce.

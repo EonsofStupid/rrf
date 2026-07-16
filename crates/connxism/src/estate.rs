@@ -694,3 +694,86 @@ impl Estate {
         self.db.put_json(CF_META, keys::META_ALIASES, &aliases)
     }
 }
+
+/// A live snapshot of the estate's operational state.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct HealthReport {
+    /// Total indexed documents.
+    pub docs: u64,
+    /// Next changefeed sequence (== total feed rows ever written).
+    pub feed_seq: u64,
+    /// Graph ops awaiting the out-of-band applier.
+    pub applier_backlog: usize,
+    /// Named collections with member counts.
+    pub collections: Vec<(String, u64)>,
+    /// Default dense dimensionality (None until the first upsert).
+    pub dim: Option<usize>,
+    /// Named vector spaces and their dims.
+    pub named_dims: std::collections::BTreeMap<String, usize>,
+    /// Whether the ANN graph holds SQ8 codes.
+    pub quantized: bool,
+}
+
+/// One self-reported operational concern.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct Issue {
+    /// Stable machine code (e.g. `applier_backlog`).
+    pub code: String,
+    /// Human-readable detail.
+    pub detail: String,
+}
+
+impl Estate {
+    /// A live operational snapshot (cheap: counters + registry reads).
+    /// Estate info is re-read from the database — `dim`/`named_dims` are
+    /// written by upserts after open, so the boot-time copy goes stale.
+    pub fn health(&self) -> Result<HealthReport> {
+        let info: EstateInfo = self
+            .db
+            .get_json(CF_META, keys::META_ESTATE)?
+            .unwrap_or_else(|| self.info.clone());
+        Ok(HealthReport {
+            docs: self.db.get_u64(crate::keys::META_DOC_COUNT)?,
+            feed_seq: self.db.get_u64(crate::keys::META_FEED_SEQ)?,
+            applier_backlog: self.pending.backlog(),
+            collections: self.collections()?,
+            dim: info.dim,
+            named_dims: info.named_dims,
+            quantized: self.quantized,
+        })
+    }
+
+    /// Self-reported issues, derived from what the estate already tracks.
+    /// `backlog_threshold`: how many queued graph ops count as concerning.
+    pub fn issues(&self, backlog_threshold: usize) -> Result<Vec<Issue>> {
+        let h = self.health()?;
+        let mut out = Vec::new();
+        if h.applier_backlog > backlog_threshold {
+            out.push(Issue {
+                code: "applier_backlog".into(),
+                detail: format!(
+                    "{} graph ops queued (threshold {backlog_threshold}); searches stay \
+                     correct via the pending overlay but latency grows with the backlog",
+                    h.applier_backlog
+                ),
+            });
+        }
+        if h.docs > 0 && h.dim.is_none() {
+            out.push(Issue {
+                code: "dim_unset".into(),
+                detail: format!("{} docs but no recorded dimensionality", h.docs),
+            });
+        }
+        if h.feed_seq < h.docs {
+            out.push(Issue {
+                code: "feed_behind".into(),
+                detail: format!(
+                    "feed_seq {} < doc count {} — the changefeed should record at \
+                     least one row per document",
+                    h.feed_seq, h.docs
+                ),
+            });
+        }
+        Ok(out)
+    }
+}

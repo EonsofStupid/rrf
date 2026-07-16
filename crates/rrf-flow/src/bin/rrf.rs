@@ -72,6 +72,14 @@ async fn main() -> anyhow::Result<()> {
         token: std::env::var("RRF_TOKEN").ok(),
     };
 
+    // Ops HTTP surface (prometheus /metrics + health probes), when asked.
+    let mut _ops_task = None;
+    if let (Ok(ops_addr), Some(estate)) = (std::env::var("RRF_OPS_ADDR"), opts.estate.clone()) {
+        let (bound, task) = rrf_flow::ops::serve_ops(&ops_addr, estate).await?;
+        tracing::info!(%bound, "ops surface up: /metrics /healthz /livez /readyz");
+        _ops_task = Some(task);
+    }
+
     let estate_for_shutdown = opts.estate.clone();
     serve(Arc::new(flow), opts).await?;
 

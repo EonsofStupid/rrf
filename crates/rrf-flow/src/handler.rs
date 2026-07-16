@@ -18,6 +18,7 @@ pub struct FlowNode {
     estate: Option<Arc<connxism::Estate>>,
     token: Option<String>,
     me: NodeId,
+    started: std::time::Instant,
 }
 
 impl FlowNode {
@@ -28,6 +29,7 @@ impl FlowNode {
             estate: None,
             token: None,
             me: me.into(),
+            started: std::time::Instant::now(),
         }
     }
 
@@ -187,6 +189,26 @@ impl Handler for FlowNode {
                     .unwrap_or_default();
                 let total = self.flow.index(docs).await?;
                 Ok(Some(msg.reply(serde_json::json!({ "total": total }))))
+            }
+
+            // `health`: uptime + a live estate snapshot + self-reported
+            // issues. Body: {"backlog_threshold": 10000} (optional).
+            "health" => {
+                let uptime = self.started.elapsed().as_secs();
+                let mut body = serde_json::json!({
+                    "node": self.me.as_str(),
+                    "uptime_secs": uptime,
+                });
+                if let Some(estate) = &self.estate {
+                    let threshold = msg
+                        .body
+                        .get("backlog_threshold")
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(10_000) as usize;
+                    body["estate"] = serde_json::to_value(estate.health()?)?;
+                    body["issues"] = serde_json::to_value(estate.issues(threshold)?)?;
+                }
+                Ok(Some(msg.reply(body)))
             }
 
             // Estate admin + analytics verbs, sprint 12–18 surface. Every
