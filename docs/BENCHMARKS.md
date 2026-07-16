@@ -227,3 +227,19 @@ Wire gates (`cargo test -p rrf-client`): filter DSL binds over TCP (every
 hit satisfies the clause set), lean payloads arrive lean, recommend works
 remotely, estate-less nodes refuse `query` with a typed error, and the MCP
 binding answers `rrf_query` with DSL end-to-end through a spawned server.
+
+## Sprint 11: weighted sparse joins the fusion (2026-07-16)
+
+`SparseVector` (learned-sparse / custom term weights) is now a first-class
+signal: stored as one weighted posting row per (dimension, document) — the
+same blind-put LSM-native layout as the BM25 index — searched by exact
+accumulated dot product, and RRF-fused with the dense and lexical rankings
+in the typed query plane.
+
+Gates (`cargo test -p connxism --test sparse -- --nocapture`):
+- ranking AND scores equal brute-force sparse dots (≤1e-5) — 200 docs, 3 queries;
+- a planted df=1 dimension retrieves exactly its document; overwrite and
+  removal retract the rows (asserted);
+- a dense-invisible document surfaces in hybrid results **only** when the
+  query carries its sparse signal — three-way fusion measured doing its job;
+- sparse-only queries (no text, no dense vector) work standalone.

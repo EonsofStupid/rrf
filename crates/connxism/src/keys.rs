@@ -22,7 +22,7 @@
 /// All column families, in creation order.
 pub const COLUMN_FAMILIES: &[&str] = &[
     CF_META, CF_NODES, CF_CONNS, CF_DOCS, CF_VECS, CF_TERMS, CF_TAGS, CF_TRENDS, CF_RELS, CF_FEED,
-    CF_PIDX,
+    CF_PIDX, CF_SPARSE,
 ];
 
 /// Estate metadata + counters.
@@ -47,6 +47,8 @@ pub const CF_RELS: &str = "rels";
 pub const CF_FEED: &str = "feed";
 /// Payload secondary indexes: `field \x00 typed-value \x00 doc_id` → empty.
 pub const CF_PIDX: &str = "pidx";
+/// Weighted sparse postings: `dim (u32 BE) \x00 doc_id` → f32-LE weight.
+pub const CF_SPARSE: &str = "sparse";
 
 /// meta: the estate info blob.
 pub const META_ESTATE: &[u8] = b"estate";
@@ -273,6 +275,25 @@ pub fn pidx_value_prefix(field: &str, value: &serde_json::Value) -> Vec<u8> {
 pub fn pidx_num_prefix(field: &str) -> Vec<u8> {
     let mut k = prefix(field);
     k.push(PIDX_NUM);
+    k
+}
+
+/// Encode a sparse-postings row key: `dim (u32 BE) \x00 doc_id`. One row per
+/// (dimension, document) — blind puts, sorted prefix scans per dimension:
+/// the same LSM-native inverted layout as the BM25 postings, with weights.
+pub fn sparse_key(dim: u32, doc_id: &str) -> Vec<u8> {
+    let mut k = Vec::with_capacity(4 + 1 + doc_id.len());
+    k.extend_from_slice(&dim.to_be_bytes());
+    k.push(SEP);
+    k.extend_from_slice(doc_id.as_bytes());
+    k
+}
+
+/// Prefix that scans a sparse dimension's whole postings list.
+pub fn sparse_prefix(dim: u32) -> Vec<u8> {
+    let mut k = Vec::with_capacity(5);
+    k.extend_from_slice(&dim.to_be_bytes());
+    k.push(SEP);
     k
 }
 

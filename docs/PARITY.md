@@ -57,7 +57,7 @@ Method: enumerated from the reference trees (`openapi.json` paths, gRPC
 | HNSW-class ANN graph (m, ef_construct, ef) | `recall::AnnIndex` (recall@10 ≥ 0.95 gated; out-of-band build) | ✅ |
 | Plain (exact) index fallback | `FlatRecall` / estate scan | ✅ |
 | Quantization: scalar u8 / PQ / binary / 1.5-bit+2-bit (TQ) | `recall::quant` SQ8 + exact rescore from durable vectors (recall@10 0.976 measured, 3.4× smaller) | ✅ scalar; PQ/binary 🔨 P2.5 |
-| Sparse vectors + sparse index (inverted, on-disk variants) | weighted postings (`connxism`) | ✅ BM25 form → 🔨 P2 weighted |
+| Sparse vectors + sparse index (inverted, on-disk variants) | `SparseVector` contract + weighted postings CF (one row per (dim, doc), exact accumulated dot, RRF-fused with dense+lexical) | ✅ |
 | Multi-vector per point (named vectors, late-interaction/ColBERT-style) | multi-vector records | ⬜ P2.5 |
 | Payload field indexes ×8: keyword, integer, float, bool, geo, text (full-text), datetime, uuid | `pidx` CF, order-preserving typed keys (keyword/int/float/bool ✅, 9.8× vs scan measured) | ✅ core; geo/datetime/uuid/full-text 🔨 |
 | Filtering DSL (must/should/must_not, match/range/geo/nested, filtered KNN) | `Filter` (must/should/must_not × eq/any/range/exists), filter-first via `pidx` or post-filter | ✅; geo/nested 🔨 |

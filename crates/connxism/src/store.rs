@@ -72,6 +72,50 @@ impl ConnXRecall {
             .map_err(|e| RrfError::Recall(format!("join: {e}")))?
     }
 
+    /// Weighted sparse search: exact accumulated dot product between the
+    /// sparse query and every document carrying any of its dimensions —
+    /// sorted prefix scans per query dimension over the sparse postings.
+    pub async fn sparse_search(
+        &self,
+        query: &rrf_core::SparseVector,
+        top_k: usize,
+    ) -> Result<Vec<Candidate>> {
+        if query.is_empty() || top_k == 0 {
+            return Ok(Vec::new());
+        }
+        let db = self.db.clone();
+        let q = query.clone();
+        tokio::task::spawn_blocking(move || {
+            let sparse_cf = db.cf(keys::CF_SPARSE)?;
+            let mut scores: HashMap<String, f32> = HashMap::new();
+            for (dim, qw) in q.iter() {
+                let prefix = keys::sparse_prefix(dim);
+                for item in db.0.iterator_cf(
+                    sparse_cf,
+                    rocksdb::IteratorMode::From(&prefix, rocksdb::Direction::Forward),
+                ) {
+                    let (k, v) = item.map_err(rocks_err)?;
+                    if !k.starts_with(&prefix) {
+                        break;
+                    }
+                    let doc_id = String::from_utf8_lossy(&k[prefix.len()..]).into_owned();
+                    let mut b = [0u8; 4];
+                    b.copy_from_slice(&v[..4.min(v.len())]);
+                    *scores.entry(doc_id).or_insert(0.0) += qw * f32::from_le_bytes(b);
+                }
+            }
+            let mut ranked: Vec<(String, f32)> = scores.into_iter().collect();
+            ranked.sort_by(|a, b| b.1.total_cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+            ranked.truncate(top_k);
+            Ok(ranked
+                .into_iter()
+                .map(|(id, score)| Candidate::new(id, String::new(), score))
+                .collect())
+        })
+        .await
+        .map_err(|e| RrfError::Recall(format!("join: {e}")))?
+    }
+
     /// Lexical (BM25) search over the persistent inverted index.
     pub async fn lexical_search(&self, query: &str, top_k: usize) -> Result<Vec<Candidate>> {
         let db = self.db.clone();
@@ -324,16 +368,20 @@ fn upsert_blocking(db: &Db, records: Vec<VectorRecord>) -> Result<()> {
     let terms_cf = db.cf(CF_TERMS)?;
     let feed_cf = db.cf(CF_FEED)?;
     let pidx_cf = db.cf(CF_PIDX)?;
+    let sparse_cf = db.cf(keys::CF_SPARSE)?;
     let indexed_fields = crate::filter::indexed_fields(db)?;
 
     for r in records {
         let id = r.id.as_str().to_string();
 
-        // Overwrite semantics: retract the old version's postings, payload
-        // index rows, and counters.
+        // Overwrite semantics: retract the old version's postings (lexical
+        // and sparse), payload index rows, and counters.
         if let Some(old) = db.get_json::<StoredDoc>(CF_DOCS, id.as_bytes())? {
             for term in content_tokens(&old.text) {
                 batch.delete_cf(terms_cf, keys::term_key(&term, &id));
+            }
+            for dim in &old.sparse_dims {
+                batch.delete_cf(sparse_cf, keys::sparse_key(*dim, &id));
             }
             for field in &indexed_fields {
                 if let Some(v) = old.metadata.get(field) {
@@ -377,6 +425,16 @@ fn upsert_blocking(db: &Db, records: Vec<VectorRecord>) -> Result<()> {
             }
         }
 
+        // Weighted sparse postings — one row per (dim, doc), blind puts.
+        let mut sparse_dims = Vec::new();
+        if let Some(sv) = &r.sparse {
+            sparse_dims.reserve(sv.nnz());
+            for (dim, w) in sv.iter() {
+                batch.put_cf(sparse_cf, keys::sparse_key(dim, &id), w.to_le_bytes());
+                sparse_dims.push(dim);
+            }
+        }
+
         let doc = StoredDoc {
             id: id.clone(),
             text: r.text,
@@ -385,6 +443,7 @@ fn upsert_blocking(db: &Db, records: Vec<VectorRecord>) -> Result<()> {
             shape,
             token_len,
             connector_id: None,
+            sparse_dims,
         };
         batch.put_cf(docs_cf, id.as_bytes(), serde_json::to_vec(&doc)?);
         batch.put_cf(
@@ -568,6 +627,10 @@ fn remove_blocking(db: &Db, id: &str) -> Result<()> {
         if let Some(v) = old.metadata.get(&field) {
             batch.delete_cf(pidx_cf, keys::pidx_key(&field, v, id));
         }
+    }
+    let sparse_cf = db.cf(keys::CF_SPARSE)?;
+    for dim in &old.sparse_dims {
+        batch.delete_cf(sparse_cf, keys::sparse_key(*dim, id));
     }
     batch.delete_cf(db.cf(CF_DOCS)?, id.as_bytes());
     batch.delete_cf(db.cf(CF_VECS)?, id.as_bytes());

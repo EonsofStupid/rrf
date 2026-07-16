@@ -21,6 +21,9 @@ const FILTER_OVERFETCH: usize = 8;
 /// than over-fetch + post-filter; fall back.
 const INDEXED_SCOPE_MAX: usize = 4096;
 
+/// The standard reciprocal-rank-fusion constant (same as the hybrid path).
+const FUSION_RRF_K: f32 = 60.0;
+
 impl ConnXRecall {
     /// Execute a typed query. Strategy, in order: explicit scope wins;
     /// otherwise a fully-indexed filter resolves its exact id-set first and
@@ -46,15 +49,20 @@ impl ConnXRecall {
 
         // `prefiltered` = the candidate set already satisfies the filter
         // exactly (resolved from payload indexes); no post-filter needed.
+        // `allowed` = the id universe a scope or prefilter restricts to —
+        // any extra ranking fused in below must respect it too.
         let mut prefiltered = false;
+        let mut allowed: Option<std::collections::HashSet<String>> = None;
         let mut results = match &q.scope {
             Some(scope) => {
+                allowed = Some(scope.iter().cloned().collect());
                 self.scoped_search(&text, &vector, fetch, scope.clone())
                     .await?
             }
             None if !dsl.is_empty() => match crate::filter::ids_where(&self.db, &dsl)? {
                 Some(ids) if ids.len() <= INDEXED_SCOPE_MAX => {
                     prefiltered = true;
+                    allowed = Some(ids.iter().cloned().collect());
                     if ids.is_empty() {
                         Vec::new()
                     } else {
@@ -71,6 +79,39 @@ impl ConnXRecall {
                     .await?
             }
         };
+
+        // Weighted sparse: a third ranking, fused by reciprocal rank fusion
+        // with whatever the dense/lexical strategy produced.
+        if let Some(sv) = &q.sparse {
+            if !sv.is_empty() {
+                let mut sparse = self.sparse_search(sv, fetch).await?;
+                if let Some(allowed) = &allowed {
+                    sparse.retain(|c| allowed.contains(c.id.as_str()));
+                }
+                if !sparse.is_empty() {
+                    let lists = [
+                        results
+                            .iter()
+                            .map(|c| c.id.as_str().to_string())
+                            .collect::<Vec<_>>(),
+                        sparse
+                            .iter()
+                            .map(|c| c.id.as_str().to_string())
+                            .collect::<Vec<_>>(),
+                    ];
+                    let fused = crate::index::reciprocal_rank_fusion(&lists, FUSION_RRF_K);
+                    let mut out = Vec::with_capacity(fetch.min(fused.len()));
+                    for (id, score) in fused.into_iter().take(fetch) {
+                        if let Some(doc) = self.doc(&id).await? {
+                            let mut c = Candidate::new(doc.id, doc.text, score);
+                            c.metadata = doc.metadata;
+                            out.push(c);
+                        }
+                    }
+                    results = out;
+                }
+            }
+        }
 
         if !dsl.is_empty() && !prefiltered {
             // Lexical-path candidates may carry empty payloads; hydrate before

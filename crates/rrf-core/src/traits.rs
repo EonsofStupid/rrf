@@ -8,7 +8,7 @@
 use async_trait::async_trait;
 
 use crate::error::Result;
-use crate::types::{Candidate, Embedding, Id, Metadata, Readiness};
+use crate::types::{Candidate, Embedding, Id, Metadata, Readiness, SparseVector};
 
 /// A record as it lives in the recall store.
 #[derive(Debug, Clone)]
@@ -17,6 +17,9 @@ pub struct VectorRecord {
     pub id: Id,
     /// The dense vector.
     pub embedding: Embedding,
+    /// Optional weighted sparse vector (learned sparse / custom weights);
+    /// stores that maintain a sparse index use it for sparse retrieval.
+    pub sparse: Option<SparseVector>,
     /// The text this vector represents (returned in candidates).
     pub text: String,
     /// Structured metadata.
@@ -29,9 +32,16 @@ impl VectorRecord {
         VectorRecord {
             id: id.into(),
             embedding,
+            sparse: None,
             text: text.into(),
             metadata: Metadata::new(),
         }
+    }
+
+    /// Builder-style sparse vector attachment.
+    pub fn with_sparse(mut self, sparse: SparseVector) -> Self {
+        self.sparse = Some(sparse);
+        self
     }
 }
 

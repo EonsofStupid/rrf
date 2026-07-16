@@ -243,4 +243,8 @@ pub struct StoredDoc {
     /// Connector this document came from, if ingested via one.
     #[serde(default)]
     pub connector_id: Option<String>,
+    /// Sparse dimensions this document carries weights on (kept so an
+    /// overwrite or removal can retract its sparse-postings rows exactly).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sparse_dims: Vec<u32>,
 }

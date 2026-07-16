@@ -7,7 +7,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::types::{Embedding, Metadata};
+use crate::types::{Embedding, Metadata, SparseVector};
 
 /// One testable condition over a metadata field.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -195,6 +195,10 @@ pub struct EstateQuery {
     pub text: Option<String>,
     /// Dense query vector.
     pub vector: Option<Embedding>,
+    /// Weighted sparse query vector — fused with the dense/lexical rankings
+    /// by executors that maintain a sparse index.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sparse: Option<SparseVector>,
     /// Results wanted.
     pub top_k: usize,
     /// Metadata equality filter: every key must match exactly (legacy form;
@@ -220,6 +224,7 @@ impl Default for EstateQuery {
         EstateQuery {
             text: None,
             vector: None,
+            sparse: None,
             top_k: 0,
             filter: Metadata::new(),
             dsl: None,
@@ -254,6 +259,12 @@ impl EstateQuery {
     /// Add a metadata equality condition.
     pub fn must(mut self, key: impl Into<String>, value: serde_json::Value) -> Self {
         self.filter.insert(key.into(), value);
+        self
+    }
+
+    /// Attach a weighted sparse query vector (fused with the other rankings).
+    pub fn sparse_vector(mut self, sparse: SparseVector) -> Self {
+        self.sparse = Some(sparse);
         self
     }
 

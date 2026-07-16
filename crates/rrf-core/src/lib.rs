@@ -21,4 +21,5 @@ pub use query::{Condition, EstateQuery, Filter};
 pub use traits::{Classifier, Embedder, Recall, Reranker, VectorRecord};
 pub use types::{
     Candidate, Chunk, Document, Embedding, Id, Metadata, Query, Readiness, RecallResult,
+    SparseVector,
 };

@@ -152,6 +152,16 @@ paths); geo/datetime/uuid/full-text payload index types; nested filters.
 | 6 | `query_batch` + Euclid/Manhattan metrics on `Embedding` | ✅ batch ≡ sequential (asserted) | ✅ |
 | 7 | Green close + docs + push | fmt/clippy/test: 0 warnings, 41 suites green | ✅ |
 
+## Sprint 11 — Weighted sparse vectors + three-way fusion
+
+| # | Step | Verification gate | Status |
+|---|---|---|---|
+| 1 | `SparseVector` in the core contract (indices/values, merge-join dot); `VectorRecord.with_sparse`; `EstateQuery.sparse` rides the wire via serde | ✅ unit + serde covered by the existing contract tests | ✅ |
+| 2 | Sparse postings CF: one row per (dim BE, doc) → f32 weight — blind puts in the same WriteBatch; `StoredDoc.sparse_dims` retracts rows exactly on overwrite/remove | ✅ planted df=1 dimension hits exactly its doc; overwrite and remove retract | ✅ |
+| 3 | `sparse_search`: exact accumulated dot via per-dimension sorted prefix scans | ✅ rank order AND scores equal brute force (≤1e-5) on 200 docs × 3 queries | ✅ |
+| 4 | Query-plane fusion: sparse ranking RRF-fused with dense+lexical; respects scope/prefilter id universes; sparse-only queries work | ✅ dense-invisible doc surfaces only when the sparse half is present; sparse-only returns exactly the target | ✅ |
+| 5 | Green close + docs + push | fmt/clippy/test green across the workspace | ✅ |
+
 ## Sprint log
 
 - **S1 opened 2026-07-15.** Sliver/RRD design recovered into ADR-0002 during

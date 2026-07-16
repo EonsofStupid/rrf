@@ -168,6 +168,68 @@ impl Embedding {
     }
 }
 
+/// A weighted sparse vector: parallel `indices`/`values` arrays (a learned
+/// sparse representation — SPLADE-class expansions, custom term weights —
+/// or any high-dimensional mostly-zero signal).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct SparseVector {
+    /// The non-zero dimensions, ascending.
+    pub indices: Vec<u32>,
+    /// The weight at each dimension (same length as `indices`).
+    pub values: Vec<f32>,
+}
+
+impl SparseVector {
+    /// Build from (index, weight) pairs; sorts and de-duplicates by index
+    /// (last weight wins).
+    pub fn new(pairs: impl IntoIterator<Item = (u32, f32)>) -> Self {
+        let mut map: BTreeMap<u32, f32> = BTreeMap::new();
+        for (i, w) in pairs {
+            map.insert(i, w);
+        }
+        SparseVector {
+            indices: map.keys().copied().collect(),
+            values: map.values().copied().collect(),
+        }
+    }
+
+    /// Number of non-zero dimensions.
+    pub fn nnz(&self) -> usize {
+        self.indices.len()
+    }
+
+    /// Whether the vector carries no weight at all.
+    pub fn is_empty(&self) -> bool {
+        self.indices.is_empty()
+    }
+
+    /// Iterate (index, weight) pairs.
+    pub fn iter(&self) -> impl Iterator<Item = (u32, f32)> + '_ {
+        self.indices
+            .iter()
+            .copied()
+            .zip(self.values.iter().copied())
+    }
+
+    /// Sparse dot product (merge join over ascending indices).
+    pub fn dot(&self, other: &SparseVector) -> f32 {
+        let (mut i, mut j) = (0usize, 0usize);
+        let mut acc = 0.0f32;
+        while i < self.indices.len() && j < other.indices.len() {
+            match self.indices[i].cmp(&other.indices[j]) {
+                std::cmp::Ordering::Less => i += 1,
+                std::cmp::Ordering::Greater => j += 1,
+                std::cmp::Ordering::Equal => {
+                    acc += self.values[i] * other.values[j];
+                    i += 1;
+                    j += 1;
+                }
+            }
+        }
+        acc
+    }
+}
+
 /// A retrieval query.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Query {
