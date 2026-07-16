@@ -152,6 +152,16 @@ paths); geo/datetime/uuid/full-text payload index types; nested filters.
 | 6 | `query_batch` + Euclid/Manhattan metrics on `Embedding` | ✅ batch ≡ sequential (asserted) | ✅ |
 | 7 | Green close + docs + push | fmt/clippy/test: 0 warnings, 41 suites green | ✅ |
 
+## Sprint 23 — Lexical top-k: max-score pruning + postings fast path
+
+| # | Step | Verification gate | Status |
+|---|---|---|---|
+| 1 | Per-term document frequencies maintained **blind** via a RocksDB merge operator (`tdf` CF, i64 add: +1 per new (term,doc), −1 on retraction) — no read-modify-write, the LSM law holds | df counter equals actual postings count through upsert/overwrite/remove | ✅ |
+| 2 | Binary postings values (8-byte tf+len LE; JSON fallback read for pre-existing rows) — kills the per-row JSON parse on the hot path | old-format rows still score (fallback gated) | ✅ |
+| 3 | Max-score (Turtle–Flood-class, authored from the concept) lexical top-k: df point-reads → per-term upper bounds → essential-term scans + **point lookups** (term\x00doc) for non-essential terms; heap top-k. Falls back to the full scorer when df stats are absent | **exactness**: pruned top-k ids AND scores identical to the full scorer on selective, common-term, and mixed workloads (randomized corpora) | ✅ |
+| 4 | Measured before/after: featbench common-term hybrid + a mixed rare+common lexical bench — recorded honestly whatever the sizes | numbers in BENCHMARKS.md | ✅ |
+| 5 | Green close: fmt/clippy/test, commit, push | full workspace green | ✅ |
+
 ## Sprint 22 — Regression pass + feature-latency baseline
 
 | # | Step | Verification gate | Status |

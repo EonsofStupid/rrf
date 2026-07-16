@@ -277,7 +277,7 @@ impl ConnXRecall {
         if terms.is_empty() || top_k == 0 {
             return Ok(Vec::new());
         }
-        tokio::task::spawn_blocking(move || lexical_blocking(&db, params, &terms, top_k))
+        tokio::task::spawn_blocking(move || lexical_topk_blocking(&db, params, &terms, top_k))
             .await
             .map_err(|e| RrfError::Recall(format!("join: {e}")))?
     }
@@ -423,7 +423,7 @@ impl Recall for ConnXRecall {
             let lexical = if terms.is_empty() {
                 Vec::new()
             } else {
-                lexical_blocking(&db, params, &terms, depth)?
+                lexical_topk_blocking(&db, params, &terms, depth)?
             };
 
             // …fused by reciprocal rank fusion.
@@ -536,6 +536,7 @@ fn upsert_blocking(
     let nvecs_cf = db.cf(keys::CF_NVECS)?;
     let mvecs_cf = db.cf(keys::CF_MVECS)?;
     let coll_cf = db.cf(keys::CF_COLL)?;
+    let tdf_cf = db.cf(keys::CF_TDF)?;
     let indexed_fields = crate::filter::indexed_fields(db)?;
 
     // Auto-register any new collection names (writers already serialize).
@@ -593,8 +594,12 @@ fn upsert_blocking(
         // Overwrite semantics: retract the old version's postings (lexical
         // and sparse), payload index rows, and counters.
         if let Some(old) = db.get_json::<StoredDoc>(CF_DOCS, id.as_bytes())? {
+            let mut seen = std::collections::HashSet::new();
             for term in analyzer.analyze(&old.text) {
                 batch.delete_cf(terms_cf, keys::term_key(&term, &id));
+                if seen.insert(term.clone()) {
+                    batch.merge_cf(tdf_cf, term.as_bytes(), (-1i64).to_le_bytes());
+                }
             }
             for dim in &old.sparse_dims {
                 batch.delete_cf(sparse_cf, keys::sparse_key(*dim, &id));
@@ -627,15 +632,13 @@ fn upsert_blocking(
             *tf.entry(t).or_insert(0) += 1;
         }
         for (term, f) in tf {
-            let posting = Posting {
-                tf: f,
-                len: token_len,
-            };
-            batch.put_cf(
-                terms_cf,
-                keys::term_key(&term, &id),
-                serde_json::to_vec(&posting)?,
-            );
+            // Binary posting value: [tf u32 LE][len u32 LE].
+            let mut v = [0u8; 8];
+            v[..4].copy_from_slice(&f.to_le_bytes());
+            v[4..].copy_from_slice(&token_len.to_le_bytes());
+            batch.put_cf(terms_cf, keys::term_key(&term, &id), v);
+            // One df delta per unique (term, doc) — a blind merge.
+            batch.merge_cf(tdf_cf, term.as_bytes(), 1i64.to_le_bytes());
         }
 
         let shape = Shape::of(&r.metadata);
@@ -726,6 +729,19 @@ fn upsert_blocking(
     db.0.write(batch).map_err(rocks_err)
 }
 
+/// Decode a posting value: 8-byte binary (tf, len — the current format)
+/// or the JSON rows estates wrote before the binary format existed.
+fn decode_posting(v: &[u8]) -> Result<Posting> {
+    if v.len() == 8 {
+        Ok(Posting {
+            tf: u32::from_le_bytes(v[..4].try_into().expect("4 bytes")),
+            len: u32::from_le_bytes(v[4..].try_into().expect("4 bytes")),
+        })
+    } else {
+        Ok(serde_json::from_slice(v)?)
+    }
+}
+
 /// Prefix-scan a term's postings rows.
 fn scan_postings(db: &Db, term: &str) -> Result<Postings> {
     let terms_cf = db.cf(CF_TERMS)?;
@@ -740,8 +756,7 @@ fn scan_postings(db: &Db, term: &str) -> Result<Postings> {
             break;
         }
         let doc_id = String::from_utf8_lossy(&k[prefix.len()..]).into_owned();
-        let posting: Posting = serde_json::from_slice(&v)?;
-        out.push((doc_id, posting));
+        out.push((doc_id, decode_posting(&v)?));
     }
     Ok(out)
 }
@@ -831,6 +846,133 @@ fn dense_blocking(
     Ok(out)
 }
 
+/// One term's BM25 contribution for a posting.
+#[inline(always)]
+fn bm25_term(params: Bm25Params, idf: f32, p: Posting, avgdl: f32) -> f32 {
+    let f = p.tf as f32;
+    let dl = p.len as f32;
+    idf * (f * (params.k1 + 1.0)) / (f + params.k1 * (1.0 - params.b + params.b * dl / avgdl))
+}
+
+/// Max-score lexical top-k (authored from the Turtle–Flood concept):
+/// document frequencies come from the blind `tdf` counters, giving each
+/// term an idf and a per-doc score upper bound BEFORE any scan. Terms are
+/// processed in descending upper bound; once the current k-th accumulator
+/// exceeds the summed bounds of the unprocessed terms, no unseen document
+/// can reach the top-k — the remaining (typically most common) terms are
+/// resolved by POINT LOOKUPS for the accumulated candidates instead of
+/// full postings scans. Exact by construction: accumulators only grow,
+/// and every candidate's final score is completed before ranking.
+/// Falls back to the full scorer on estates without df stats.
+fn lexical_topk_blocking(
+    db: &Db,
+    params: Bm25Params,
+    terms: &[String],
+    top_k: usize,
+) -> Result<Vec<Candidate>> {
+    let meta_cf = db.cf(CF_META)?;
+    if db
+        .0
+        .get_cf(meta_cf, keys::META_LEXSTATS)
+        .map_err(rocks_err)?
+        .is_none()
+    {
+        return lexical_blocking(db, params, terms, top_k);
+    }
+    let n_docs = db.get_u64(META_DOC_COUNT)?;
+    let total_tokens = db.get_u64(META_TOTAL_TOKENS)?;
+    if n_docs == 0 || top_k == 0 {
+        return Ok(Vec::new());
+    }
+    let n = n_docs as f32;
+    let avgdl = (total_tokens as f32 / n).max(1.0);
+
+    // Term stats: df from the merged counters → idf → upper bound.
+    let tdf_cf = db.cf(keys::CF_TDF)?;
+    let mut infos: Vec<(String, f32, f32)> = Vec::new(); // (term, idf, ub)
+    let mut seen = std::collections::HashSet::new();
+    for t in terms {
+        if !seen.insert(t.clone()) {
+            continue;
+        }
+        let df =
+            db.0.get_cf(tdf_cf, t.as_bytes())
+                .map_err(rocks_err)?
+                .map(|b| {
+                    let mut a = [0u8; 8];
+                    a[..b.len().min(8)].copy_from_slice(&b[..b.len().min(8)]);
+                    i64::from_le_bytes(a)
+                })
+                .unwrap_or(0);
+        if df <= 0 {
+            continue; // term absent from the corpus
+        }
+        let idf = (((n - df as f32 + 0.5) / (df as f32 + 0.5)) + 1.0)
+            .ln()
+            .max(0.0);
+        infos.push((t.clone(), idf, idf * (params.k1 + 1.0)));
+    }
+    if infos.is_empty() {
+        return Ok(Vec::new());
+    }
+    // Highest upper bound first: rare, informative terms scan first.
+    infos.sort_by(|a, b| b.2.total_cmp(&a.2));
+
+    let terms_cf = db.cf(CF_TERMS)?;
+    let mut acc: HashMap<String, f32> = HashMap::new();
+    let mut kth_floor = 0.0f32;
+
+    let mut idx = 0usize;
+    while idx < infos.len() {
+        let remaining_ub: f32 = infos[idx..].iter().map(|x| x.2).sum();
+        if acc.len() >= top_k && kth_floor > remaining_ub {
+            break; // no unseen doc can reach the top-k
+        }
+        let (term, idf, _) = &infos[idx];
+        let prefix = keys::term_prefix(term);
+        for item in db.0.iterator_cf(
+            terms_cf,
+            rocksdb::IteratorMode::From(&prefix, rocksdb::Direction::Forward),
+        ) {
+            let (k, v) = item.map_err(rocks_err)?;
+            if !k.starts_with(&prefix) {
+                break;
+            }
+            let doc_id = String::from_utf8_lossy(&k[prefix.len()..]).into_owned();
+            *acc.entry(doc_id).or_insert(0.0) +=
+                bm25_term(params, *idf, decode_posting(&v)?, avgdl);
+        }
+        idx += 1;
+        // Refresh the k-th floor (a valid lower bound: accumulators only grow).
+        if acc.len() >= top_k {
+            let mut vals: Vec<f32> = acc.values().copied().collect();
+            let kidx = top_k - 1;
+            vals.select_nth_unstable_by(kidx, |a, b| b.total_cmp(a));
+            kth_floor = vals[kidx];
+        }
+    }
+
+    // Pruned tail: complete every candidate's score by point lookups.
+    for (term, idf, _) in &infos[idx..] {
+        for (doc_id, score) in acc.iter_mut() {
+            if let Some(v) =
+                db.0.get_cf(terms_cf, keys::term_key(term, doc_id))
+                    .map_err(rocks_err)?
+            {
+                *score += bm25_term(params, *idf, decode_posting(&v)?, avgdl);
+            }
+        }
+    }
+
+    let mut ranked: Vec<(String, f32)> = acc.into_iter().collect();
+    ranked.sort_by(|a, b| b.1.total_cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    ranked.truncate(top_k);
+    Ok(ranked
+        .into_iter()
+        .map(|(id, score)| Candidate::new(id, String::new(), score))
+        .collect())
+}
+
 fn lexical_blocking(
     db: &Db,
     params: Bm25Params,
@@ -873,8 +1015,13 @@ pub(crate) fn remove_blocking(
 
     let mut batch = rocksdb::WriteBatch::default();
     let terms_cf = db.cf(CF_TERMS)?;
+    let tdf_cf = db.cf(keys::CF_TDF)?;
+    let mut seen = std::collections::HashSet::new();
     for term in analyzer.analyze(&old.text) {
         batch.delete_cf(terms_cf, keys::term_key(&term, id));
+        if seen.insert(term.clone()) {
+            batch.merge_cf(tdf_cf, term.as_bytes(), (-1i64).to_le_bytes());
+        }
     }
     let pidx_cf = db.cf(CF_PIDX)?;
     for field in crate::filter::indexed_fields(db)? {

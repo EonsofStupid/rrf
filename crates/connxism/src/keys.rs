@@ -22,7 +22,7 @@
 /// All column families, in creation order.
 pub const COLUMN_FAMILIES: &[&str] = &[
     CF_META, CF_NODES, CF_CONNS, CF_DOCS, CF_VECS, CF_TERMS, CF_TAGS, CF_TRENDS, CF_RELS, CF_FEED,
-    CF_PIDX, CF_SPARSE, CF_NVECS, CF_MVECS, CF_COLL,
+    CF_PIDX, CF_SPARSE, CF_NVECS, CF_MVECS, CF_COLL, CF_TDF,
 ];
 
 /// Estate metadata + counters.
@@ -57,6 +57,11 @@ pub const CF_MVECS: &str = "mvecs";
 /// Collection membership: `collection \x00 doc_id` → empty (presence =
 /// membership). Blind puts; a sorted prefix scan walks one collection.
 pub const CF_COLL: &str = "coll";
+/// Per-term document frequencies: term → i64 LE, maintained **blind**
+/// through a RocksDB associative merge operator (+1 / −1 deltas) — the
+/// stats that make max-score pruning possible without breaking the
+/// no-read-modify-write law.
+pub const CF_TDF: &str = "tdf";
 
 /// meta: the estate info blob.
 pub const META_ESTATE: &[u8] = b"estate";
@@ -70,6 +75,10 @@ pub const META_SHAPES: &[u8] = b"shapes";
 pub const META_FEED_SEQ: &[u8] = b"feed_seq";
 /// meta: JSON array of payload-indexed metadata field names.
 pub const META_PIDX: &[u8] = b"payload_indexes";
+/// meta: present (=1) when the estate has maintained `tdf` stats since
+/// creation — the precondition for the pruned lexical scorer. Estates
+/// indexed before the stats existed keep the full-scan path.
+pub const META_LEXSTATS: &[u8] = b"lexical_stats_v1";
 
 /// Separator between compound-key segments (never appears in ids/tags/metrics).
 pub const SEP: u8 = 0x00;

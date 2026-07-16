@@ -67,6 +67,24 @@ impl Db {
     }
 }
 
+/// Associative merge: value = existing + Σ operand (i64 LE deltas).
+fn merge_i64_add(
+    _key: &[u8],
+    existing: Option<&[u8]>,
+    operands: &rocksdb::MergeOperands,
+) -> Option<Vec<u8>> {
+    let read = |b: &[u8]| -> i64 {
+        let mut a = [0u8; 8];
+        a[..b.len().min(8)].copy_from_slice(&b[..b.len().min(8)]);
+        i64::from_le_bytes(a)
+    };
+    let mut acc = existing.map(read).unwrap_or(0);
+    for op in operands {
+        acc += read(op);
+    }
+    Some(acc.to_le_bytes().to_vec())
+}
+
 /// Map RocksDB errors into the engine error type.
 pub(crate) fn rocks_err(e: rocksdb::Error) -> RrfError {
     RrfError::Recall(format!("kvs: {e}"))
@@ -120,7 +138,19 @@ impl Estate {
         opts.create_if_missing(true);
         opts.create_missing_column_families(true);
 
-        let db = DB::open_cf(&opts, path.as_ref(), COLUMN_FAMILIES).map_err(rocks_err)?;
+        // Per-CF options: `tdf` carries an associative merge operator so
+        // document-frequency counters update as blind merge writes.
+        let descriptors: Vec<rocksdb::ColumnFamilyDescriptor> = COLUMN_FAMILIES
+            .iter()
+            .map(|name| {
+                let mut cf_opts = Options::default();
+                if *name == keys::CF_TDF {
+                    cf_opts.set_merge_operator_associative("i64_add", merge_i64_add);
+                }
+                rocksdb::ColumnFamilyDescriptor::new(*name, cf_opts)
+            })
+            .collect();
+        let db = DB::open_cf_descriptors(&opts, path.as_ref(), descriptors).map_err(rocks_err)?;
         let db = Db(Arc::new(db));
 
         let info = match db.get_json::<EstateInfo>(CF_META, keys::META_ESTATE)? {
@@ -135,6 +165,10 @@ impl Estate {
                     analyzer: config.analyzer.clone(),
                 };
                 db.put_json(CF_META, keys::META_ESTATE, &fresh)?;
+                // Fresh estate: df stats are maintained from the first write,
+                // unlocking the pruned lexical scorer.
+                db.0.put_cf(db.cf(CF_META)?, keys::META_LEXSTATS, 1u64.to_le_bytes())
+                    .map_err(rocks_err)?;
                 fresh
             }
         };
@@ -775,5 +809,23 @@ impl Estate {
             });
         }
         Ok(out)
+    }
+}
+
+impl Estate {
+    /// The blind-maintained document frequency of one term (diagnostics;
+    /// the pruned lexical scorer's input).
+    pub fn term_df(&self, term: &str) -> Result<i64> {
+        Ok(self
+            .db
+            .0
+            .get_cf(self.db.cf(keys::CF_TDF)?, term.as_bytes())
+            .map_err(rocks_err)?
+            .map(|b| {
+                let mut a = [0u8; 8];
+                a[..b.len().min(8)].copy_from_slice(&b[..b.len().min(8)]);
+                i64::from_le_bytes(a)
+            })
+            .unwrap_or(0))
     }
 }

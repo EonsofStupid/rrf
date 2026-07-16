@@ -67,7 +67,10 @@ async fn main() {
                 let mut r = VectorRecord::new(
                     format!("d{i:05}"),
                     vec_of(i as u64),
-                    format!("feature corpus entry number {i} with shared vocabulary"),
+                    format!(
+                        "feature corpus entry number {i} grp{} with shared vocabulary",
+                        i % 500
+                    ),
                 );
                 r.metadata
                     .insert("team".into(), serde_json::json!(format!("team{}", i % 40)));
@@ -126,6 +129,25 @@ async fn main() {
             r.query(EstateQuery::hybrid(
                 "feature corpus entry",
                 vec_of(1_000_000 + i as u64),
+                10,
+            ))
+            .await
+            .unwrap()
+            .len()
+        }
+    })
+    .await;
+
+    // Selective + common: the group token hits ~100 docs (df=100), the
+    // rest of the query is maximally common. Once the top-k floor arms
+    // after the selective scan, max-score resolves the common terms by
+    // point lookups instead of 50k-row scans.
+    bench("hybrid selective+common (pruned)", QUERIES, |i| {
+        let r = recall.clone();
+        async move {
+            r.query(EstateQuery::hybrid(
+                format!("grp{} feature entry", (i * 7) % 500),
+                vec_of(1_050_000 + i as u64),
                 10,
             ))
             .await

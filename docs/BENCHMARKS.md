@@ -475,3 +475,34 @@ docs/sec, ANN catch-up ~9–10 s at 50k.
 
 Recorded follow-up: common-term lexical cost wants top-k postings pruning
 (max-score/WAND-class early exit) — queued as its own measured sprint.
+
+## Sprint 23: lexical max-score pruning + postings fast path (2026-07-16)
+
+Three pieces, all exact:
+- **Blind df stats**: per-term document frequencies in a `tdf` CF
+  maintained through a RocksDB associative merge operator (+1/−1 deltas)
+  — counters without read-modify-write, so the LSM write law holds.
+  Gated: df tracks upsert (repeats count once), overwrite, and remove
+  exactly.
+- **Binary postings** (8-byte tf+len; JSON fallback for pre-existing
+  rows) — no more per-row JSON parse on the hot path.
+- **Max-score top-k** (authored from the Turtle–Flood concept): df point
+  reads give per-term upper bounds before any scan; terms scan in
+  descending bound; once the k-th accumulator exceeds the summed bounds
+  of the unprocessed terms, the remaining (common) terms resolve by
+  point lookups over the candidates instead of full scans. Estates
+  without stats (pre-sprint) keep the full scorer.
+
+**Exactness gate**: pruned top-k ids AND scores equal an in-test
+brute-force BM25 on selective, multi-rare, common-only, mixed, mid-
+frequency, and absent-term workloads over a randomized 400-doc corpus.
+
+**Measured (featbench, 50k docs)**: selective+common queries (df≈100
+group token + common terms) — **11.1 ms p50 vs 91.4 ms** for the
+equivalent all-common query on the same corpus: **8.3×**, exact.
+Honest limit, understood not hand-waved: all-common workloads (every
+term df=n) *cannot* prune — any unseen doc may still enter the top-k,
+so exactness forces the full postings walk; that cost is iterator-bound
+(~150k RocksDB steps), not parse-bound. If it ever matters, the next
+lever is bounded-error term dropping (idf < ε) — approximate, so it
+would be opt-in and labeled.
