@@ -152,6 +152,15 @@ paths); geo/datetime/uuid/full-text payload index types; nested filters.
 | 6 | `query_batch` + Euclid/Manhattan metrics on `Embedding` | ✅ batch ≡ sequential (asserted) | ✅ |
 | 7 | Green close + docs + push | fmt/clippy/test: 0 warnings, 41 suites green | ✅ |
 
+## Sprint 28 — Consolidation: regression pass + parity sweep + docs truth
+
+| # | Step | Verification gate | Status |
+|---|---|---|---|
+| 1 | Full regression: variance probe ×3, both baseline gates (50k/500), featbench | gates pass or the delta is investigated before recording | ✅ |
+| 2 | PARITY end-to-end sweep → COMPARISON.md status section: at-or-beyond parity vs phase-assigned (P6/P7/P8) with one-line rationale each | docs reflect row-by-row truth | ✅ |
+| 3 | README "Measured" table refreshed (pruned lexical, watch delivery, current gates) | README numbers = latest recorded runs | ✅ |
+| 4 | Green close: fmt/clippy/test, commit, push | full workspace green | ✅ |
+
 ## Sprint 27 — Highlights on candidates + INFO introspection + feed stats
 
 Scoping note (honest): the mem-KV backend was considered and skipped — the

@@ -41,6 +41,7 @@ pub struct ConnXRecall {
     pending: Arc<crate::pending::Pending>,
     feed_notify: Arc<tokio::sync::Notify>,
     quotas: Arc<crate::estate::Quotas>,
+    lexical_stats: bool,
     analyzer: Arc<rrf_core::text::Analyzer>,
     writer: Arc<Mutex<()>>,
     params: Bm25Params,
@@ -59,6 +60,7 @@ impl Estate {
             pending: self.pending.clone(),
             feed_notify: self.feed_notify.clone(),
             quotas: Arc::new(self.quotas.clone()),
+            lexical_stats: self.lexical_stats,
             analyzer: Arc::new(self.info().analyzer.clone()),
             writer: Arc::new(Mutex::new(())),
             params: Bm25Params::default(),
@@ -385,6 +387,7 @@ impl Recall for ConnXRecall {
         let pending = self.pending.clone();
         let analyzer = self.analyzer.clone();
         let max_docs = self.quotas.max_docs;
+        let lexical_stats = self.lexical_stats;
         tokio::task::spawn_blocking(move || {
             // Two-phase: durable write commits first…
             let for_index: Vec<(Id, Embedding)> = records
@@ -409,7 +412,7 @@ impl Recall for ConnXRecall {
                     )));
                 }
             }
-            upsert_blocking(&db, &analyzer, records)?;
+            upsert_blocking(&db, &analyzer, records, lexical_stats)?;
             // …then graph ops enqueue for the out-of-band applier. Ingest is
             // never blocked by graph construction; searches stay correct by
             // overlaying the pending set (read-your-writes).
@@ -507,9 +510,10 @@ impl Recall for ConnXRecall {
         let db = self.db.clone();
         let pending = self.pending.clone();
         let analyzer = self.analyzer.clone();
+        let lexical_stats = self.lexical_stats;
         let id = id.clone();
         tokio::task::spawn_blocking(move || {
-            remove_blocking(&db, &analyzer, id.as_str())?;
+            remove_blocking(&db, &analyzer, id.as_str(), lexical_stats)?;
             pending.push_remove(id);
             Ok::<_, RrfError>(())
         })
@@ -536,6 +540,7 @@ fn upsert_blocking(
     db: &Db,
     analyzer: &rrf_core::text::Analyzer,
     records: Vec<VectorRecord>,
+    lexical_stats: bool,
 ) -> Result<()> {
     // Dimension guard: fixed by the first upsert, enforced forever after.
     let mut info: EstateInfo = db
@@ -580,6 +585,12 @@ fn upsert_blocking(
     let coll_cf = db.cf(keys::CF_COLL)?;
     let tdf_cf = db.cf(keys::CF_TDF)?;
     let indexed_fields = crate::filter::indexed_fields(db)?;
+    // df deltas are NETTED per batch: one merge operand per term per
+    // WriteBatch instead of one per (term, doc). Same atomicity, same
+    // counts — but hot terms stop accumulating thousands of merge
+    // operands per flush (found as a −56% ingest regression by the
+    // Sprint-28 gate).
+    let mut df_delta: HashMap<String, i64> = HashMap::new();
 
     // Auto-register any new collection names (writers already serialize).
     let mut registry: Vec<String> = db
@@ -640,7 +651,7 @@ fn upsert_blocking(
             for term in analyzer.analyze(&old.text) {
                 batch.delete_cf(terms_cf, keys::term_key(&term, &id));
                 if seen.insert(term.clone()) {
-                    batch.merge_cf(tdf_cf, term.as_bytes(), (-1i64).to_le_bytes());
+                    *df_delta.entry(term).or_insert(0) -= 1;
                 }
             }
             for dim in &old.sparse_dims {
@@ -679,8 +690,7 @@ fn upsert_blocking(
             v[..4].copy_from_slice(&f.to_le_bytes());
             v[4..].copy_from_slice(&token_len.to_le_bytes());
             batch.put_cf(terms_cf, keys::term_key(&term, &id), v);
-            // One df delta per unique (term, doc) — a blind merge.
-            batch.merge_cf(tdf_cf, term.as_bytes(), 1i64.to_le_bytes());
+            *df_delta.entry(term).or_insert(0) += 1;
         }
 
         let shape = Shape::of(&r.metadata);
@@ -760,6 +770,14 @@ fn upsert_blocking(
             serde_json::to_vec(&change)?,
         );
         feed_seq += 1;
+    }
+
+    if lexical_stats {
+        for (term, delta) in df_delta {
+            if delta != 0 {
+                batch.merge_cf(tdf_cf, term.as_bytes(), delta.to_le_bytes());
+            }
+        }
     }
 
     let meta_cf = db.cf(CF_META)?;
@@ -1050,6 +1068,7 @@ pub(crate) fn remove_blocking(
     db: &Db,
     analyzer: &rrf_core::text::Analyzer,
     id: &str,
+    lexical_stats: bool,
 ) -> Result<()> {
     let Some(old) = db.get_json::<StoredDoc>(CF_DOCS, id.as_bytes())? else {
         return Ok(());
@@ -1061,7 +1080,7 @@ pub(crate) fn remove_blocking(
     let mut seen = std::collections::HashSet::new();
     for term in analyzer.analyze(&old.text) {
         batch.delete_cf(terms_cf, keys::term_key(&term, id));
-        if seen.insert(term.clone()) {
+        if lexical_stats && seen.insert(term.clone()) {
             batch.merge_cf(tdf_cf, term.as_bytes(), (-1i64).to_le_bytes());
         }
     }

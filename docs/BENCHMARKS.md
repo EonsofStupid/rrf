@@ -579,3 +579,30 @@ Scoped honestly: the mem-KV backend row stays 🔨 — the `Db` seam is used
 raw (iterators, merge operators, properties, compaction) across every
 estate module; abstracting it is its own effort, not a rider on this
 sprint.
+
+## Sprint 28: consolidation — a caught regression, a measured trade-off (2026-07-16)
+
+The consolidation gate did its job: estate ingest had slid 8,989 →
+3,914 docs/sec (−56%) across sprints 23–27, with queries and accuracy
+untouched. Diagnosis, in order:
+1. **Netted df deltas**: Sprint 23 emitted one `tdf` merge per (term,
+   doc); hot terms accumulated thousands of merge operands per flush.
+   Netting per WriteBatch (one operand per term per batch, same counts,
+   same atomicity) recovered to 5,734.
+2. **Isolated the remainder**: with df merges disabled entirely, ingest
+   returned to 8,455 (in tolerance) — the rest is intrinsic write
+   amplification: unique-token-heavy corpora pay one extra key write per
+   new term per doc. Netting cannot collapse distinct terms.
+3. **Made the trade-off explicit**: `EstateConfig.lexical_stats`
+   (default ON). Stats buy max-score pruning; turning them off buys
+   ~⅓ ingest back and the scorer falls back to full scans (gated).
+
+Re-recorded steady state (stats on): **5,936 docs/sec durable, p50
+1.44 ms, accuracy@10 0.998 @ 50k**; gate re-verified green (6,628 on the
+verify run). And the netting paid a second dividend: featbench's pruned
+selective+common path dropped **11.1 ms → 0.85 ms p50** (df point-reads
+no longer resolve long operand chains) — now **74×** vs the 63 ms
+all-common query on the same corpus. Watch delivery holds at 0.29 ms.
+
+Docs trued up: COMPARISON.md gained the sprint 9–27 parity section and a
+phase-by-phase rationale for the tail; README measured table refreshed.

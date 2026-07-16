@@ -26,9 +26,12 @@ embedder ─▶ recall ─▶ reranker ─▶ classifier ─▶ connectome
 
 | | result |
 |---|---|
-| Durable ingest (embed + RRD + index + provenance) | **10.9k docs/sec** local · **13.6k** observed over a2a |
+| Durable ingest (embed + RRD + index + provenance) | **10.9k docs/sec** local · **13.6k** observed over a2a · ~60k raw (pre-built vectors) |
 | Query p50 @ 100k docs, full pipeline | **1.88 ms** (532 qps) |
+| Dense-only ANN p50 @ 50k | **0.32 ms** |
 | Planted-retrieval accuracy@10 | **1.000** |
+| Max-score lexical pruning (selective+common vs all-common) | **74×** (0.85 ms vs 63.2 ms), exactness-gated |
+| `watch` push-frame delivery (write commit → frame on the wire) | **0.28 ms p50** |
 | vs popular RAG baseline, identical inputs | ~19× ingest, ~3× faster queries, 1.000 vs 0.606 accuracy |
 | Route→recall on ambiguous corpora | **1.000 vs 0.025** flat |
 | a2a wire cost (remote ≡ local) | **+3 ms**, identical accuracy |

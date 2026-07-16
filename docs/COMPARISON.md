@@ -36,15 +36,51 @@ durable changefeed (atomic with writes), crash-safe two-phase indexing with
 read-your-writes, snapshots-of-behavior (RRD baseline), graceful signal
 handling — all in one binary, embedded or networked.
 
-## 3. The scheduled tail (honesty section)
+## 3. Vector-engine surface: at or beyond parity (sprints 9–27, all gated)
 
-Capabilities the references have that RRF has inventoried and phased, not
-yet built: full query language & GraphQL (P6 after the typed builder),
-quantization/multi-vector/payload-secondary-indexes (P2.5–P3 tail),
-transactions beyond atomic batches (P5), auth/IAM (P5), DB snapshots/backup
-tooling (P5), WASM plugin runtime (P6), replication/sharding (P8), GPU
-build (P7+). Row-by-row status lives in [PARITY.md](PARITY.md); nothing
-ships as parity until its gate runs.
+The A-surface of PARITY.md is now essentially ✅ (55 rows built and
+gated): typed filter DSL executed **index-first** from payload secondary
+indexes (keyword/numeric/bool/datetime/uuid/**geo** Z-order — 9.8× vs
+scan measured); SQ8 quantization with exact rescore; **weighted sparse**
+three-way fusion; **multi-vector per point** (named spaces + MaxSim late
+interaction); **prefetch pipelines** (union → exact rescore by any
+signal); groups / recommend / discover / batch / matrix / sampling /
+offset / with_vectors / **highlights on candidates**; named
+**collections** with atomic **aliases**; per-point payload CRUD with
+exact index consistency; text **analyzers** (Porter stemmer, prefix
+autocomplete) persisted as index identity; **max-score lexical pruning**
+(8.3× on selective+common, exactness-gated); **push-stream** changefeed
+(`watch`, 0.28 ms commit→frame) beside seq-resumable polling; explicit
+**flush/fsync** semantics + manual compaction + per-CF sizes; `health` /
+`info` / prometheus `/metrics` + probes / self-reported issues;
+**quotas/strict mode** with typed boundary errors. All of it rides one
+typed `EstateQuery` contract — locally, over a2a TCP, and through MCP.
+
+## 4. The scheduled tail (honesty section)
+
+What remains, with the reason it waits:
+
+- **P6 — RRQL parser + DEFINE/CRUD statements, GraphQL**: the typed
+  builder has proven the semantics; a text DSL is surface, not new
+  capability — it waits until the semantics stop moving.
+- **P6 — WASM plugin runtime**: capability-manifested extensibility;
+  depends on a stable verb surface (now true) and its own security review.
+- **P7 — DevPULSE model backends (candle: Qwen embedder, Nemotron
+  reranker, learned classifier)**: pure plug-ins behind existing traits;
+  need model weights + GPU/CPU inference budget, not engine changes.
+- **P7 — gRPC transport**: `protoc` was unavailable in this container
+  (recorded); the a2a layer already carries the full surface.
+- **P7+ — GPU index build**: optimization, not capability; waits for the
+  candle stack.
+- **P8 — cluster (raft/shards/replicas), blob storage, alternate KV
+  backends (mem/distributed)**: multi-node scope by design; the `Db`
+  seam abstraction was scoped and honestly deferred (Sprint 27 note).
+- **P5 tail — RBAC/JWT beyond capability tokens; PQ/binary quantization;
+  transactions beyond atomic WriteBatches** — inventoried, each with its
+  gate defined in PARITY.
+
+Row-by-row status lives in [PARITY.md](PARITY.md); nothing ships as
+parity until its gate runs.
 
 **Bottom line:** on the retrieval core the engine already outperforms a
 popular baseline on identical inputs; on the reasoning layer — RRD, gates,

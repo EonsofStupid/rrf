@@ -133,7 +133,7 @@ impl Quotas {
 }
 
 /// Open-time choices for an estate.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct EstateConfig {
     /// Hold the ANN graph's vectors as SQ8 codes (~4× smaller memory).
     /// Search results are **rescored exactly** from the durable vector
@@ -151,6 +151,25 @@ pub struct EstateConfig {
     pub fsync_writes: bool,
     /// Resource limits (strict mode). Default: unlimited.
     pub quotas: Quotas,
+    /// Maintain per-term document frequencies (blind merges) — the stats
+    /// behind max-score lexical pruning (8.3× on selective+common
+    /// queries, measured). Costs ~⅓ of ingest throughput on unique-token-
+    /// heavy corpora (one extra key write per new term per doc — also
+    /// measured). Default ON; turn off to buy ingest, the scorer falls
+    /// back to full scans.
+    pub lexical_stats: bool,
+}
+
+impl Default for EstateConfig {
+    fn default() -> Self {
+        EstateConfig {
+            quantized: false,
+            analyzer: rrf_core::text::Analyzer::default(),
+            fsync_writes: false,
+            quotas: Quotas::default(),
+            lexical_stats: true,
+        }
+    }
 }
 
 /// One operator estate: the kvs-connectome over a single RocksDB.
@@ -170,6 +189,8 @@ pub struct Estate {
     pub(crate) feed_notify: Arc<tokio::sync::Notify>,
     /// Resource limits enforced by the recall store.
     pub(crate) quotas: Quotas,
+    /// Whether df stats are maintained (drives write-path merges).
+    pub(crate) lexical_stats: bool,
     applier: Option<std::thread::JoinHandle<()>>,
     info: EstateInfo,
 }
@@ -215,10 +236,12 @@ impl Estate {
                     analyzer: config.analyzer.clone(),
                 };
                 db.put_json(CF_META, keys::META_ESTATE, &fresh)?;
-                // Fresh estate: df stats are maintained from the first write,
-                // unlocking the pruned lexical scorer.
-                db.0.put_cf(db.cf(CF_META)?, keys::META_LEXSTATS, 1u64.to_le_bytes())
-                    .map_err(rocks_err)?;
+                // Fresh estate with stats on: df is maintained from the
+                // first write, unlocking the pruned lexical scorer.
+                if config.lexical_stats {
+                    db.0.put_cf(db.cf(CF_META)?, keys::META_LEXSTATS, 1u64.to_le_bytes())
+                        .map_err(rocks_err)?;
+                }
                 fresh
             }
         };
@@ -246,6 +269,14 @@ impl Estate {
         let pending = crate::pending::Pending::new();
         let applier = pending.spawn_applier(ann.clone());
 
+        // Stats are live only when configured AND the estate has carried
+        // them since creation (the pruned scorer's precondition).
+        let lexical_stats = config.lexical_stats
+            && db
+                .0
+                .get_cf(db.cf(CF_META)?, keys::META_LEXSTATS)
+                .map_err(rocks_err)?
+                .is_some();
         Ok(Estate {
             db,
             ann,
@@ -253,6 +284,7 @@ impl Estate {
             quantized: config.quantized,
             feed_notify: Arc::new(tokio::sync::Notify::new()),
             quotas: config.quotas.clone(),
+            lexical_stats,
             applier: Some(applier),
             info,
         })
@@ -691,7 +723,7 @@ impl Estate {
         let members = self.collection_members(name)?;
         let analyzer = self.info.analyzer.clone();
         for id in &members {
-            crate::store::remove_blocking(&self.db, &analyzer, id)?;
+            crate::store::remove_blocking(&self.db, &analyzer, id, self.lexical_stats)?;
             self.pending.push_remove(rrf_core::Id::new(id.clone()));
         }
         let mut registry: Vec<String> = self
