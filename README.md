@@ -33,6 +33,26 @@ embedder ─▶ recall ─▶ reranker ─▶ classifier ─▶ connectome
 | Route→recall on ambiguous corpora | **1.000 vs 0.025** flat |
 | a2a wire cost (remote ≡ local) | **+3 ms**, identical accuracy |
 
+## The query plane (all typed, all over the wire, all gated)
+
+One `EstateQuery` speaks every capability — locally, over a2a TCP, and
+through MCP: hybrid dense+BM25 fusion · **weighted sparse vectors**
+(three-way RRF fusion) · **named vector spaces** per point (independent
+dims) · **late interaction / MaxSim** token-vector rescoring · filter DSL
+(eq / any / range / **date ranges** by instant / **geo radius + box** on
+Z-order keys / exists; must / should / must_not) answered **index-first**
+from typed payload indexes (keyword, numeric, bool, datetime, uuid, geo)
+· **named collections** with leak-proof scoping + atomic **aliases** ·
+groups, recommend, discover, batch · pagination (`offset`), score
+threshold, lean payloads, `with_vectors` · similarity matrix ·
+deterministic sampling. Text goes through a configurable **analyzer**
+(tokenizers, stopwords, Porter stemmer — persisted per estate) with an
+offset-exact **highlighter**. Writes stream out as **push** changefeed
+frames (`watch`, event-driven, seq-resumable) beside poll paging; per-point
+**payload CRUD** keeps every index exactly consistent. Ops: `health` verb,
+prometheus **/metrics** + probes, self-reported issues. SQ8 quantization
+(exact rescore) when memory matters.
+
 ## Turnkey
 
 ```sh

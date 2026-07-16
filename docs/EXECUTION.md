@@ -152,6 +152,15 @@ paths); geo/datetime/uuid/full-text payload index types; nested filters.
 | 6 | `query_batch` + Euclid/Manhattan metrics on `Embedding` | ✅ batch ≡ sequential (asserted) | ✅ |
 | 7 | Green close + docs + push | fmt/clippy/test: 0 warnings, 41 suites green | ✅ |
 
+## Sprint 22 — Regression pass + feature-latency baseline
+
+| # | Step | Verification gate | Status |
+|---|---|---|---|
+| 1 | Variance probe ×3, then both recorded baseline gates (mem + estate, 50k/500, ±25%) | gates pass, or any regression is investigated before recording | ✅ |
+| 2 | `featbench` example: one 50k estate exercising every sprint 11–21 path — indexed-filter, geo radius, sparse-fused, MaxSim-rescored, collection-scoped p50s + watch push-frame delivery latency | honest numbers recorded in BENCHMARKS.md as the Sprint-22 feature baseline | ✅ |
+| 3 | README feature list refreshed to match sprints 11–21 reality | README current | ✅ |
+| 4 | Green close: fmt/clippy/test, commit, push | full workspace green | ✅ |
+
 ## Sprint 21 — Geo: haversine conditions + Z-order index keys
 
 | # | Step | Verification gate | Status |

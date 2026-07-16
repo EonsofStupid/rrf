@@ -443,3 +443,35 @@ grid across 4 boxes (incl. whole-grid, tiny, disjoint) and 4 radii
 (incl. corner-centered and 10 m); the query plane returns exactly the
 truth set; a moved point retracts from its old radius and is findable
 at its new home.
+
+## Sprint 22: regression pass + feature-latency baseline (2026-07-16)
+
+Eleven feature sprints (11–21) later, both recorded gates pass with zero
+regression beyond the measured noise floor (probe: 428–590 µs across
+identical runs, ±30%): mem 115k docs/sec / p50 29.5 ms / accuracy 0.94;
+estate 8.4k docs/sec durable / p50 1.73 ms / accuracy **1.00** @ 50k.
+
+**Feature-latency baseline** (`cargo run --release -p rrf-flow --example
+featbench`; 50k docs, 64-dim, 200 queries per path, one shared container):
+
+| path | p50 | p95 |
+|---|---|---|
+| dense-only top-10 (ANN) | **0.32 ms** | 0.39 ms |
+| hybrid top-10 | 85.7 ms | 89.9 ms |
+| indexed filter (eq, filter-first) | 85.6 ms | 90.9 ms |
+| geo radius 3 km (Z-scan + exact) | 83.2 ms | 129.0 ms |
+| sparse-fused (three-way RRF) | 78.3 ms | 86.2 ms |
+| MaxSim rescored | 78.1 ms | 85.0 ms |
+| collection-scoped (5k members) | 93.2 ms | 100.1 ms |
+| **watch push-frame delivery** (commit → frame on the wire) | **0.28 ms** | 0.37 ms |
+
+Honest reading: this corpus is **adversarial for lexical scoring** — every
+query term appears in all 50k documents, so BM25 walks ~50k postings per
+term per query; that (not the features) is the ~80 ms. Each sprint-11–21
+feature adds only **0–9 ms** over the plain hybrid cost on the same
+workload, and the bake-off's selective-vocabulary hybrid remains 1.73 ms.
+Raw estate write throughput (pre-built vectors, no embedding): ~60k
+docs/sec, ANN catch-up ~9–10 s at 50k.
+
+Recorded follow-up: common-term lexical cost wants top-k postings pruning
+(max-score/WAND-class early exit) — queued as its own measured sprint.
