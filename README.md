@@ -64,10 +64,18 @@ prometheus **/metrics** + probes, self-reported issues. SQ8 quantization
 ./scripts/quickstart.sh stop
 ```
 
-Deploy: `deploy/Dockerfile`, `deploy/rrf.service` (systemd),
-`deploy/config.env.example`. The daemon handles the full signal set, drains
-cleanly, and commits its RRD baseline on shutdown so the next boot predicts
-warm.
+Deploy: **Podman Quadlets** — `deploy/Containerfile` (build),
+`deploy/rrf.container` + `deploy/rrf-estate.volume` (rootless systemd units),
+`deploy/rrf-mesh.pod` (cluster node group), `deploy/config.env.example`. The
+daemon handles the full signal set, drains cleanly, and commits its RRD baseline
+on shutdown so the next boot predicts warm. Install (rootless):
+`install -m644 deploy/rrf.container ~/.config/containers/systemd/ && systemctl --user daemon-reload && systemctl --user start rrf`.
+
+**Model backends** (real Qwen embedder / Nemotron reranker) plug in behind the
+`Embedder`/`Reranker` traits, selected by `RRF_EMBEDDER`/`RRF_RERANKER` — the
+default build is weightless (synthetic embedder, dev/CI only). Wiring real models
+is spec'd exactly in **docs/MODELS.md**; the full remaining plan (models, RRQL,
+cluster, deploy) is in **docs/ROADMAP_REAL.md**.
 
 ## The workspace
 
