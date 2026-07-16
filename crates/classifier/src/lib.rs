@@ -10,6 +10,7 @@
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
+mod constrained;
 mod daemon;
 mod heuristic;
 
@@ -18,3 +19,4 @@ pub use heuristic::HeuristicClassifier;
 
 /// Re-export so downstream crates can name the trait without a second dep.
 pub use rro_core::Classifier;
+pub use constrained::{ConstrainedClassifier, ConstrainedConfig, ReadyLabel};
