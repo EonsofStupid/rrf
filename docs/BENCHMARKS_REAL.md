@@ -1,10 +1,10 @@
 # BENCHMARKS_REAL.md — the first honest numbers
 
-_2026-07-16. Real models, real public benchmark, third-party relevance
+_2026-07-16. Real models, a real public benchmark, third-party relevance
 judgments. **These supersede every accuracy number in `BENCHMARKS.md`,
-`COMPARISON.md`, `PARITY.md` and `README.md`**, all of which were produced by
-the deterministic hash embedder scoring synthetic vectors against synthetic
-vectors — a hash function grading itself._
+`COMPARISON.md`, `PARITY.md` and `README.md`**, all of which were produced by the
+deterministic hash embedder scoring synthetic vectors against synthetic vectors
+— a hash function grading itself._
 
 ## The harness is calibrated
 
@@ -17,71 +17,116 @@ The single most important number here is not RRO's:
 
 Our lexical floor reproduces the literature's lexical floor. That is what makes
 everything below arguable rather than self-reported. A harness whose baseline
-doesn't match published work is measuring something else, and its headline
-number is worthless no matter how good it looks.
+doesn't match published work is measuring something else, and its headline number
+is worthless no matter how good it looks.
 
 **This was wrong at first, in the most flattering possible direction.** The BM25
 arm originally faked "lexical only" by handing `hybrid_search` a zero vector —
 fusion still ran and blended a degenerate dense ranking into the lexical one,
 scoring **0.159**, less than half the real baseline. A baseline broken *low*
-makes every arm above it look good. It was fixed to call the estate's real
+makes every arm above it look good. Fixed to call the estate's real
 `lexical_search`, which moved it onto the published number.
 
 ## nfcorpus (BEIR) — 3,633 docs, 323 judged queries, graded qrels 0..2
 
-Embedder: Qwen3-Embedding-4B (f16, llama.cpp :8090, 2560-d).
-Reranker: llama-nemotron-rerank-1b-v2 (vLLM :8092). `recall_k=100`, `top_k=10`.
+Embedder: Qwen3-Embedding-4B (f16, llama.cpp `:8090`, 2560-d).
+Reranker: llama-nemotron-rerank-1b-v2 (vLLM `:8092`). `recall_k=100`, `top_k=10`.
 
-| arm | nDCG@10 | Recall@10 | MRR@10 | ms/query | vs prev |
+| arm | nDCG@10 | Recall@10 | MRR@10 | wall ms/query | vs prev |
 |---|---:|---:|---:|---:|---|
-| `bm25` — lexical only | 0.3115 | 0.1519 | 0.5188 | 39.6 | — |
-| `dense` — ANN only | **0.4119** | 0.2013 | 0.6237 | 43.5 | +32.3% |
-| `hybrid` — dense+BM25, RRF-fused | 0.3902 | 0.1903 | 0.6132 | 43.0 | **−5.3%** |
-| `rro` — hybrid + cross-encoder | **0.4288** | 0.2152 | 0.6264 | **1167.5** | +9.9% |
+| `bm25` — lexical only | 0.3115 | 0.1519 | 0.5188 | 42.2 | — |
+| `dense` — ANN only | **0.4124** | 0.2013 | 0.6252 | 43.6 | +32.4% |
+| `hybrid` — dense+BM25, RRF-fused | 0.3902 | 0.1903 | 0.6132 | 46.3 | **−5.4%** |
+| `hybrid+rerank` — + cross-encoder | **0.4288** | 0.2152 | 0.6264 | 1148.7 | +9.9% |
+| `rro` — the full pass via `ask()` | **0.4288** | 0.2152 | 0.6264 | 1128.0 | **+0.0%** |
 
-### Finding 1 — hybrid fusion HURTS here (−5.3%)
+Reproducible: `bm25` and `hybrid` land on **identical** figures across two
+independent runs; `dense` moved 0.4119→0.4124 (ANN tie-breaking).
 
-`hybrid` (0.3902) is **worse than `dense` alone** (0.4119). Reciprocal-rank
+## Latency: engine vs model — they are not the same thing
+
+The engine emits a per-stage breakdown (`flow.stage` events). Averaged over the
+323 `rro` passes:
+
+| stage | ms | what it is |
+|---|---:|---|
+| `rrd` | **0.006** | the gate ladder — pre-model, as claimed |
+| `embed` | 42.979 | **model** (HTTP + a 4B forward) |
+| `recall` | **3.724** | **the engine** (hybrid ANN+BM25 over 3,633 docs) |
+| `rerank` | 1081.122 | **model** (100 cross-encoder pairs) |
+| `classify` | **0.192** | readiness verdict |
+
+**Engine ≈ 3.92 ms. Model ≈ 1124 ms. 99.65% of the wall clock is the model.**
+
+This corrects a reporting error, not a regression. An earlier version of this
+document printed `1167 ms` under a column called `ms/query` as though it were
+engine latency — it was an HTTP round-trip plus a 4B forward plus 100
+cross-encoder pairs, summed. The README's **1.88 ms p50** claim is *consistent
+with `recall`*, which measures 1.659 ms at 300 docs and 3.724 ms at 3,633.
+
+Anything labelled `wall ms/query` above is end-to-end and model-dominated. It is
+not a statement about the engine.
+
+### Finding 1 — hybrid fusion HURTS here (−5.4%)
+
+`hybrid` (0.3902) is **worse than `dense` alone** (0.4124). Reciprocal-rank
 fusion blends a 0.31 lexical ranking into a 0.41 dense one and drags it down.
 
 This contradicts the repo's own marketing. `COMPARISON.md` sells "hybrid
 dense+BM25 fused **by default**" as a headline advantage over vector-first
-stores. On this corpus, with this embedder, the default is a **5.3% nDCG
+stores. On this corpus, with this embedder, the default is a **5.4% nDCG
 regression** versus just not fusing. RRF weights the two rankings equally by
 construction; when one retriever is materially better, equal weighting is a tax.
 
 Not "hybrid is bad" — it is one corpus. But "fused by default" is now a claim
 with a counter-example, and the fusion needs a weight or a gate, not a default.
 
-### Finding 2 — the reranker earns quality and costs 27x latency
+### Finding 2 — the reranker earns quality and costs ~26x
 
-`rro` (0.4288) beats `hybrid` by 9.9% and `dense` by 4.1%, and is the best arm.
-It also goes from **43 ms → 1168 ms per query**: a 27x cost for +4.1% over
-plain dense. That is a real trade, not a free win, and whether it is worth
-paying is a product decision that needs the number in front of it.
+`hybrid+rerank` (0.4288) beats `hybrid` by 9.9% and `dense` by 4.0%, and is the
+best arm. It also takes the wall clock from ~44 ms to ~1149 ms — **1081 ms of
+that is the cross-encoder**, not the engine. Whether that trade is worth paying
+is a product decision, and it needs the number in front of it.
 
-Note it also *rescues* fusion: the reranker recovers hybrid's regression and
-passes dense. The cross-encoder is doing the work the fusion weighting isn't.
+It also *rescues* fusion: the reranker recovers hybrid's regression and passes
+dense. The cross-encoder is doing the work the fusion weighting isn't.
 
-### Finding 3 — ingest is ~1000x slower than advertised
+### Finding 3 — RRD and the classifier add ZERO ranking lift
 
-**10 docs/sec** (3,633 docs in 349 s), against the README's **10.9k docs/sec**.
+`rro` and `hybrid+rerank` are **identical to four decimals** (0.4288 / 0.2152 /
+0.6264) and return the same worst queries.
+
+This is expected, and worth saying out loud anyway: RRD **gates** (cost control —
+it refuses payloads before any model runs) and the classifier **judges** (a
+readiness verdict the reasoner can act on). Neither reorders results. Anyone
+reading "the full RRO pipeline" as "retrieves better" is wrong — the full pass
+buys refusal, a trust signal, and the connectome map, at `rrd=0.006ms` +
+`classify=0.192ms`. It does not buy ranking.
+
+The equality is also a useful consistency check: it proves `ask()` and the
+hand-built ladder agree, i.e. the engine's own composition has no hidden
+divergence from the arms measured beside it.
+
+### Finding 4 — ingest is ~1000x slower than advertised
+
+**10 docs/sec** (3,633 docs in 355 s), against the README's **10.9k docs/sec**.
 
 Nothing regressed. The old number was measured with a microsecond hash embedder;
 this one runs a real 4B model over HTTP. Once a real model is in the path, the
-forward pass dominates and every wire/engine choice becomes noise. This is the
-first honest ingest measurement RRO has, and the README's figure should be read
-as "how fast the estate can index vectors someone else already computed."
+forward pass dominates and every wire/engine choice becomes noise. The README's
+figure should be read as "how fast the estate can index vectors someone else
+already computed."
 
 ## What is NOT yet measured
 
 - **BRIGHT** — the reasoning-intensive benchmark (published SOTA is only ~22.1
   nDCG@10). nfcorpus is a warm-up; BRIGHT is the real target.
-- **ANN `ef`/graph re-tuning on real vectors.** The current params were fit to
-  synthetic distributions. Untouched here, so `dense`/`hybrid`/`rro` may all
-  improve.
-- **The 0.6/4/8B tier ladder.** Only 4B (embed) and 1B (rerank) ran.
-- **Statistical significance.** 323 queries, single run, no CIs. The −5.3% and
+- **ANN `ef` re-tuning on real vectors.** The recall@10 ≥ 0.95 gate
+  (`recall/src/ann.rs:533`) was measured on synthetic vectors. The sweep now
+  exists (`crates/recall/tests/real_vector_ef.rs`, fed by
+  `RRO_EVAL_EXPORT_VECTORS`) but has not been run to a recorded result.
+- **The 0.6/4/8B tier ladder** across candle · llama.cpp · vLLM.
+- **Statistical significance.** 323 queries, single run, no CIs. The −5.4% and
   +9.9% deltas are directional, not established.
 
 ## Reproduce
@@ -92,5 +137,6 @@ hf download mteb/nfcorpus --repo-type dataset --local-dir eval-data/nfcorpus
 RRO_EMBEDDER=llamacpp RRO_EMBEDDER_ENDPOINT=http://127.0.0.1:8090/v1/embeddings \
 RRO_RERANKER=vllm    RRO_RERANKER_ENDPOINT=http://127.0.0.1:8092/rerank \
 RRO_EVAL_DATA=eval-data/nfcorpus RRO_EMBED_BATCH=64 \
+RRO_EVAL_EXPORT_VECTORS=/tmp/real-vectors.jsonl \
   cargo run --release --bin rro-eval
 ```
