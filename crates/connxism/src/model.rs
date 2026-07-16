@@ -43,6 +43,10 @@ pub struct EstateInfo {
     pub created_at: EpochMs,
     /// Vector dimensionality, fixed by the first upsert.
     pub dim: Option<usize>,
+    /// Per-named-space dimensionality, each fixed by the first vector
+    /// written under that name.
+    #[serde(default)]
+    pub named_dims: std::collections::BTreeMap<String, usize>,
 }
 
 /// How a warp point is reached.
@@ -247,4 +251,15 @@ pub struct StoredDoc {
     /// overwrite or removal can retract its sparse-postings rows exactly).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub sparse_dims: Vec<u32>,
+    /// Named vector spaces this document has vectors in (for exact
+    /// retraction on overwrite/removal).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub named_spaces: Vec<String>,
+    /// Number of late-interaction token vectors stored (0 = none).
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub multi_len: u32,
+}
+
+fn is_zero(n: &u32) -> bool {
+    *n == 0
 }

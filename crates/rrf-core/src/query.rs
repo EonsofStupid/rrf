@@ -199,6 +199,14 @@ pub struct EstateQuery {
     /// by executors that maintain a sparse index.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sparse: Option<SparseVector>,
+    /// Route the dense half to a named vector space instead of the default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub using: Option<String>,
+    /// Late-interaction query token vectors: candidates are rescored by
+    /// MaxSim against their stored token vectors (docs without any sort
+    /// after those that have them, in first-phase order).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub multi: Option<Vec<Embedding>>,
     /// Results wanted.
     pub top_k: usize,
     /// Metadata equality filter: every key must match exactly (legacy form;
@@ -225,6 +233,8 @@ impl Default for EstateQuery {
             text: None,
             vector: None,
             sparse: None,
+            using: None,
+            multi: None,
             top_k: 0,
             filter: Metadata::new(),
             dsl: None,
@@ -265,6 +275,18 @@ impl EstateQuery {
     /// Attach a weighted sparse query vector (fused with the other rankings).
     pub fn sparse_vector(mut self, sparse: SparseVector) -> Self {
         self.sparse = Some(sparse);
+        self
+    }
+
+    /// Route the dense half to a named vector space.
+    pub fn using(mut self, name: impl Into<String>) -> Self {
+        self.using = Some(name.into());
+        self
+    }
+
+    /// Rescore candidates by MaxSim against these query token vectors.
+    pub fn multi_query(mut self, vectors: Vec<Embedding>) -> Self {
+        self.multi = Some(vectors);
         self
     }
 

@@ -116,6 +116,111 @@ impl ConnXRecall {
         .map_err(|e| RrfError::Recall(format!("join: {e}")))?
     }
 
+    /// Exact cosine search inside one **named vector space** (a sorted
+    /// prefix scan over that space's rows). Names are independent spaces
+    /// with independent dimensionalities.
+    pub async fn named_search(
+        &self,
+        space: &str,
+        query: &Embedding,
+        top_k: usize,
+    ) -> Result<Vec<Candidate>> {
+        if top_k == 0 {
+            return Ok(Vec::new());
+        }
+        let db = self.db.clone();
+        let space = space.to_string();
+        let q = query.clone();
+        tokio::task::spawn_blocking(move || {
+            let nvecs_cf = db.cf(keys::CF_NVECS)?;
+            let prefix = keys::nvec_prefix(&space);
+            let mut scored: Vec<(String, f32)> = Vec::new();
+            for item in db.0.iterator_cf(
+                nvecs_cf,
+                rocksdb::IteratorMode::From(&prefix, rocksdb::Direction::Forward),
+            ) {
+                let (k, v) = item.map_err(rocks_err)?;
+                if !k.starts_with(&prefix) {
+                    break;
+                }
+                let doc_id = String::from_utf8_lossy(&k[prefix.len()..]).into_owned();
+                let emb = Embedding(keys::decode_vec(&v));
+                scored.push((doc_id, q.cosine(&emb)));
+            }
+            scored.sort_by(|a, b| b.1.total_cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+            scored.truncate(top_k);
+            Ok(scored
+                .into_iter()
+                .map(|(id, score)| Candidate::new(id, String::new(), score))
+                .collect())
+        })
+        .await
+        .map_err(|e| RrfError::Recall(format!("join: {e}")))?
+    }
+
+    /// Rescore candidates by MaxSim (late interaction) against their stored
+    /// token vectors. Docs with token vectors sort first by MaxSim; docs
+    /// without any keep their relative first-phase order after them.
+    pub async fn maxsim_rescore(
+        &self,
+        mut candidates: Vec<Candidate>,
+        query_tokens: &[Embedding],
+    ) -> Result<Vec<Candidate>> {
+        if query_tokens.is_empty() || candidates.is_empty() {
+            return Ok(candidates);
+        }
+        let db = self.db.clone();
+        let ids: Vec<String> = candidates
+            .iter()
+            .map(|c| c.id.as_str().to_string())
+            .collect();
+        let q: Vec<Embedding> = query_tokens.to_vec();
+        let scores: Vec<Option<f32>> = tokio::task::spawn_blocking(move || {
+            let mvecs_cf = db.cf(keys::CF_MVECS)?;
+            let mut out = Vec::with_capacity(ids.len());
+            for id in &ids {
+                let s = match db.0.get_cf(mvecs_cf, id.as_bytes()).map_err(rocks_err)? {
+                    Some(bytes) => {
+                        let doc_tokens: Vec<Embedding> = keys::decode_multi(&bytes)
+                            .into_iter()
+                            .map(Embedding)
+                            .collect();
+                        Some(rrf_core::maxsim(&q, &doc_tokens))
+                    }
+                    None => None,
+                };
+                out.push(s);
+            }
+            Ok::<_, RrfError>(out)
+        })
+        .await
+        .map_err(|e| RrfError::Recall(format!("join: {e}")))??;
+
+        for (c, s) in candidates.iter_mut().zip(&scores) {
+            if let Some(s) = s {
+                c.score = *s;
+            }
+        }
+        // Stable partition: MaxSim-scored docs (sorted) first, the rest keep
+        // their first-phase order.
+        let mut with: Vec<Candidate> = Vec::new();
+        let mut without: Vec<Candidate> = Vec::new();
+        for (c, s) in candidates.into_iter().zip(&scores) {
+            if s.is_some() {
+                with.push(c);
+            } else {
+                without.push(c);
+            }
+        }
+        with.sort_by(|a, b| {
+            b.score
+                .total_cmp(&a.score)
+                .then_with(|| a.id.as_str().cmp(b.id.as_str()))
+        });
+        with.extend(without);
+        Ok(with)
+    }
+
     /// Lexical (BM25) search over the persistent inverted index.
     pub async fn lexical_search(&self, query: &str, top_k: usize) -> Result<Vec<Candidate>> {
         let db = self.db.clone();
@@ -369,7 +474,40 @@ fn upsert_blocking(db: &Db, records: Vec<VectorRecord>) -> Result<()> {
     let feed_cf = db.cf(CF_FEED)?;
     let pidx_cf = db.cf(CF_PIDX)?;
     let sparse_cf = db.cf(keys::CF_SPARSE)?;
+    let nvecs_cf = db.cf(keys::CF_NVECS)?;
+    let mvecs_cf = db.cf(keys::CF_MVECS)?;
     let indexed_fields = crate::filter::indexed_fields(db)?;
+
+    // Named spaces: each name's dimensionality is fixed by its first vector.
+    let mut named_dims_dirty = false;
+    for r in &records {
+        for (name, v) in &r.named {
+            match info.named_dims.get(name) {
+                None => {
+                    info.named_dims.insert(name.clone(), v.dim());
+                    named_dims_dirty = true;
+                }
+                Some(&expected) if expected != v.dim() => {
+                    return Err(RrfError::DimMismatch {
+                        expected,
+                        got: v.dim(),
+                    });
+                }
+                _ => {}
+            }
+        }
+        // Late-interaction token vectors must agree among themselves.
+        if let Some(first) = r.multi.first() {
+            if r.multi.iter().any(|t| t.dim() != first.dim()) {
+                return Err(RrfError::Recall(
+                    "multi-vector token dims disagree within one record".into(),
+                ));
+            }
+        }
+    }
+    if named_dims_dirty {
+        db.put_json(CF_META, META_ESTATE, &info)?;
+    }
 
     for r in records {
         let id = r.id.as_str().to_string();
@@ -382,6 +520,12 @@ fn upsert_blocking(db: &Db, records: Vec<VectorRecord>) -> Result<()> {
             }
             for dim in &old.sparse_dims {
                 batch.delete_cf(sparse_cf, keys::sparse_key(*dim, &id));
+            }
+            for space in &old.named_spaces {
+                batch.delete_cf(nvecs_cf, keys::nvec_key(space, &id));
+            }
+            if old.multi_len > 0 {
+                batch.delete_cf(mvecs_cf, id.as_bytes());
             }
             for field in &indexed_fields {
                 if let Some(v) = old.metadata.get(field) {
@@ -435,6 +579,24 @@ fn upsert_blocking(db: &Db, records: Vec<VectorRecord>) -> Result<()> {
             }
         }
 
+        // Named vectors: one row per (space, doc) — blind puts.
+        let mut named_spaces = Vec::with_capacity(r.named.len());
+        for (name, v) in &r.named {
+            batch.put_cf(
+                nvecs_cf,
+                keys::nvec_key(name, &id),
+                keys::encode_vec(v.as_slice()),
+            );
+            named_spaces.push(name.clone());
+        }
+
+        // Late-interaction token vectors: one row per doc.
+        let multi_len = r.multi.len() as u32;
+        if multi_len > 0 {
+            let raw: Vec<Vec<f32>> = r.multi.iter().map(|e| e.0.clone()).collect();
+            batch.put_cf(mvecs_cf, id.as_bytes(), keys::encode_multi(&raw));
+        }
+
         let doc = StoredDoc {
             id: id.clone(),
             text: r.text,
@@ -444,6 +606,8 @@ fn upsert_blocking(db: &Db, records: Vec<VectorRecord>) -> Result<()> {
             token_len,
             connector_id: None,
             sparse_dims,
+            named_spaces,
+            multi_len,
         };
         batch.put_cf(docs_cf, id.as_bytes(), serde_json::to_vec(&doc)?);
         batch.put_cf(
@@ -631,6 +795,13 @@ fn remove_blocking(db: &Db, id: &str) -> Result<()> {
     let sparse_cf = db.cf(keys::CF_SPARSE)?;
     for dim in &old.sparse_dims {
         batch.delete_cf(sparse_cf, keys::sparse_key(*dim, id));
+    }
+    let nvecs_cf = db.cf(keys::CF_NVECS)?;
+    for space in &old.named_spaces {
+        batch.delete_cf(nvecs_cf, keys::nvec_key(space, id));
+    }
+    if old.multi_len > 0 {
+        batch.delete_cf(db.cf(keys::CF_MVECS)?, id.as_bytes());
     }
     batch.delete_cf(db.cf(CF_DOCS)?, id.as_bytes());
     batch.delete_cf(db.cf(CF_VECS)?, id.as_bytes());

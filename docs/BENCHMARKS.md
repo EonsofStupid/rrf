@@ -264,3 +264,24 @@ comparisons need the variance probe first
 (`cargo run --release -p recall --example annprobe`); a delta inside the
 measured noise floor is drift, not regression — and accuracy deltas are
 never excused this way (accuracy stayed 1.00/0.998 throughout).
+
+## Sprint 12: multi-vector per point (2026-07-16)
+
+Named vector spaces (each name its own dimensionality, one `nvecs` row per
+(space, doc) — blind puts, exact cosine by sorted prefix scan) and
+late-interaction token vectors (`mvecs`, MaxSim = Σ_q max_d q·d) joined the
+estate and the typed query plane (`using` routes the dense half; `multi`
+rescores a fetch-deep candidate set). Both ride the a2a wire via serde
+defaults — old payloads still parse (gated).
+
+Gates (`cargo test -p connxism --test multivec`):
+- named ranking AND scores equal brute force (≤1e-5); title/body spaces
+  rank independently;
+- per-point named-vector update: dropped name retracts its row, sibling
+  space untouched, remove retracts all, per-name dim guard errors;
+- a dense-mediocre document with one planted token vector ranks first
+  under MaxSim rescore and does NOT under plain dense; rescored score
+  equals brute-force MaxSim.
+
+Honest scope note: named-space search is exact (scan), not ANN — right
+up to mid-size spaces; per-space graphs are the follow-up.

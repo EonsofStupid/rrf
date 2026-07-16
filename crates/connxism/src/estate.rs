@@ -123,6 +123,7 @@ impl Estate {
                     name: name.to_string(),
                     created_at: now_ms(),
                     dim: None,
+                    named_dims: std::collections::BTreeMap::new(),
                 };
                 db.put_json(CF_META, keys::META_ESTATE, &fresh)?;
                 fresh

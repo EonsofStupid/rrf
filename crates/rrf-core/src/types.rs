@@ -230,6 +230,21 @@ impl SparseVector {
     }
 }
 
+/// Late-interaction (ColBERT-style) relevance: for each query token vector,
+/// take its best dot product against the document's token vectors, and sum.
+/// Zero if either side is empty.
+pub fn maxsim(query: &[Embedding], doc: &[Embedding]) -> f32 {
+    query
+        .iter()
+        .map(|q| {
+            doc.iter()
+                .map(|d| q.dot(d))
+                .fold(f32::NEG_INFINITY, f32::max)
+        })
+        .filter(|s| s.is_finite())
+        .sum()
+}
+
 /// A retrieval query.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Query {

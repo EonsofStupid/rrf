@@ -31,7 +31,7 @@ Method: enumerated from the reference trees (`openapi.json` paths, gRPC
 |---|---|---|
 | Upsert / get / delete points (REST+gRPC, wait/ordering) | `Recall::upsert/remove` + a2a `index` | ✅ core |
 | Batch update ops (`points/batch`, UpdateBatch) | ingestion machine batches | ✅ |
-| Update / delete named vectors per point | multi-vector records | ⬜ P2.5 |
+| Update / delete named vectors per point | `nvecs` rows retract exactly on overwrite/remove via `StoredDoc.named_spaces` (gated: dropped name retracts, sibling spaces untouched) | ✅ |
 | Set / overwrite / delete / clear payload | `connxism` doc metadata ops | 🔨 P3 |
 | Scroll (paginated listing w/ filter) | `Estate::scroll` (cursor-paged) | ✅ |
 | Count (exact/approx w/ filter) | `Estate::count` (filtered + free total) | ✅ |
@@ -58,7 +58,7 @@ Method: enumerated from the reference trees (`openapi.json` paths, gRPC
 | Plain (exact) index fallback | `FlatRecall` / estate scan | ✅ |
 | Quantization: scalar u8 / PQ / binary / 1.5-bit+2-bit (TQ) | `recall::quant` SQ8 + exact rescore from durable vectors (recall@10 0.976 measured, 3.4× smaller) | ✅ scalar; PQ/binary 🔨 P2.5 |
 | Sparse vectors + sparse index (inverted, on-disk variants) | `SparseVector` contract + weighted postings CF (one row per (dim, doc), exact accumulated dot, RRF-fused with dense+lexical) | ✅ |
-| Multi-vector per point (named vectors, late-interaction/ColBERT-style) | multi-vector records | ⬜ P2.5 |
+| Multi-vector per point (named vectors, late-interaction/ColBERT-style) | named spaces (`nvecs` CF, per-name dims, exact cosine) + token vectors (`mvecs` CF) with MaxSim rescore in the query plane (`using` / `multi`, over the wire) | ✅ exact; per-space ANN 🔨 |
 | Payload field indexes ×8: keyword, integer, float, bool, geo, text (full-text), datetime, uuid | `pidx` CF, order-preserving typed keys (keyword/int/float/bool ✅, 9.8× vs scan measured) | ✅ core; geo/datetime/uuid/full-text 🔨 |
 | Filtering DSL (must/should/must_not, match/range/geo/nested, filtered KNN) | `Filter` (must/should/must_not × eq/any/range/exists), filter-first via `pidx` or post-filter | ✅; geo/nested 🔨 |
 | Text index w/ tokenizers (word/whitespace/prefix/multilingual, stemmer, stopwords) | `rrf-core::text` grows analyzer support | 🔨 P3 |

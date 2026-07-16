@@ -152,6 +152,16 @@ paths); geo/datetime/uuid/full-text payload index types; nested filters.
 | 6 | `query_batch` + Euclid/Manhattan metrics on `Embedding` | ✅ batch ≡ sequential (asserted) | ✅ |
 | 7 | Green close + docs + push | fmt/clippy/test: 0 warnings, 41 suites green | ✅ |
 
+## Sprint 12 — Multi-vector per point (named spaces + late interaction)
+
+| # | Step | Verification gate | Status |
+|---|---|---|---|
+| 1 | Contract: `VectorRecord.named` (name → vector, per-space dims) + `VectorRecord.multi` (token vectors); `rrf_core::maxsim` (Σ_q max_d q·d); `EstateQuery.using` + `EstateQuery.multi` ride the wire via serde defaults | serde roundtrip incl. new fields; old payloads still parse | ✅ |
+| 2 | Storage: `nvecs` CF (`name \x00 doc` → f32-LE) + `mvecs` CF (doc → [n][dim][f32…]); per-name dim guard in `EstateInfo.named_dims`; retraction on overwrite/remove via `StoredDoc.named_spaces`/`multi_len` | planted named vector retrieved; overwrite drops removed names; remove retracts; dim mismatch errors | ✅ |
+| 3 | `named_search`: exact cosine over one named space (sorted prefix scan) | ranking + scores equal brute force over the space; cross-space isolation (title-hit ≠ body-hit) | ✅ |
+| 4 | Late interaction: MaxSim rescore stage in the query plane (`using` routes the dense half; `multi` rescores fetch-deep candidates) | MaxSim scores equal brute force; planted-token doc ranks first under `multi` and does NOT under plain dense | ✅ |
+| 5 | Green close: fmt/clippy/test, PARITY rows 34+61 ✅, BENCHMARKS note, push | full workspace green | ✅ |
+
 ## Sprint 11 — Weighted sparse vectors + three-way fusion
 
 | # | Step | Verification gate | Status |

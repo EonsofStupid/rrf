@@ -22,7 +22,7 @@
 /// All column families, in creation order.
 pub const COLUMN_FAMILIES: &[&str] = &[
     CF_META, CF_NODES, CF_CONNS, CF_DOCS, CF_VECS, CF_TERMS, CF_TAGS, CF_TRENDS, CF_RELS, CF_FEED,
-    CF_PIDX, CF_SPARSE,
+    CF_PIDX, CF_SPARSE, CF_NVECS, CF_MVECS,
 ];
 
 /// Estate metadata + counters.
@@ -49,6 +49,11 @@ pub const CF_FEED: &str = "feed";
 pub const CF_PIDX: &str = "pidx";
 /// Weighted sparse postings: `dim (u32 BE) \x00 doc_id` → f32-LE weight.
 pub const CF_SPARSE: &str = "sparse";
+/// Named vectors: `space \x00 doc_id` → f32-LE bytes (one space per name,
+/// its own dimensionality; a sorted prefix scan walks a whole space).
+pub const CF_NVECS: &str = "nvecs";
+/// Late-interaction token vectors: doc_id → [`encode_multi`] bytes.
+pub const CF_MVECS: &str = "mvecs";
 
 /// meta: the estate info blob.
 pub const META_ESTATE: &[u8] = b"estate";
@@ -295,6 +300,59 @@ pub fn sparse_prefix(dim: u32) -> Vec<u8> {
     k.extend_from_slice(&dim.to_be_bytes());
     k.push(SEP);
     k
+}
+
+/// Encode a named-vector row key: `space \x00 doc_id`.
+pub fn nvec_key(space: &str, doc_id: &str) -> Vec<u8> {
+    compound(space, doc_id)
+}
+
+/// Prefix that scans one named space's every vector.
+pub fn nvec_prefix(space: &str) -> Vec<u8> {
+    prefix(space)
+}
+
+/// Encode token vectors as `[n: u32 LE][dim: u32 LE][n*dim f32 LE]`.
+/// All vectors must share `dim` (enforced by the caller).
+pub fn encode_multi(vectors: &[Vec<f32>]) -> Vec<u8> {
+    let dim = vectors.first().map_or(0, Vec::len);
+    let mut out = Vec::with_capacity(8 + vectors.len() * dim * 4);
+    out.extend_from_slice(&(vectors.len() as u32).to_le_bytes());
+    out.extend_from_slice(&(dim as u32).to_le_bytes());
+    for v in vectors {
+        for x in v {
+            out.extend_from_slice(&x.to_le_bytes());
+        }
+    }
+    out
+}
+
+/// Inverse of [`encode_multi`]. Returns an empty list on malformed input.
+pub fn decode_multi(bytes: &[u8]) -> Vec<Vec<f32>> {
+    if bytes.len() < 8 {
+        return Vec::new();
+    }
+    let n = u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]) as usize;
+    let dim = u32::from_le_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]) as usize;
+    if bytes.len() < 8 + n * dim * 4 {
+        return Vec::new();
+    }
+    let mut out = Vec::with_capacity(n);
+    let mut off = 8;
+    for _ in 0..n {
+        let mut v = Vec::with_capacity(dim);
+        for _ in 0..dim {
+            v.push(f32::from_le_bytes([
+                bytes[off],
+                bytes[off + 1],
+                bytes[off + 2],
+                bytes[off + 3],
+            ]));
+            off += 4;
+        }
+        out.push(v);
+    }
+    out
 }
 
 /// Encode an embedding as little-endian f32 bytes.

@@ -41,7 +41,9 @@ impl ConnXRecall {
         };
 
         let dsl = q.effective_filter();
-        let fetch = if dsl.is_empty() {
+        // Filters post-filter and MaxSim reorders — both need a candidate
+        // set deeper than k for the winner to be *in* it.
+        let fetch = if dsl.is_empty() && q.multi.is_none() {
             top_k
         } else {
             top_k.saturating_mul(FILTER_OVERFETCH)
@@ -74,10 +76,15 @@ impl ConnXRecall {
                         .await?
                 }
             },
-            None => {
-                self.unscoped(&text, &vector, q.vector.is_some(), fetch)
-                    .await?
-            }
+            None => match (&q.using, &q.vector) {
+                // Named space: the dense ranking is exact cosine inside that
+                // space; a lexical ranking (if text) fuses in as usual.
+                (Some(space), Some(v)) => self.named_hybrid(space, &text, v, fetch).await?,
+                _ => {
+                    self.unscoped(&text, &vector, q.vector.is_some(), fetch)
+                        .await?
+                }
+            },
         };
 
         // Weighted sparse: a third ranking, fused by reciprocal rank fusion
@@ -109,6 +116,26 @@ impl ConnXRecall {
                         }
                     }
                     results = out;
+                }
+            }
+        }
+
+        // Late interaction: rescore the fetch-deep candidate set by MaxSim
+        // against stored token vectors (docs without any keep first-phase
+        // order after the scored ones).
+        if let Some(tokens) = &q.multi {
+            if !tokens.is_empty() {
+                results = self.maxsim_rescore(results, tokens).await?;
+                // Hydrate winners that came from lean paths.
+                for c in results.iter_mut() {
+                    if c.text.is_empty() {
+                        if let Some(doc) = self.doc(c.id.as_str()).await? {
+                            c.text = doc.text;
+                            if c.metadata.is_empty() {
+                                c.metadata = doc.metadata;
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -153,6 +180,54 @@ impl ConnXRecall {
         } else {
             self.lexical_search(text, fetch).await
         }
+    }
+
+    /// Dense ranking from a named space, fused with lexical when text is
+    /// present, winners hydrated from the doc store.
+    async fn named_hybrid(
+        &self,
+        space: &str,
+        text: &str,
+        vector: &Embedding,
+        fetch: usize,
+    ) -> Result<Vec<Candidate>> {
+        let dense = self.named_search(space, vector, fetch).await?;
+        let lexical = if text.is_empty() {
+            Vec::new()
+        } else {
+            self.lexical_search(text, fetch).await?
+        };
+        if lexical.is_empty() {
+            let mut out = Vec::with_capacity(dense.len());
+            for mut c in dense {
+                if let Some(doc) = self.doc(c.id.as_str()).await? {
+                    c.text = doc.text;
+                    c.metadata = doc.metadata;
+                }
+                out.push(c);
+            }
+            return Ok(out);
+        }
+        let lists = [
+            dense
+                .iter()
+                .map(|c| c.id.as_str().to_string())
+                .collect::<Vec<_>>(),
+            lexical
+                .iter()
+                .map(|c| c.id.as_str().to_string())
+                .collect::<Vec<_>>(),
+        ];
+        let fused = crate::index::reciprocal_rank_fusion(&lists, FUSION_RRF_K);
+        let mut out = Vec::with_capacity(fetch.min(fused.len()));
+        for (id, score) in fused.into_iter().take(fetch) {
+            if let Some(doc) = self.doc(&id).await? {
+                let mut c = Candidate::new(doc.id, doc.text, score);
+                c.metadata = doc.metadata;
+                out.push(c);
+            }
+        }
+        Ok(out)
     }
 }
 

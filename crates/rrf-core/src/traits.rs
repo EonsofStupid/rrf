@@ -20,6 +20,11 @@ pub struct VectorRecord {
     /// Optional weighted sparse vector (learned sparse / custom weights);
     /// stores that maintain a sparse index use it for sparse retrieval.
     pub sparse: Option<SparseVector>,
+    /// Named auxiliary vectors (each name is its own space with its own
+    /// dimensionality — e.g. `title` vs `body` embeddings per point).
+    pub named: std::collections::BTreeMap<String, Embedding>,
+    /// Late-interaction token vectors (ColBERT-style), scored by MaxSim.
+    pub multi: Vec<Embedding>,
     /// The text this vector represents (returned in candidates).
     pub text: String,
     /// Structured metadata.
@@ -33,6 +38,8 @@ impl VectorRecord {
             id: id.into(),
             embedding,
             sparse: None,
+            named: std::collections::BTreeMap::new(),
+            multi: Vec::new(),
             text: text.into(),
             metadata: Metadata::new(),
         }
@@ -41,6 +48,18 @@ impl VectorRecord {
     /// Builder-style sparse vector attachment.
     pub fn with_sparse(mut self, sparse: SparseVector) -> Self {
         self.sparse = Some(sparse);
+        self
+    }
+
+    /// Attach (or replace) a named vector — its own space, its own dims.
+    pub fn with_named(mut self, name: impl Into<String>, v: Embedding) -> Self {
+        self.named.insert(name.into(), v);
+        self
+    }
+
+    /// Attach late-interaction token vectors (scored by MaxSim).
+    pub fn with_multi(mut self, vectors: Vec<Embedding>) -> Self {
+        self.multi = vectors;
         self
     }
 }
