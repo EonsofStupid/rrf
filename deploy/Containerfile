@@ -13,9 +13,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends clang libclang-
 WORKDIR /src
 COPY . .
 RUN if [ -n "$FEATURES" ]; then \
-        cargo build --release --features "$FEATURES" --bin rrf --bin rrf-bench ; \
+        cargo build --release --features "$FEATURES" --bin rro --bin rro-bench ; \
     else \
-        cargo build --release --bin rrf --bin rrf-bench ; \
+        cargo build --release --bin rro --bin rro-bench ; \
     fi
 
 FROM docker.io/library/debian:bookworm-slim
@@ -23,13 +23,15 @@ FROM docker.io/library/debian:bookworm-slim
 # user namespaces. No USER root work beyond dir creation.
 RUN useradd --system --uid 10001 --home /var/lib/rrf rrf \
     && mkdir -p /var/lib/rrf /var/lib/rrf/models && chown -R rrf /var/lib/rrf
-COPY --from=build /src/target/release/rrf /src/target/release/rrf-bench /usr/local/bin/
+COPY --from=build /src/target/release/rro /src/target/release/rro-bench /usr/local/bin/
 USER 10001
-ENV RRF_ESTATE=/var/lib/rrf/estate \
-    RRF_LISTEN=0.0.0.0:7878 \
-    RRF_EVENTS=/var/lib/rrf/events.jsonl \
-    RRF_OPS_ADDR=0.0.0.0:9090 \
+# The daemon reads RRO_* (see crates/rro-engine/src/bin/rro.rs); these MUST use
+# that prefix or the estate/listener/events silently fall back to disabled.
+ENV RRO_ESTATE=/var/lib/rrf/estate \
+    RRO_LISTEN=0.0.0.0:7878 \
+    RRO_EVENTS=/var/lib/rrf/events.jsonl \
+    RRO_OPS_ADDR=0.0.0.0:9090 \
     RUST_LOG=info
 EXPOSE 7878 9090
 VOLUME /var/lib/rrf
-ENTRYPOINT ["/usr/local/bin/rrf"]
+ENTRYPOINT ["/usr/local/bin/rro"]

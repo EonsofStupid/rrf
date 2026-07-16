@@ -49,7 +49,10 @@ async fn fingerprint(e: &dyn Embedder) -> [[f32; 2]; 2] {
 
 /// Every engine must get the ranking right: each query prefers its own document.
 fn assert_diagonal_dominates(name: &str, m: [[f32; 2]; 2]) {
-    println!("{name:10} [[{:.4}, {:.4}], [{:.4}, {:.4}]]", m[0][0], m[0][1], m[1][0], m[1][1]);
+    println!(
+        "{name:10} [[{:.4}, {:.4}], [{:.4}, {:.4}]]",
+        m[0][0], m[0][1], m[1][0], m[1][1]
+    );
     assert!(
         m[0][0] > m[0][1],
         "{name}: capital query must prefer the capital doc ({} vs {})",
@@ -227,7 +230,7 @@ async fn http_batch_order_is_preserved() {
     ]);
     let batched = l.embed_documents(&texts).await.unwrap();
     for (i, t) in texts.iter().enumerate() {
-        let single = l.embed_documents(&[t.clone()]).await.unwrap();
+        let single = l.embed_documents(std::slice::from_ref(t)).await.unwrap();
         let sim = batched[i].cosine(&single[0]);
         println!("  row {i}: batched vs single = {sim:.6}");
         assert!(

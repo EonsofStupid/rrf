@@ -31,13 +31,49 @@ if [[ "${1:-}" == "stop" ]]; then stop; exit 0; fi
 
 mkdir -p "$RUN_DIR"
 
-echo "── building (release) ─────────────────────────────────────────"
-cargo build --release --bin rrf --bin rro-bench
+# ── real models (opt-in) ───────────────────────────────────────────────────
+# Weightless by default (synthetic embedder, dev/CI). Set RRO_REAL=1 — or point
+# RRO_EMBEDDER/RRO_RERANKER at a candle backend — to boot the real Qwen3 models,
+# fetching their weights on first run.
+FEATURES=""
+if [[ "${RRO_REAL:-}" == "1" ]]; then
+  RRO_EMBEDDER="${RRO_EMBEDDER:-candle-qwen}"
+  RRO_RERANKER="${RRO_RERANKER:-candle-cross-encoder}"
+fi
+if [[ "${RRO_EMBEDDER:-}" == candle* || "${RRO_RERANKER:-}" == candle* ]]; then
+  FEATURES="--features candle"
+  export RRO_DEVICE="${RRO_DEVICE:-cpu}"
+  # Which size from the catalog (see fetch-models.sh --list): 0.6b (baseline) | 4b | 8b.
+  EMBED_SIZE="${RRO_EMBED_SIZE:-0.6b}"
+  RERANK_SIZE="${RRO_RERANK_SIZE:-0.6b}"
+  MODELS_DIR="${RRO_MODELS_DIR:-$ROOT/models}"
+  if [[ "${RRO_EMBEDDER:-}" == candle* ]]; then
+    export RRO_EMBEDDER
+    export RRO_EMBEDDER_WEIGHTS="${RRO_EMBEDDER_WEIGHTS:-$MODELS_DIR/qwen3-embedding-$EMBED_SIZE}"
+    if ! RRO_MODELS_DIR="$MODELS_DIR" "$ROOT/scripts/fetch-models.sh" --check "embed-$EMBED_SIZE" >/dev/null 2>&1; then
+      echo "── fetching embedder weights: embed-$EMBED_SIZE (first run) ────────"
+      RRO_MODELS_DIR="$MODELS_DIR" "$ROOT/scripts/fetch-models.sh" "embed-$EMBED_SIZE"
+    fi
+  fi
+  if [[ "${RRO_RERANKER:-}" == candle* ]]; then
+    export RRO_RERANKER
+    export RRO_RERANKER_WEIGHTS="${RRO_RERANKER_WEIGHTS:-$MODELS_DIR/qwen3-reranker-$RERANK_SIZE}"
+    if ! RRO_MODELS_DIR="$MODELS_DIR" "$ROOT/scripts/fetch-models.sh" --check "rerank-$RERANK_SIZE" >/dev/null 2>&1; then
+      echo "── fetching reranker weights: rerank-$RERANK_SIZE (first run) ──────"
+      RRO_MODELS_DIR="$MODELS_DIR" "$ROOT/scripts/fetch-models.sh" "rerank-$RERANK_SIZE"
+    fi
+  fi
+  echo "models: embedder=${RRO_EMBEDDER:-deterministic}($EMBED_SIZE) reranker=${RRO_RERANKER:-lexical}($RERANK_SIZE) device=$RRO_DEVICE"
+fi
+
+echo "── building (release${FEATURES:+, $FEATURES}) ─────────────────────────"
+# shellcheck disable=SC2086 # FEATURES is "" or "--features candle"; word-split is intended
+cargo build --release $FEATURES --bin rro --bin rro-bench
 
 echo "── booting the engine ─────────────────────────────────────────"
 [[ -f "$PIDFILE" ]] && stop
 RRO_ESTATE="$ESTATE" RRO_LISTEN="$ADDR" RRO_EVENTS="$EVENTS" RUST_LOG=info \
-  "$ROOT/target/release/rrf" >>"$RUN_DIR/rro.log" 2>&1 &
+  "$ROOT/target/release/rro" >>"$RUN_DIR/rro.log" 2>&1 &
 echo $! > "$PIDFILE"
 
 for _ in $(seq 1 50); do

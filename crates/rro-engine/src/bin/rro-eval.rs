@@ -129,7 +129,9 @@ async fn run() -> anyhow::Result<()> {
     println!("indexed in {:.1}s", t.elapsed().as_secs_f64());
 
     // ---- run the ladder ---------------------------------------------------
-    let mut arms: Vec<(&str, Vec<f64>, Vec<f64>, Vec<f64>, f64)> = Vec::new();
+    // (arm name, per-query nDCG@10, recall@k, MRR, wall-seconds).
+    type ArmResult<'a> = (&'a str, Vec<f64>, Vec<f64>, Vec<f64>, f64);
+    let mut arms: Vec<ArmResult> = Vec::new();
     let names: Vec<&str> = if reranker.is_some() {
         vec!["bm25", "dense", "hybrid", "rro"]
     } else {
@@ -184,8 +186,15 @@ async fn run() -> anyhow::Result<()> {
     }
 
     // ---- report -----------------------------------------------------------
-    println!("\n=== {} | {} queries | top_k={top_k} recall_k={recall_k} ===", dir.display(), queries.len());
-    println!("{:<8} {:>9} {:>10} {:>9} {:>12}", "arm", "nDCG@10", "Recall@10", "MRR@10", "ms/query");
+    println!(
+        "\n=== {} | {} queries | top_k={top_k} recall_k={recall_k} ===",
+        dir.display(),
+        queries.len()
+    );
+    println!(
+        "{:<8} {:>9} {:>10} {:>9} {:>12}",
+        "arm", "nDCG@10", "Recall@10", "MRR@10", "ms/query"
+    );
     let mut prev_ndcg = 0.0;
     for (name, ndcg, rec, mrr, secs) in &arms {
         let n = mean(ndcg);
@@ -317,7 +326,10 @@ fn load_queries(dir: &Path, limit: usize) -> anyhow::Result<Vec<EvalQuery>> {
         };
         let score: u8 = s.trim().parse().unwrap_or(0);
         if score > 0 {
-            qrels.entry(q.to_string()).or_default().insert(d.to_string(), score);
+            qrels
+                .entry(q.to_string())
+                .or_default()
+                .insert(d.to_string(), score);
         }
     }
 

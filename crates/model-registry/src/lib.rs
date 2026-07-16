@@ -113,7 +113,11 @@ impl std::str::FromStr for EmbedderKind {
             "vllm" => Ok(EmbedderKind::Vllm),
             "onnx" => Ok(EmbedderKind::Onnx),
             "remote" => Ok(EmbedderKind::Remote),
-            other => Err(unknown_kind("RRO_EMBEDDER", other, &EmbedderKind::ALL.map(|k| k.as_str()))),
+            other => Err(unknown_kind(
+                "RRO_EMBEDDER",
+                other,
+                &EmbedderKind::ALL.map(|k| k.as_str()),
+            )),
         }
     }
 }
@@ -337,9 +341,15 @@ pub async fn build_embedder(cfg: &EmbedderConfig) -> Result<Arc<dyn Embedder>> {
                     embedder::OpenAiKind::LlamaCpp,
                     "http://127.0.0.1:8090/v1/embeddings",
                 ),
-                _ => (embedder::OpenAiKind::Vllm, "http://127.0.0.1:8092/v1/embeddings"),
+                _ => (
+                    embedder::OpenAiKind::Vllm,
+                    "http://127.0.0.1:8092/v1/embeddings",
+                ),
             };
-            let ep = cfg.endpoint.clone().unwrap_or_else(|| default_ep.to_string());
+            let ep = cfg
+                .endpoint
+                .clone()
+                .unwrap_or_else(|| default_ep.to_string());
             let mut ocfg = embedder::OpenAiEmbedConfig::new(ep, kind);
             ocfg.batch = cfg.batch.max(1);
             ocfg.truncate_dim = cfg.dim;
@@ -375,7 +385,11 @@ pub async fn build_reranker(cfg: &RerankerConfig) -> Result<Arc<dyn Reranker>> {
             }
             #[cfg(not(feature = "candle"))]
             {
-                Err(feature_off("candle-cross-encoder", "candle", "RRO_RERANKER"))
+                Err(feature_off(
+                    "candle-cross-encoder",
+                    "candle",
+                    "RRO_RERANKER",
+                ))
             }
         }
 
@@ -396,9 +410,15 @@ pub async fn build_reranker(cfg: &RerankerConfig) -> Result<Arc<dyn Reranker>> {
                     reranker::HttpRerankKind::LlamaCpp,
                     "http://127.0.0.1:8093/v1/rerank",
                 ),
-                _ => (reranker::HttpRerankKind::Vllm, "http://127.0.0.1:8092/rerank"),
+                _ => (
+                    reranker::HttpRerankKind::Vllm,
+                    "http://127.0.0.1:8092/rerank",
+                ),
             };
-            let ep = cfg.endpoint.clone().unwrap_or_else(|| default_ep.to_string());
+            let ep = cfg
+                .endpoint
+                .clone()
+                .unwrap_or_else(|| default_ep.to_string());
             let mut rcfg = reranker::HttpRerankConfig::new(ep, kind);
             rcfg.batch = cfg.batch.max(1);
             Ok(Arc::new(reranker::HttpReranker::connect(rcfg).await?))
@@ -440,6 +460,11 @@ fn unknown_kind(var_name: &str, got: &str, known: &[&str]) -> RroError {
     ))
 }
 
+// Called only from the `#[cfg(not(feature = ...))]` arms of `build_*`. When
+// every model feature is compiled in (e.g. CI's `--all-features`), those arms
+// vanish and this is genuinely unused — allow it there rather than under a
+// blanket `#[allow]` that would also hide a real dead-code regression.
+#[cfg_attr(all(feature = "candle", feature = "onnx"), allow(dead_code))]
 fn feature_off(kind: &str, feature: &str, var_name: &str) -> RroError {
     config_err(format!(
         "{var_name}=`{kind}` needs the `{feature}` feature, which this binary was not built with — \
@@ -532,7 +557,10 @@ mod tests {
             "  Candle_Qwen ".parse::<EmbedderKind>().unwrap(),
             EmbedderKind::CandleQwen
         );
-        assert_eq!("BM25".parse::<RerankerKind>().unwrap(), RerankerKind::Lexical);
+        assert_eq!(
+            "BM25".parse::<RerankerKind>().unwrap(),
+            RerankerKind::Lexical
+        );
     }
 
     #[test]

@@ -78,10 +78,24 @@ prometheus **/metrics** + probes, self-reported issues. SQ8 quantization
 ## Turnkey
 
 ```sh
-./scripts/quickstart.sh    # build → boot (estate+RRD+a2a+events) → smoke over the wire
-./scripts/mesh.sh 3        # a local mesh: 3 engines, each a2a-addressable
+./scripts/quickstart.sh          # build → boot (estate+RRD+a2a+events) → smoke over the wire
+./scripts/mesh.sh 3              # a local mesh: 3 engines, each a2a-addressable
 ./scripts/quickstart.sh stop
+
+# Real models (Qwen3 embedder + reranker), fully turnkey:
+./scripts/fetch-models.sh        # baseline 0.6b weights (verified byte-exact)
+./scripts/fetch-models.sh --list # the catalog: 0.6b (baseline) / 4b / 8b
+RRO_REAL=1 ./scripts/quickstart.sh                        # baseline on CPU
+RRO_REAL=1 RRO_EMBED_SIZE=4b RRO_DEVICE=cuda:0 ./scripts/quickstart.sh   # scale up
 ```
+
+The default build is **weightless** (synthetic embedder, dev/CI only). Real
+weights are too large to vendor in git, so `scripts/fetch-models.sh` pulls the
+Qwen3 family on demand (0.6B baseline → 4B → 8B, embedder + reranker) and
+verifies each shard byte-exact; `RRO_REAL=1` wires them into the daemon in one
+command. The 0.6B pair is the CPU-runnable baseline and the fine-tuning base;
+fine-tuned checkpoints slot in as just-another-weights-dir. Details:
+**[docs/MODELS.md](docs/MODELS.md)**.
 
 Deploy: **Podman Quadlets** — `deploy/Containerfile` (build),
 `deploy/rro.container` + `deploy/rro-estate.volume` (rootless systemd units),

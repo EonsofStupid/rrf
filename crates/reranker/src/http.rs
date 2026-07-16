@@ -174,7 +174,10 @@ fn parse_rerank(json: &str, want: usize, endpoint: &str) -> Result<Vec<f32>> {
     // by position, so trusting arrival order silently mis-assigns every score.
     let mut out = vec![f32::NAN; want];
     for (i, item) in results.iter().enumerate() {
-        let idx = item.get("index").and_then(|x| x.as_u64()).unwrap_or(i as u64) as usize;
+        let idx = item
+            .get("index")
+            .and_then(|x| x.as_u64())
+            .unwrap_or(i as u64) as usize;
         let score = item
             .get("relevance_score")
             .or_else(|| item.get("score"))
@@ -330,8 +333,12 @@ mod tests {
 
     #[test]
     fn missing_or_out_of_range_scores_are_errors() {
-        assert!(parse_rerank(r#"{"results":[{"index":0,"relevance_score":1.0}]}"#, 2, "t").is_err());
-        assert!(parse_rerank(r#"{"results":[{"index":5,"relevance_score":1.0}]}"#, 1, "t").is_err());
+        assert!(
+            parse_rerank(r#"{"results":[{"index":0,"relevance_score":1.0}]}"#, 2, "t").is_err()
+        );
+        assert!(
+            parse_rerank(r#"{"results":[{"index":5,"relevance_score":1.0}]}"#, 1, "t").is_err()
+        );
     }
 
     #[test]

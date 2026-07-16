@@ -15,6 +15,64 @@ and is UNVERIFIED for real retrieval until this lands._
 - **Compute:** CPU works; CUDA or Metal strongly preferred for the reranker.
 - **Toolchain:** rust stable, clang/libclang (already used by rocksdb).
 
+> **Choosing** which model + runtime (Qwen3 sizes, Nemotron, candle vs
+> llama.cpp vs vLLM): see **[docs/MODEL_CHOICES.md](MODEL_CHOICES.md)**.
+
+## 0.5 Turnkey: get the weights (one command)
+
+Weights are too big to vendor in git, so they are pulled on demand and verified
+byte-exact. `scripts/fetch-models.sh` is a size-aware **catalog** of the whole
+Qwen3 family (all apache-2.0):
+
+| name | HF repo | dim | approx |
+|---|---|---|---|
+| `embed-0.6b` (baseline) | `Qwen/Qwen3-Embedding-0.6B` | 1024 | 1.1 GB |
+| `embed-4b` | `Qwen/Qwen3-Embedding-4B` | 2560 | 7.5 GB |
+| `embed-8b` | `Qwen/Qwen3-Embedding-8B` | 4096 | 14 GB |
+| `rerank-0.6b` (baseline) | `Qwen/Qwen3-Reranker-0.6B` | — | 1.1 GB |
+| `rerank-4b` | `Qwen/Qwen3-Reranker-4B` | — | 7.5 GB |
+| `rerank-8b` | `Qwen/Qwen3-Reranker-8B` | — | 15 GB |
+
+```sh
+./scripts/fetch-models.sh              # the baseline: embed-0.6b + rerank-0.6b
+./scripts/fetch-models.sh 4b           # both 4B models
+./scripts/fetch-models.sh embed-8b     # one model by name
+./scripts/fetch-models.sh --list       # the whole catalog with sizes
+./scripts/fetch-models.sh --check 4b   # verify on disk, download nothing
+```
+
+It is idempotent and resumable (a byte-exact file is skipped, a partial resumed —
+the 4B/8B ship as sharded safetensors and every shard is verified), prefers the
+`huggingface` CLI when present and falls back to `curl`/`wget`, and honors
+`HF_ENDPOINT` (mirror), `HF_REV`, and `HF_TOKEN`. Models land in
+`models/qwen3-embedding-<size>` / `models/qwen3-reranker-<size>`.
+
+One-command boot, size-selectable:
+
+```sh
+RRO_REAL=1 ./scripts/quickstart.sh                       # baseline (0.6b) on CPU
+RRO_REAL=1 RRO_EMBED_SIZE=4b RRO_DEVICE=cuda:0 ./scripts/quickstart.sh
+```
+
+### Recommended approach
+1. **Start on the 0.6B baseline.** It is CPU-runnable and is the intended
+   fine-tuning base — the fastest path to a *real*, honest bake-off.
+2. **Prove it before trusting a number:** run the card-reference gate
+   (`RRO_TEST_QWEN_WEIGHTS=models/qwen3-embedding-0.6b cargo test -p embedder
+   --features candle --test candle_qwen_gate -- --ignored`). It reproduces the
+   model card's exact similarity scores, so pooling/padding/prompt/EOS/norm are
+   all provably right at once.
+3. **Then scale for the quality ceiling.** 4B/8B are the same trait, the same
+   registry, zero flow change — but they want a GPU (an 8B loads as f32 on CPU =
+   ~32 GB RAM). Set `RRO_DEVICE=cuda:0`.
+4. **Fine-tunes are not in the catalog** — a fine-tuned checkpoint is just a
+   local weights dir; point `RRO_EMBEDDER_WEIGHTS` straight at it. Selection is
+   data (§2), so nothing else changes.
+
+Whichever box the network policy blocks HF on, set
+`HF_ENDPOINT=https://hf-mirror.com` or pre-stage `models/` from a box that can
+reach it — the loaders only ever read a local directory.
+
 ## 1. The design goal (non-negotiable)
 
 **Modular AND part of the engine. Truly swappable, max performance, expandable.**
@@ -66,7 +124,7 @@ pub fn build_embedder(cfg: &EmbedderConfig) -> Result<Arc<dyn Embedder>> {
 // Same shape: build_reranker(&RerankerConfig) -> Arc<dyn Reranker>.
 ```
 
-`rro-engine`'s daemon (`bin/rrf.rs`) reads `RRO_EMBEDDER*` / `RRO_RERANKER*` from
+`rro-engine`'s daemon (`bin/rro.rs`) reads `RRO_EMBEDDER*` / `RRO_RERANKER*` from
 env, calls `build_embedder` / `build_reranker`, and hands the results to
 `ReasonReadyObject::builder()`. **That is the entire swap mechanism.**
 

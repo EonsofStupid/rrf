@@ -10,7 +10,7 @@ Wants=network-online.target
 [Service]
 Type=simple
 EnvironmentFile=/etc/rrf/config.env
-ExecStart=/usr/local/bin/rrf
+ExecStart=/usr/local/bin/rro
 Restart=on-failure
 RestartSec=2
 # The daemon handles SIGTERM cleanly: drains, commits the RRD baseline.

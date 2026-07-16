@@ -10,17 +10,17 @@
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
+mod bm25;
 #[cfg(feature = "candle")]
 mod candle_qwen;
-mod bm25;
-mod http;
 mod devpulse;
+mod http;
 
+pub use bm25::LexicalReranker;
 #[cfg(feature = "candle")]
 pub use candle_qwen::{CandleQwenReranker, CandleRerankConfig, DEFAULT_RERANK_TASK};
-pub use bm25::LexicalReranker;
-pub use http::{HttpRerankConfig, HttpRerankKind, HttpReranker};
 pub use devpulse::{DevPulseReranker, RerankSpec};
+pub use http::{HttpRerankConfig, HttpRerankKind, HttpReranker};
 
 /// Re-export so downstream crates can name the trait without a second dep.
 pub use rro_core::Reranker;

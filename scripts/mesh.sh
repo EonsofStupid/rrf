@@ -27,14 +27,14 @@ if [[ "${1:-}" == "stop" ]]; then
 fi
 
 mkdir -p "$RUN_DIR"
-cargo build --release --bin rrf --bin rro-bench >/dev/null
+cargo build --release --bin rro --bin rro-bench >/dev/null
 
 echo "── booting a ${N}-node mesh ───────────────────────────────────"
 for i in $(seq 1 "$N"); do
   port=$((BASE_PORT + i - 1))
   RRO_NODE="rrf-n$i" RRO_ESTATE="$RUN_DIR/estate-$i" \
   RRO_LISTEN="127.0.0.1:$port" RRO_EVENTS="$RUN_DIR/node-$i.events.jsonl" \
-  RUST_LOG=warn "$ROOT/target/release/rrf" >>"$RUN_DIR/node-$i.log" 2>&1 &
+  RUST_LOG=warn "$ROOT/target/release/rro" >>"$RUN_DIR/node-$i.log" 2>&1 &
   echo $! > "$RUN_DIR/node-$i.pid"
 done
 

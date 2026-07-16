@@ -133,7 +133,10 @@ async fn paraphrase_beats_unrelated() {
     let para = cosine(&v[0], &v[1]);
     let unrel = cosine(&v[0], &v[2]);
     println!("paraphrase={para:.4}  unrelated={unrel:.4}");
-    assert!(para > unrel + 0.15, "paraphrase {para} vs unrelated {unrel}");
+    assert!(
+        para > unrel + 0.15,
+        "paraphrase {para} vs unrelated {unrel}"
+    );
 }
 
 /// The asymmetry is real and load-bearing: embedding a query through the

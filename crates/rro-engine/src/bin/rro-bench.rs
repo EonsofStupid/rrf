@@ -26,7 +26,7 @@ use std::time::Instant;
 use embedder::DeterministicEmbedder;
 use recall::FlatRecall;
 use rro_core::{Document, Embedder, Recall};
-use rro_engine::{spawn_ingest, ObjectConfig, IngestConfig, ReasonReadyObject};
+use rro_engine::{spawn_ingest, IngestConfig, ObjectConfig, ReasonReadyObject};
 use serde::{Deserialize, Serialize};
 
 /// The recorded shape of a run: configuration + headline numbers.
