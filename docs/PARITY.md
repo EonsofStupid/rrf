@@ -95,9 +95,9 @@ SHOW, SLEEP, UPDATE, UPSERT, USE`
 | **RELATE** (graph edges) + graph traversal in SELECT (`->edge->node`) | `Estate::relate/traverse` + routed `scoped_search` (gate 1.000 vs 0.025) | ✅ |
 | DEFINE ×17: access, analyzer, api, bucket, config, database, event, field, function, index, model, module, namespace, param, sequence, table, user | estate catalog (subset; see per-row mapping in C) | 🔨 P3–P6 |
 | LIVE / KILL (live queries) | poll (`changes`) ✅ + push-stream `watch` over a2a: event-driven frames (estate feed signal, zero polling), seq-resume, token-gated, `Client::watch` (KILL = drop the connection) | ✅ |
-| SHOW CHANGES (changefeeds) | durable feed CF, atomic with writes | ✅ |
+| SHOW CHANGES (changefeeds) | durable feed CF, atomic with writes + `feed_stats()` (first/next seq, retained rows) in `info` | ✅ |
 | Transactions (BEGIN/COMMIT/CANCEL) | RocksDB TransactionDB | 🔨 P3 |
-| INFO (ns/db/table/index introspection) | estate info + `INFO`-verb on a2a | ✅ partial |
+| INFO (ns/db/table/index introspection) | `info` a2a verb / `Client::info`: identity, analyzer, dims, payload indexes, collections, aliases, quotas, health, feed stats (gated over TCP) | ✅ |
 | REBUILD INDEX | `Estate::rebuild_payload_index` (drop + backfill; the typed-key migration path, gated) | ✅ payload; postings 🔨 |
 | Permissions-per-field/table, record-level auth | auth layer | 🔨 P5 |
 | Full DSL parser (`RRQL`) | only after the builder proves the semantics | ⬜ P6 |
@@ -112,7 +112,7 @@ operate`
 |---|---|---|
 | Core value fns (array/object/string/math/time/type/parse/…) | builder expression layer | 🔨 P3 (as needed by builder) |
 | `vector::*` (similarity/distance math) | `rrf-core::Embedding` ✅ + SIMD P2 | ✅ partial |
-| `search::*` (score/highlight/offsets) | recall result annotations | 🔨 P3 |
+| `search::*` (score/highlight/offsets) | scores ✅ + `Candidate.highlights` byte-offset spans (analyzer-aware) ✅ | ✅ |
 | `crypto::*` (argon2/bcrypt/pbkdf2/blake3/md5…) | auth layer deps | 🔨 P5 |
 | `http::*` (outbound calls from queries) | connector drivers instead (deliberate) | ⬜ different-by-design |
 | `script::*` (embedded JS) | **WASM plugins instead** (`rrf-plugins`) | 🔨 P6 |
@@ -123,7 +123,7 @@ operate`
 | Capability | rrf home | Status |
 |---|---|---|
 | KV abstraction with backends: mem, rocksdb, surrealkv-class, tikv-class, indxdb (browser), FDB-class | `connxism::Db` seam (rocksdb ✅, mem 🔨 P3; distributed backends ⬜ P8) | ✅/🔨 |
-| Full-text index: analyzers (tokenizers/filters/stemmers), BM25 scoring, highlighter, offsets | postings ✅ BM25 + `Analyzer` (tokenizers/stopwords/stemmer) ✅ + `Analyzer::highlight` (byte-offset spans, stem/prefix-aware) ✅ | ✅ |
+| Full-text index: analyzers (tokenizers/filters/stemmers), BM25 scoring, highlighter, offsets | postings ✅ BM25 + `Analyzer` ✅ + highlights **on candidates over the wire** (`EstateQuery.highlight` → `Candidate.highlights`, offset-exact, gated over TCP) | ✅ |
 | HNSW + DiskANN vector trees | **excised in the reference by the author's own design — replaced by Recall** | ✅ by architecture |
 | Index planner / query optimizer (streaming + legacy) | query planning in builder | 🔨 P3/P5 |
 | Sequences | estate sequence CF | 🔨 P3 |

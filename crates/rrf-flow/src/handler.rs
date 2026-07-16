@@ -219,7 +219,8 @@ impl Handler for FlowNode {
 
             // Estate admin + analytics verbs, sprint 12–18 surface. Every
             // arm needs the estate; the macro-ish helper keeps them terse.
-            "flush"
+            "info"
+            | "flush"
             | "compact"
             | "matrix"
             | "sample"
@@ -258,6 +259,16 @@ impl Handler for FlowNode {
                         let seed = b.get("seed").and_then(|v| v.as_u64()).unwrap_or(0);
                         let docs = estate.sample(n as usize, seed)?;
                         serde_json::json!({ "docs": docs })
+                    }
+                    "info" => {
+                        serde_json::json!({
+                            "estate": estate.info(),
+                            "health": estate.health()?,
+                            "payload_indexes": estate.payload_indexes()?,
+                            "collections": estate.collections()?,
+                            "aliases": estate.aliases()?,
+                            "feed": estate.feed_stats()?,
+                        })
                     }
                     "flush" => {
                         estate.flush()?;

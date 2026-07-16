@@ -1225,4 +1225,9 @@ impl ConnXRecall {
     pub(crate) fn quota_max_top_k(&self) -> Option<usize> {
         self.quotas.max_top_k
     }
+
+    /// The estate's analyzer (highlighting, diagnostics).
+    pub(crate) fn analyzer_ref(&self) -> &rrf_core::text::Analyzer {
+        &self.analyzer
+    }
 }

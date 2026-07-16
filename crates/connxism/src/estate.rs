@@ -930,3 +930,35 @@ impl Estate {
         Ok(out)
     }
 }
+
+/// Changefeed shape (the SHOW-CHANGES numbers).
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct FeedStats {
+    /// The oldest retained sequence number (None when the feed is empty).
+    pub first_seq: Option<u64>,
+    /// The next sequence to be written (== total rows ever written).
+    pub next_seq: u64,
+    /// Retained rows.
+    pub retained: u64,
+}
+
+impl Estate {
+    /// The changefeed's shape: oldest retained seq, next seq, row count.
+    pub fn feed_stats(&self) -> Result<FeedStats> {
+        let handle = self.db.cf(crate::keys::CF_FEED)?;
+        let mut first_seq = None;
+        let mut retained = 0u64;
+        for item in self.db.0.iterator_cf(handle, rocksdb::IteratorMode::Start) {
+            let (k, _) = item.map_err(rocks_err)?;
+            if first_seq.is_none() && k.len() == 8 {
+                first_seq = Some(u64::from_be_bytes(k[..8].try_into().expect("8 bytes")));
+            }
+            retained += 1;
+        }
+        Ok(FeedStats {
+            first_seq,
+            next_seq: self.db.get_u64(crate::keys::META_FEED_SEQ)?,
+            retained,
+        })
+    }
+}

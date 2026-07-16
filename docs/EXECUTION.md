@@ -152,6 +152,20 @@ paths); geo/datetime/uuid/full-text payload index types; nested filters.
 | 6 | `query_batch` + Euclid/Manhattan metrics on `Embedding` | ✅ batch ≡ sequential (asserted) | ✅ |
 | 7 | Green close + docs + push | fmt/clippy/test: 0 warnings, 41 suites green | ✅ |
 
+## Sprint 27 — Highlights on candidates + INFO introspection + feed stats
+
+Scoping note (honest): the mem-KV backend was considered and skipped — the
+`Db` seam is used raw (iterators, merge operators, properties, compaction)
+across every estate module; abstracting it is its own multi-sprint effort,
+not a rider. PARITY row stays 🔨.
+
+| # | Step | Verification gate | Status |
+|---|---|---|---|
+| 1 | `EstateQuery.highlight` + `Candidate.highlights: Vec<(start, end)>` (serde defaults — ride the wire): winners get analyzer-aware byte spans of the query terms in their text (stemmed query highlights inflected surface forms) | spans slice candidate text to expected surface forms; absent by default; over-the-wire query carries them | ✅ |
+| 2 | `info` a2a verb + `Client::info`: estate identity, analyzer, dims + named dims, payload indexes, collections + aliases, quotas, feed stats | verb reports live catalog over TCP | ✅ |
+| 3 | `Estate::feed_stats()` (first/next seq + retained rows — the SHOW-CHANGES shape) | stats track writes and reflect in `info` | ✅ |
+| 4 | Green close: fmt/clippy/test, PARITY rows (highlighter wired ✅, INFO ✅), BENCHMARKS note, push | full workspace green | ✅ |
+
 ## Sprint 26 — Strict mode / resource limits
 
 | # | Step | Verification gate | Status |

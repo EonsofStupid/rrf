@@ -379,6 +379,10 @@ pub struct EstateQuery {
     /// Carry each winner's stored dense vector on the candidate.
     #[serde(default)]
     pub with_vectors: bool,
+    /// Carry analyzer-aware highlight spans of the query terms on each
+    /// winner's text.
+    #[serde(default)]
+    pub highlight: bool,
     /// Prefetch pipeline: each stage gathers candidates by its own signal;
     /// the outer query rescores exactly inside their union.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -402,6 +406,7 @@ impl Default for EstateQuery {
             with_payload: true,
             offset: 0,
             with_vectors: false,
+            highlight: false,
             prefetch: Vec::new(),
         }
     }
@@ -491,6 +496,12 @@ impl EstateQuery {
     /// Carry each winner's stored dense vector on the candidate.
     pub fn with_vectors(mut self) -> Self {
         self.with_vectors = true;
+        self
+    }
+
+    /// Carry highlight spans on each winner's text.
+    pub fn highlighted(mut self) -> Self {
+        self.highlight = true;
         self
     }
 

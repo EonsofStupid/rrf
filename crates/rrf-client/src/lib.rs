@@ -177,6 +177,12 @@ impl Client {
         self.call("health", serde_json::json!({})).await
     }
 
+    /// Full estate introspection: identity, analyzer, dims, payload
+    /// indexes, collections, aliases, quotas, feed stats.
+    pub async fn info(&self) -> Result<serde_json::Value> {
+        self.call("info", serde_json::json!({})).await
+    }
+
     /// Flush the node's estate: memtables + WAL sync — the explicit
     /// durability ack point.
     pub async fn flush(&self) -> Result<()> {

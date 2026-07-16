@@ -285,6 +285,12 @@ pub struct Candidate {
     /// (`with_vectors`). Absent otherwise.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub vector: Option<Embedding>,
+    /// Byte spans of query-term matches in `text`, when the query asked
+    /// for them (`highlight`). Analyzer-aware: a stemmed query highlights
+    /// the inflected surface form. `&text[start..end]` is the matched
+    /// surface token.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub highlights: Vec<(usize, usize)>,
 }
 
 impl Candidate {
@@ -296,6 +302,7 @@ impl Candidate {
             score,
             metadata: Metadata::new(),
             vector: None,
+            highlights: Vec::new(),
         }
     }
 }

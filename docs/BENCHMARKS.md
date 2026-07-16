@@ -564,3 +564,18 @@ family of fix as Sprint 25's unknown-verb reply).
 Gates: every quota one-under passes / one-over rejects typed; doc cap
 allows overwrites at the cap; health carries the limits over TCP; an
 over-limit wire query gets a clean refusal and the node stays healthy.
+
+## Sprint 27: highlights on candidates + INFO + feed stats (2026-07-16)
+
+`EstateQuery.highlight` → `Candidate.highlights` (byte spans into the
+candidate's text, serde-defaulted — old payloads parse): winners carry
+analyzer-aware match spans, so a stemmed query highlights the inflected
+surface forms it actually matched — gated offset-exact locally AND over
+the wire. `info` a2a verb (`Client::info`): estate identity, analyzer,
+dims, payload indexes, collections, aliases, quotas, health, and the new
+`feed_stats()` (first/next seq + retained rows — the SHOW CHANGES shape).
+
+Scoped honestly: the mem-KV backend row stays 🔨 — the `Db` seam is used
+raw (iterators, merge operators, properties, compaction) across every
+estate module; abstracting it is its own effort, not a rider on this
+sprint.

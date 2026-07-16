@@ -28,7 +28,7 @@ mod rels;
 mod store;
 mod strategies;
 
-pub use estate::{Estate, EstateConfig, HealthReport, Issue, Quotas};
+pub use estate::{Estate, EstateConfig, FeedStats, HealthReport, Issue, Quotas};
 
 /// How many column families one estate manages (ops surface sizing).
 pub const COLUMN_FAMILY_COUNT: usize = keys::COLUMN_FAMILIES.len();

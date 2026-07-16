@@ -262,6 +262,16 @@ impl ConnXRecall {
                 c.vector = self.vector_of(c.id.as_str()).await?;
             }
         }
+        if q.highlight {
+            if let Some(qt) = &q.text {
+                let analyzer = self.analyzer_ref();
+                for c in results.iter_mut() {
+                    if !c.text.is_empty() {
+                        c.highlights = analyzer.highlight(&c.text, qt);
+                    }
+                }
+            }
+        }
         Ok(results)
     }
 
