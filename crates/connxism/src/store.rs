@@ -726,7 +726,7 @@ fn upsert_blocking(
     batch.put_cf(meta_cf, META_SHAPES, serde_json::to_vec(&shapes)?);
     batch.put_cf(meta_cf, META_FEED_SEQ, feed_seq.to_le_bytes());
 
-    db.0.write(batch).map_err(rocks_err)
+    db.write(batch)
 }
 
 /// Decode a posting value: 8-byte binary (tf, len — the current format)
@@ -1075,7 +1075,7 @@ pub(crate) fn remove_blocking(
     batch.put_cf(meta_cf, META_TOTAL_TOKENS, total_tokens.to_le_bytes());
     batch.put_cf(meta_cf, META_SHAPES, serde_json::to_vec(&shapes)?);
 
-    db.0.write(batch).map_err(rocks_err)
+    db.write(batch)
 }
 
 impl ConnXRecall {
@@ -1169,7 +1169,7 @@ impl ConnXRecall {
             batch.put_cf(meta_cf, META_FEED_SEQ, feed_seq.to_le_bytes());
             batch.put_cf(meta_cf, META_SHAPES, serde_json::to_vec(&shapes)?);
 
-            db.0.write(batch).map_err(rocks_err)
+            db.write(batch)
         })
         .await
         .map_err(|e| RrfError::Recall(format!("join: {e}")))??;

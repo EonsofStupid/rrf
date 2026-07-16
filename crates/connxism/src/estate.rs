@@ -19,7 +19,7 @@ use crate::model::{now_ms, ConnectorInfo, EstateInfo, NodeInfo, SyncState, Trend
 
 /// Shared handle to the open database. Cloneable; all clones see one DB.
 #[derive(Clone)]
-pub(crate) struct Db(pub(crate) Arc<DB>);
+pub(crate) struct Db(pub(crate) Arc<DB>, pub(crate) bool);
 
 impl Db {
     pub(crate) fn cf(&self, name: &str) -> Result<&ColumnFamily> {
@@ -50,6 +50,17 @@ impl Db {
         self.0
             .put_cf(handle, key, serde_json::to_vec(value)?)
             .map_err(rocks_err)
+    }
+
+    /// Commit a batch, honoring the estate's fsync-on-write choice.
+    pub(crate) fn write(&self, batch: rocksdb::WriteBatch) -> Result<()> {
+        if self.1 {
+            let mut wo = rocksdb::WriteOptions::default();
+            wo.set_sync(true);
+            self.0.write_opt(batch, &wo).map_err(rocks_err)
+        } else {
+            self.0.write(batch).map_err(rocks_err)
+        }
     }
 
     pub(crate) fn get_u64(&self, key: &[u8]) -> Result<u64> {
@@ -103,6 +114,10 @@ pub struct EstateConfig {
     /// queries must agree on what a token is); reopening ignores this
     /// field in favour of the persisted one.
     pub analyzer: rrf_core::text::Analyzer,
+    /// Sync every write batch to disk (fsync) before acknowledging.
+    /// Durability over throughput; the WAL already survives process
+    /// crashes either way — this survives power loss.
+    pub fsync_writes: bool,
 }
 
 /// One operator estate: the kvs-connectome over a single RocksDB.
@@ -151,7 +166,7 @@ impl Estate {
             })
             .collect();
         let db = DB::open_cf_descriptors(&opts, path.as_ref(), descriptors).map_err(rocks_err)?;
-        let db = Db(Arc::new(db));
+        let db = Db(Arc::new(db), config.fsync_writes);
 
         let info = match db.get_json::<EstateInfo>(CF_META, keys::META_ESTATE)? {
             Some(existing) => existing,
@@ -363,7 +378,7 @@ impl Estate {
                 }
             }
         }
-        self.db.0.write(batch).map_err(rocks_err)?;
+        self.db.write(batch)?;
         rrf_core::events::emit(
             "estate.payload_index",
             serde_json::json!({ "field": field, "rows": rows }),
@@ -412,7 +427,7 @@ impl Estate {
                 rows += 1;
             }
         }
-        self.db.0.write(batch).map_err(rocks_err)?;
+        self.db.write(batch)?;
         rrf_core::events::emit(
             "estate.payload_index.rebuilt",
             serde_json::json!({ "field": field, "rows": rows }),
@@ -746,6 +761,9 @@ pub struct HealthReport {
     pub named_dims: std::collections::BTreeMap<String, usize>,
     /// Whether the ANN graph holds SQ8 codes.
     pub quantized: bool,
+    /// Live SST bytes per column family (optimizer status).
+    #[serde(default)]
+    pub cf_bytes: Vec<(String, u64)>,
 }
 
 /// One self-reported operational concern.
@@ -774,6 +792,7 @@ impl Estate {
             dim: info.dim,
             named_dims: info.named_dims,
             quantized: self.quantized,
+            cf_bytes: self.cf_sizes()?,
         })
     }
 
@@ -827,5 +846,47 @@ impl Estate {
                 i64::from_le_bytes(a)
             })
             .unwrap_or(0))
+    }
+}
+
+impl Estate {
+    /// Flush every column family's memtable and sync the WAL — the
+    /// explicit ack point: after this returns, everything acknowledged is
+    /// on disk regardless of process or power fate.
+    pub fn flush(&self) -> Result<()> {
+        for name in COLUMN_FAMILIES {
+            self.db.0.flush_cf(self.db.cf(name)?).map_err(rocks_err)?;
+        }
+        self.db.0.flush_wal(true).map_err(rocks_err)?;
+        rrf_core::events::emit("estate.flush", serde_json::json!({}));
+        Ok(())
+    }
+
+    /// Manual full-range compaction of every column family — the
+    /// operator-invoked optimizer pass (RocksDB runs its own background
+    /// compactions continuously; this forces a full pass now).
+    pub fn compact(&self) -> Result<()> {
+        for name in COLUMN_FAMILIES {
+            self.db
+                .0
+                .compact_range_cf(self.db.cf(name)?, None::<&[u8]>, None::<&[u8]>);
+        }
+        rrf_core::events::emit("estate.compact", serde_json::json!({}));
+        Ok(())
+    }
+
+    /// Live SST bytes per column family (the optimizer-status numbers).
+    pub fn cf_sizes(&self) -> Result<Vec<(String, u64)>> {
+        let mut out = Vec::with_capacity(COLUMN_FAMILIES.len());
+        for name in COLUMN_FAMILIES {
+            let bytes = self
+                .db
+                .0
+                .property_int_value_cf(self.db.cf(name)?, "rocksdb.total-sst-files-size")
+                .map_err(rocks_err)?
+                .unwrap_or(0);
+            out.push((name.to_string(), bytes));
+        }
+        Ok(out)
     }
 }

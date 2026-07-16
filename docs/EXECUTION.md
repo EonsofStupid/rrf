@@ -152,6 +152,14 @@ paths); geo/datetime/uuid/full-text payload index types; nested filters.
 | 6 | `query_batch` + Euclid/Manhattan metrics on `Embedding` | ✅ batch ≡ sequential (asserted) | ✅ |
 | 7 | Green close + docs + push | fmt/clippy/test: 0 warnings, 41 suites green | ✅ |
 
+## Sprint 25 — Flush/fsync semantics + compaction + optimizer status
+
+| # | Step | Verification gate | Status |
+|---|---|---|---|
+| 1 | `Estate::flush()` (memtables per CF + WAL sync) + `flush` a2a verb + `Client::flush`; `EstateConfig.fsync_writes` routes every WriteBatch through synced write options | flush answers over live TCP; fsync estates accept writes and stay exact | ✅ |
+| 2 | `Estate::compact()` (manual full-range compaction per CF) + `cf_sizes()` (live SST bytes per CF) surfaced in `HealthReport` (serde-default field — old payloads parse) | compact completes; sizes reported; every query path exact afterward (search, facet, df, filters) | ✅ |
+| 3 | Green close: kill-9 suite + full workspace green, PARITY rows (WAL semantics ✅, segments/optimizer, A1 optimizer status), BENCHMARKS note, push | full workspace green | ✅ |
+
 ## Sprint 24 — Prefetch pipelines + index-first facets
 
 | # | Step | Verification gate | Status |

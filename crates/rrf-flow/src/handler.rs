@@ -213,7 +213,9 @@ impl Handler for FlowNode {
 
             // Estate admin + analytics verbs, sprint 12–18 surface. Every
             // arm needs the estate; the macro-ish helper keeps them terse.
-            "matrix"
+            "flush"
+            | "compact"
+            | "matrix"
             | "sample"
             | "collections"
             | "drop_collection"
@@ -250,6 +252,14 @@ impl Handler for FlowNode {
                         let seed = b.get("seed").and_then(|v| v.as_u64()).unwrap_or(0);
                         let docs = estate.sample(n as usize, seed)?;
                         serde_json::json!({ "docs": docs })
+                    }
+                    "flush" => {
+                        estate.flush()?;
+                        serde_json::json!({ "ok": true })
+                    }
+                    "compact" => {
+                        estate.compact()?;
+                        serde_json::json!({ "ok": true, "cf_bytes": estate.cf_sizes()? })
                     }
                     "collections" => {
                         serde_json::json!({ "collections": estate.collections()? })
@@ -311,7 +321,13 @@ impl Handler for FlowNode {
                 Ok(Some(msg.reply(reply)))
             }
 
-            _ => Ok(None),
+            // Unknown verbs REPLY with an error instead of silence — a
+            // request/reply client waiting on a dropped verb would hang
+            // forever (found the hard way when `flush` briefly wasn't
+            // routed here).
+            other => Ok(Some(msg.reply(serde_json::json!({
+                "error": format!("unknown verb: {other}")
+            })))),
         }
     }
 

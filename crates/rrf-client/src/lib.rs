@@ -177,6 +177,20 @@ impl Client {
         self.call("health", serde_json::json!({})).await
     }
 
+    /// Flush the node's estate: memtables + WAL sync — the explicit
+    /// durability ack point.
+    pub async fn flush(&self) -> Result<()> {
+        self.call("flush", serde_json::json!({})).await.map(|_| ())
+    }
+
+    /// Force a full compaction pass; returns per-CF live SST bytes.
+    pub async fn compact(&self) -> Result<Vec<(String, u64)>> {
+        let body = self.call("compact", serde_json::json!({})).await?;
+        Ok(serde_json::from_value(
+            body.get("cf_bytes").cloned().unwrap_or_default(),
+        )?)
+    }
+
     /// Pairwise cosine similarity among stored vectors (upper triangle).
     pub async fn similarity_matrix(&self, ids: &[String]) -> Result<Vec<(String, String, f32)>> {
         let body = self

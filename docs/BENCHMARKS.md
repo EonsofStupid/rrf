@@ -525,3 +525,26 @@ Honest limit found by the gate: numeric keys hold a canonical f64
 encoding, not the JSON source spelling ("2.0" vs "2") — reconstructing
 would silently change facet keys, so numbers (and datetime/uuid/geo)
 fall back to the exact doc scan. `Estate::distinct` lists facet keys.
+
+## Sprint 25: flush/fsync semantics + compaction + optimizer status (2026-07-16)
+
+Durability got explicit: `Estate::flush()` (every CF's memtable + WAL
+sync — the ack point) with a `flush` a2a verb and `Client::flush`;
+`EstateConfig.fsync_writes` routes every WriteBatch through synced write
+options for power-loss durability. Maintenance got hands: manual
+full-range `compact()` per CF (`compact` verb returns per-CF live SST
+bytes) and `cf_sizes()` surfaced as `HealthReport.cf_bytes`.
+
+Found the hard way, fixed structurally: while wiring `flush`, the verb
+briefly wasn't routed — and an unrouted verb returned `Ok(None)`, i.e.
+NO reply, hanging the request/reply client forever. FlowNode now replies
+`{"error": "unknown verb: …"}` for anything unmatched (gated over live
+TCP), so a typo'd verb can never hang a caller again. Diagnosis chain
+recorded for honesty: the hang reproduced only over the wire; local
+flush/compact were instant; probe output was invisible for two rounds
+because grep block-buffers into a pipe.
+
+Gates: flush + compact answer over live TCP with per-CF sizes; every
+query path exact after a churned (overwrite/remove) estate compacts —
+filters, df counters, hybrid, tombstones; fsync estates accept writes
+and stay exact; kill-9 suite still green.

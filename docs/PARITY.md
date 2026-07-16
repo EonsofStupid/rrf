@@ -23,7 +23,7 @@ Method: enumerated from the reference trees (`openapi.json` paths, gRPC
 | Create / list / get / update / delete collections | estates ✅ + named collections in one estate (`coll` CF membership, auto-registered, exact counts, leak-proof scoped queries over the wire, drop with full retraction) | ✅ |
 | Collection exists / info | `connxism::Estate::info` | ✅ partial |
 | Aliases (create/list/switch) | alias map (atomic single-blob writes — switch redirects live queries without touching data; resolved anywhere a collection name is accepted) | ✅ |
-| Optimizer status + config (`/optimizations`) | segment maintenance (`connxism`) | 🔨 P5 |
+| Optimizer status + config (`/optimizations`) | `cf_sizes()` in `HealthReport.cf_bytes` + manual `compact` verb; tuning knobs ⬜ | ✅ status |
 | Cluster info / shard keys / move shard | mesh scale-out | ⬜ P8 |
 
 ### A2. Points (data plane)
@@ -63,8 +63,8 @@ Method: enumerated from the reference trees (`openapi.json` paths, gRPC
 | Filtering DSL (must/should/must_not, match/range/geo/nested, filtered KNN) | `Filter` (must/should/must_not × eq/any/range/date_range/**geo_radius**/**geo_box**/exists), filter-first via `pidx` or post-filter | ✅; nested 🔨 |
 | Text index w/ tokenizers (word/whitespace/prefix/multilingual, stemmer, stopwords) | `Analyzer` pipeline (word/whitespace/prefix-edge-gram × lowercase × stopwords × Porter stemmer, authored from the published algorithm), persisted per estate — postings and queries always agree | ✅ core; multilingual ⬜ |
 | Geo index (radius/box/polygon) | `PIDX_GEO` Z-order keys (Morton, 26 bits/axis, monotone-per-axis gated) — one range scan covers any box, exact haversine/box re-check at the doc level; no antimeridian wrap in v1 (documented); polygon ⬜ | ✅ radius/box |
-| WAL + flush/ack semantics | RocksDB WAL (✅ via estate) + explicit ack | ✅ base → 🔨 P5 semantics |
-| Segments + optimizer (merge, vacuum, indexing thresholds) | estate maintenance tasks | 🔨 P5 |
+| WAL + flush/ack semantics | RocksDB WAL ✅ + explicit `Estate::flush` (memtables + WAL sync; `flush` verb / `Client::flush`) + `fsync_writes` config (synced write options per batch) | ✅ |
+| Segments + optimizer (merge, vacuum, indexing thresholds) | RocksDB background compaction ✅ + manual `Estate::compact` (full-range, per CF; `compact` verb) + per-CF live SST bytes in health | ✅ core |
 | On-disk vs in-RAM storage toggles (vectors/payload/index) | estate storage profiles | ⬜ P5 |
 | GPU-accelerated index build | `gpu` feature post-candle | ⬜ P7+ |
 | gridstore-style blob storage | estate blob CF | ⬜ P8 (files) |

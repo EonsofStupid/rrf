@@ -64,7 +64,7 @@ impl Estate {
         let mut batch = rocksdb::WriteBatch::default();
         batch.put_cf(handle, keys::rel_key(REL_OUT, from, verb, to), []);
         batch.put_cf(handle, keys::rel_key(REL_IN, to, verb, from), []);
-        self.db.0.write(batch).map_err(rocks_err)
+        self.db.write(batch)
     }
 
     /// Remove one edge (both direction rows).
@@ -73,7 +73,7 @@ impl Estate {
         let mut batch = rocksdb::WriteBatch::default();
         batch.delete_cf(handle, keys::rel_key(REL_OUT, from, verb, to));
         batch.delete_cf(handle, keys::rel_key(REL_IN, to, verb, from));
-        self.db.0.write(batch).map_err(rocks_err)
+        self.db.write(batch)
     }
 
     /// Outbound edges of `from` (optionally restricted to one verb).
