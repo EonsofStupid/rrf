@@ -40,7 +40,7 @@ async fn main() -> anyhow::Result<()> {
     let embed_cfg = EmbedderConfig::from_env()?;
     let rerank_cfg = RerankerConfig::from_env()?;
     let embedder = build_embedder(&embed_cfg).await?;
-    let reranker = build_reranker(&rerank_cfg)?;
+    let reranker = build_reranker(&rerank_cfg).await?;
     tracing::info!(
         embedder = embed_cfg.kind.as_str(),
         model = embedder.model_name(),

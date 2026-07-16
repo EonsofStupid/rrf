@@ -1453,6 +1453,7 @@ dependencies = [
  "criterion",
  "proptest",
  "rro-core",
+ "serde_json",
  "tokio",
 ]
 

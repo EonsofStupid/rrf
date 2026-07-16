@@ -17,6 +17,8 @@ candle = []
 [dependencies]
 rro-core = { workspace = true }
 async-trait = { workspace = true }
+tokio = { workspace = true, features = ["net", "io-util", "time", "rt"] }
+serde_json = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt"] }

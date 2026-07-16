@@ -11,9 +11,11 @@
 #![warn(missing_docs)]
 
 mod bm25;
+mod http;
 mod devpulse;
 
 pub use bm25::LexicalReranker;
+pub use http::{HttpRerankConfig, HttpRerankKind, HttpReranker};
 pub use devpulse::{DevPulseReranker, RerankSpec};
 
 /// Re-export so downstream crates can name the trait without a second dep.

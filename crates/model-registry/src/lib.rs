@@ -126,9 +126,13 @@ pub enum RerankerKind {
     Lexical,
     /// Cross-encoder (query,doc)->score via candle. Requires `candle` + weights.
     CandleCrossEncoder,
+    /// llama.cpp `--reranking` server (`/v1/rerank`).
+    LlamaCpp,
+    /// vLLM `/rerank`.
+    Vllm,
     /// ONNX-exported cross-encoder via `ort`. Requires `onnx` + weights.
     Onnx,
-    /// Delegate to an external rerank endpoint.
+    /// Delegate to another RRO node over the a2a wire.
     Remote,
 }
 
@@ -138,15 +142,19 @@ impl RerankerKind {
         match self {
             RerankerKind::Lexical => "lexical",
             RerankerKind::CandleCrossEncoder => "candle-cross-encoder",
+            RerankerKind::LlamaCpp => "llamacpp",
+            RerankerKind::Vllm => "vllm",
             RerankerKind::Onnx => "onnx",
             RerankerKind::Remote => "remote",
         }
     }
 
     /// Every selectable kind.
-    pub const ALL: [RerankerKind; 4] = [
+    pub const ALL: [RerankerKind; 6] = [
         RerankerKind::Lexical,
         RerankerKind::CandleCrossEncoder,
+        RerankerKind::LlamaCpp,
+        RerankerKind::Vllm,
         RerankerKind::Onnx,
         RerankerKind::Remote,
     ];
@@ -158,9 +166,11 @@ impl std::str::FromStr for RerankerKind {
     fn from_str(s: &str) -> Result<Self> {
         match normalize(s).as_str() {
             "lexical" | "bm25" => Ok(RerankerKind::Lexical),
-            "candle-cross-encoder" | "candle-nemotron" | "candle" => {
+            "candle-cross-encoder" | "candle-nemotron" | "candle-qwen" | "candle" => {
                 Ok(RerankerKind::CandleCrossEncoder)
             }
+            "llamacpp" | "llama-cpp" | "llama" => Ok(RerankerKind::LlamaCpp),
+            "vllm" => Ok(RerankerKind::Vllm),
             "onnx" => Ok(RerankerKind::Onnx),
             "remote" => Ok(RerankerKind::Remote),
             other => Err(unknown_kind(
@@ -344,7 +354,7 @@ pub async fn build_embedder(cfg: &EmbedderConfig) -> Result<Arc<dyn Embedder>> {
 }
 
 /// Build the configured reranker. Same shape as [`build_embedder`].
-pub fn build_reranker(cfg: &RerankerConfig) -> Result<Arc<dyn Reranker>> {
+pub async fn build_reranker(cfg: &RerankerConfig) -> Result<Arc<dyn Reranker>> {
     match cfg.kind {
         RerankerKind::Lexical => Ok(Arc::new(reranker::LexicalReranker::new())),
 
@@ -371,6 +381,20 @@ pub fn build_reranker(cfg: &RerankerConfig) -> Result<Arc<dyn Reranker>> {
             {
                 Err(feature_off("onnx", "onnx", "RRO_RERANKER"))
             }
+        }
+
+        RerankerKind::LlamaCpp | RerankerKind::Vllm => {
+            let (kind, default_ep) = match cfg.kind {
+                RerankerKind::LlamaCpp => (
+                    reranker::HttpRerankKind::LlamaCpp,
+                    "http://127.0.0.1:8093/v1/rerank",
+                ),
+                _ => (reranker::HttpRerankKind::Vllm, "http://127.0.0.1:8092/rerank"),
+            };
+            let ep = cfg.endpoint.clone().unwrap_or_else(|| default_ep.to_string());
+            let mut rcfg = reranker::HttpRerankConfig::new(ep, kind);
+            rcfg.batch = cfg.batch.max(1);
+            Ok(Arc::new(reranker::HttpReranker::connect(rcfg).await?))
         }
 
         RerankerKind::Remote => Err(not_yet_wired(
@@ -482,9 +506,9 @@ mod tests {
         assert_eq!(build_embedder(&cfg).await.unwrap().dim(), 128);
     }
 
-    #[test]
-    fn lexical_reranker_builds_weightless() {
-        assert!(build_reranker(&RerankerConfig::default()).is_ok());
+    #[tokio::test]
+    async fn lexical_reranker_builds_weightless() {
+        assert!(build_reranker(&RerankerConfig::default()).await.is_ok());
     }
 
     // The other half of the gate: an unknown kind is a clear error.
