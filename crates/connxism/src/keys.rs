@@ -22,7 +22,7 @@
 /// All column families, in creation order.
 pub const COLUMN_FAMILIES: &[&str] = &[
     CF_META, CF_NODES, CF_CONNS, CF_DOCS, CF_VECS, CF_TERMS, CF_TAGS, CF_TRENDS, CF_RELS, CF_FEED,
-    CF_PIDX, CF_SPARSE, CF_NVECS, CF_MVECS,
+    CF_PIDX, CF_SPARSE, CF_NVECS, CF_MVECS, CF_COLL,
 ];
 
 /// Estate metadata + counters.
@@ -54,6 +54,9 @@ pub const CF_SPARSE: &str = "sparse";
 pub const CF_NVECS: &str = "nvecs";
 /// Late-interaction token vectors: doc_id → [`encode_multi`] bytes.
 pub const CF_MVECS: &str = "mvecs";
+/// Collection membership: `collection \x00 doc_id` → empty (presence =
+/// membership). Blind puts; a sorted prefix scan walks one collection.
+pub const CF_COLL: &str = "coll";
 
 /// meta: the estate info blob.
 pub const META_ESTATE: &[u8] = b"estate";
@@ -335,6 +338,19 @@ pub fn sparse_prefix(dim: u32) -> Vec<u8> {
     k.push(SEP);
     k
 }
+
+/// Encode a collection-membership row key: `collection \x00 doc_id`.
+pub fn coll_key(collection: &str, doc_id: &str) -> Vec<u8> {
+    compound(collection, doc_id)
+}
+
+/// Prefix that scans one collection's members.
+pub fn coll_prefix(collection: &str) -> Vec<u8> {
+    prefix(collection)
+}
+
+/// meta: JSON array of collection names.
+pub const META_COLLECTIONS: &[u8] = b"collections";
 
 /// Encode a named-vector row key: `space \x00 doc_id`.
 pub fn nvec_key(space: &str, doc_id: &str) -> Vec<u8> {

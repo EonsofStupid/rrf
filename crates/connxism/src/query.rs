@@ -49,13 +49,36 @@ impl ConnXRecall {
             top_k.saturating_mul(FILTER_OVERFETCH)
         };
 
+        // A named collection restricts the id universe exactly like an
+        // explicit scope; both given → the intersection.
+        let scope: Option<Vec<String>> = match (&q.collection, &q.scope) {
+            (None, s) => s.clone(),
+            (Some(coll), s) => {
+                let members = self.collection_members_blocking(coll).await?;
+                match s {
+                    None => Some(members),
+                    Some(explicit) => {
+                        let allow: std::collections::HashSet<&str> =
+                            members.iter().map(String::as_str).collect();
+                        Some(
+                            explicit
+                                .iter()
+                                .filter(|id| allow.contains(id.as_str()))
+                                .cloned()
+                                .collect(),
+                        )
+                    }
+                }
+            }
+        };
+
         // `prefiltered` = the candidate set already satisfies the filter
         // exactly (resolved from payload indexes); no post-filter needed.
         // `allowed` = the id universe a scope or prefilter restricts to —
         // any extra ranking fused in below must respect it too.
         let mut prefiltered = false;
         let mut allowed: Option<std::collections::HashSet<String>> = None;
-        let mut results = match &q.scope {
+        let mut results = match &scope {
             Some(scope) => {
                 allowed = Some(scope.iter().cloned().collect());
                 self.scoped_search(&text, &vector, fetch, scope.clone())
@@ -166,6 +189,30 @@ impl ConnXRecall {
             }
         }
         Ok(results)
+    }
+
+    /// One collection's member ids, off the blocking pool.
+    async fn collection_members_blocking(&self, name: &str) -> Result<Vec<String>> {
+        let db = self.db.clone();
+        let name = name.to_string();
+        tokio::task::spawn_blocking(move || {
+            let handle = db.cf(crate::keys::CF_COLL)?;
+            let prefix = crate::keys::coll_prefix(&name);
+            let mut out = Vec::new();
+            for item in db.0.iterator_cf(
+                handle,
+                rocksdb::IteratorMode::From(&prefix, rocksdb::Direction::Forward),
+            ) {
+                let (k, _) = item.map_err(crate::estate::rocks_err)?;
+                if !k.starts_with(&prefix) {
+                    break;
+                }
+                out.push(String::from_utf8_lossy(&k[prefix.len()..]).into_owned());
+            }
+            Ok(out)
+        })
+        .await
+        .map_err(|e| rrf_core::RrfError::Recall(format!("join: {e}")))?
     }
 
     async fn unscoped(

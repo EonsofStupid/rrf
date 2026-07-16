@@ -152,6 +152,15 @@ paths); geo/datetime/uuid/full-text payload index types; nested filters.
 | 6 | `query_batch` + Euclid/Manhattan metrics on `Embedding` | ✅ batch ≡ sequential (asserted) | ✅ |
 | 7 | Green close + docs + push | fmt/clippy/test: 0 warnings, 41 suites green | ✅ |
 
+## Sprint 16 — Named collections in one estate
+
+| # | Step | Verification gate | Status |
+|---|---|---|---|
+| 1 | Registry + membership: `coll` CF (`collection \x00 doc` → empty, blind puts), `StoredDoc.collection`, `VectorRecord.in_collection` builder; auto-registered on first use, `Estate::collections()` lists with exact counts | membership rows retract on overwrite (move a→b) and on remove | ✅ |
+| 2 | Collection-scoped queries: `EstateQuery.collection` (serde default — rides the a2a wire), folded into the scope/prefilter id-universe machinery; exact scoring inside the collection | two collections + uncollected floaters in one estate never leak into each other's results | ✅ |
+| 3 | `Estate::drop_collection`: removes exactly its members (full retraction — postings, vectors, pidx, sparse, named, feed rows), deregisters | estate len drops by exactly the member count; other collections + floaters untouched; changefeed shows the removes | ✅ |
+| 4 | Green close: fmt/clippy/test, PARITY A1 named collections, BENCHMARKS note, push | full workspace green | ✅ |
+
 ## Sprint 15 — Datetime/UUID payload indexes + highlighter + REBUILD
 
 | # | Step | Verification gate | Status |

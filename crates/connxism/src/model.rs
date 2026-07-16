@@ -263,6 +263,9 @@ pub struct StoredDoc {
     /// Number of late-interaction token vectors stored (0 = none).
     #[serde(default, skip_serializing_if = "is_zero")]
     pub multi_len: u32,
+    /// The named collection this document belongs to, if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub collection: Option<String>,
 }
 
 fn is_zero(n: &u32) -> bool {

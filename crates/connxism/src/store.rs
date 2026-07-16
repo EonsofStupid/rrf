@@ -490,7 +490,26 @@ fn upsert_blocking(
     let sparse_cf = db.cf(keys::CF_SPARSE)?;
     let nvecs_cf = db.cf(keys::CF_NVECS)?;
     let mvecs_cf = db.cf(keys::CF_MVECS)?;
+    let coll_cf = db.cf(keys::CF_COLL)?;
     let indexed_fields = crate::filter::indexed_fields(db)?;
+
+    // Auto-register any new collection names (writers already serialize).
+    let mut registry: Vec<String> = db
+        .get_json(CF_META, keys::META_COLLECTIONS)?
+        .unwrap_or_default();
+    let mut registry_dirty = false;
+    for r in &records {
+        if let Some(c) = &r.collection {
+            if !registry.iter().any(|x| x == c) {
+                registry.push(c.clone());
+                registry_dirty = true;
+            }
+        }
+    }
+    if registry_dirty {
+        registry.sort();
+        db.put_json(CF_META, keys::META_COLLECTIONS, &registry)?;
+    }
 
     // Named spaces: each name's dimensionality is fixed by its first vector.
     let mut named_dims_dirty = false;
@@ -540,6 +559,9 @@ fn upsert_blocking(
             }
             if old.multi_len > 0 {
                 batch.delete_cf(mvecs_cf, id.as_bytes());
+            }
+            if let Some(c) = &old.collection {
+                batch.delete_cf(coll_cf, keys::coll_key(c, &id));
             }
             for field in &indexed_fields {
                 if let Some(v) = old.metadata.get(field) {
@@ -611,6 +633,10 @@ fn upsert_blocking(
             batch.put_cf(mvecs_cf, id.as_bytes(), keys::encode_multi(&raw));
         }
 
+        if let Some(c) = &r.collection {
+            batch.put_cf(coll_cf, keys::coll_key(c, &id), []);
+        }
+
         let doc = StoredDoc {
             id: id.clone(),
             text: r.text,
@@ -622,6 +648,7 @@ fn upsert_blocking(
             sparse_dims,
             named_spaces,
             multi_len,
+            collection: r.collection,
         };
         batch.put_cf(docs_cf, id.as_bytes(), serde_json::to_vec(&doc)?);
         batch.put_cf(
@@ -790,7 +817,11 @@ fn lexical_blocking(
     Ok(out)
 }
 
-fn remove_blocking(db: &Db, analyzer: &rrf_core::text::Analyzer, id: &str) -> Result<()> {
+pub(crate) fn remove_blocking(
+    db: &Db,
+    analyzer: &rrf_core::text::Analyzer,
+    id: &str,
+) -> Result<()> {
     let Some(old) = db.get_json::<StoredDoc>(CF_DOCS, id.as_bytes())? else {
         return Ok(());
     };
@@ -816,6 +847,9 @@ fn remove_blocking(db: &Db, analyzer: &rrf_core::text::Analyzer, id: &str) -> Re
     }
     if old.multi_len > 0 {
         batch.delete_cf(db.cf(keys::CF_MVECS)?, id.as_bytes());
+    }
+    if let Some(c) = &old.collection {
+        batch.delete_cf(db.cf(keys::CF_COLL)?, keys::coll_key(c, id));
     }
     batch.delete_cf(db.cf(CF_DOCS)?, id.as_bytes());
     batch.delete_cf(db.cf(CF_VECS)?, id.as_bytes());

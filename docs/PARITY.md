@@ -20,7 +20,7 @@ Method: enumerated from the reference trees (`openapi.json` paths, gRPC
 ### A1. Collection management
 | Capability | rrf home | Status |
 |---|---|---|
-| Create / list / get / update / delete collections | estates + collections-in-estate (`connxism`) | 🔨 P3 (estates ✅, named collections ⬜) |
+| Create / list / get / update / delete collections | estates ✅ + named collections in one estate (`coll` CF membership, auto-registered, exact counts, leak-proof scoped queries over the wire, drop with full retraction) | ✅ |
 | Collection exists / info | `connxism::Estate::info` | ✅ partial |
 | Aliases (create/list/switch) | estate alias registry | ⬜ P5 |
 | Optimizer status + config (`/optimizations`) | segment maintenance (`connxism`) | 🔨 P5 |

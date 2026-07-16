@@ -25,6 +25,9 @@ pub struct VectorRecord {
     pub named: std::collections::BTreeMap<String, Embedding>,
     /// Late-interaction token vectors (ColBERT-style), scored by MaxSim.
     pub multi: Vec<Embedding>,
+    /// The named collection this record belongs to (stores that support
+    /// collections scope queries by it).
+    pub collection: Option<String>,
     /// The text this vector represents (returned in candidates).
     pub text: String,
     /// Structured metadata.
@@ -40,6 +43,7 @@ impl VectorRecord {
             sparse: None,
             named: std::collections::BTreeMap::new(),
             multi: Vec::new(),
+            collection: None,
             text: text.into(),
             metadata: Metadata::new(),
         }
@@ -60,6 +64,12 @@ impl VectorRecord {
     /// Attach late-interaction token vectors (scored by MaxSim).
     pub fn with_multi(mut self, vectors: Vec<Embedding>) -> Self {
         self.multi = vectors;
+        self
+    }
+
+    /// Place this record in a named collection.
+    pub fn in_collection(mut self, name: impl Into<String>) -> Self {
+        self.collection = Some(name.into());
         self
     }
 }

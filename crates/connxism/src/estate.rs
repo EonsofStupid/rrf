@@ -566,3 +566,60 @@ impl Drop for Estate {
         }
     }
 }
+
+impl Estate {
+    /// The named collections in this estate, with exact member counts.
+    pub fn collections(&self) -> Result<Vec<(String, u64)>> {
+        let names: Vec<String> = self
+            .db
+            .get_json(CF_META, keys::META_COLLECTIONS)?
+            .unwrap_or_default();
+        let mut out = Vec::with_capacity(names.len());
+        for name in names {
+            out.push((name.clone(), self.collection_members(&name)?.len() as u64));
+        }
+        Ok(out)
+    }
+
+    /// The member doc ids of one collection (sorted — a prefix scan).
+    pub fn collection_members(&self, name: &str) -> Result<Vec<String>> {
+        let handle = self.db.cf(keys::CF_COLL)?;
+        let prefix = keys::coll_prefix(name);
+        let mut out = Vec::new();
+        for item in self.db.0.iterator_cf(
+            handle,
+            rocksdb::IteratorMode::From(&prefix, rocksdb::Direction::Forward),
+        ) {
+            let (k, _) = item.map_err(rocks_err)?;
+            if !k.starts_with(&prefix) {
+                break;
+            }
+            out.push(String::from_utf8_lossy(&k[prefix.len()..]).into_owned());
+        }
+        Ok(out)
+    }
+
+    /// Drop a collection: fully remove every member (postings, vectors,
+    /// payload/sparse/named rows, changefeed removes) and deregister the
+    /// name. Documents outside the collection are untouched.
+    pub fn drop_collection(&self, name: &str) -> Result<u64> {
+        let members = self.collection_members(name)?;
+        let analyzer = self.info.analyzer.clone();
+        for id in &members {
+            crate::store::remove_blocking(&self.db, &analyzer, id)?;
+            self.pending.push_remove(rrf_core::Id::new(id.clone()));
+        }
+        let mut registry: Vec<String> = self
+            .db
+            .get_json(CF_META, keys::META_COLLECTIONS)?
+            .unwrap_or_default();
+        registry.retain(|n| n != name);
+        self.db
+            .put_json(CF_META, keys::META_COLLECTIONS, &registry)?;
+        rrf_core::events::emit(
+            "estate.collection.dropped",
+            serde_json::json!({ "name": name, "members": members.len() }),
+        );
+        Ok(members.len() as u64)
+    }
+}

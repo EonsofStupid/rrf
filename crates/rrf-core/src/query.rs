@@ -260,6 +260,9 @@ pub struct EstateQuery {
     /// Route the dense half to a named vector space instead of the default.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub using: Option<String>,
+    /// Restrict to one named collection.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub collection: Option<String>,
     /// Late-interaction query token vectors: candidates are rescored by
     /// MaxSim against their stored token vectors (docs without any sort
     /// after those that have them, in first-phase order).
@@ -292,6 +295,7 @@ impl Default for EstateQuery {
             vector: None,
             sparse: None,
             using: None,
+            collection: None,
             multi: None,
             top_k: 0,
             filter: Metadata::new(),
@@ -339,6 +343,12 @@ impl EstateQuery {
     /// Route the dense half to a named vector space.
     pub fn using(mut self, name: impl Into<String>) -> Self {
         self.using = Some(name.into());
+        self
+    }
+
+    /// Restrict to one named collection.
+    pub fn in_collection(mut self, name: impl Into<String>) -> Self {
+        self.collection = Some(name.into());
         self
     }
 

@@ -340,3 +340,22 @@ Gates: index id-set equals brute-force truth (bounded + half-open +
 offset-spelled bounds); uuid equality resolves from typed rows; rebuild
 idempotent and erroring on unindexed fields; highlight spans slice the
 original text to the expected surface forms.
+
+## Sprint 16: named collections in one estate (2026-07-16)
+
+Collections joined the estate as first-class scoping: membership is one
+`coll` CF row per (collection, doc) — blind puts, retracted exactly on
+move/remove — auto-registered with exact counts, and
+`EstateQuery.collection` (serde default, rides the a2a wire) folds into
+the scope/prefilter id-universe machinery with exact scoring inside the
+collection. `Estate::drop_collection` fully retracts every member
+(postings, vectors, payload/sparse/named rows, changefeed removes) and
+deregisters the name.
+
+Gates (`cargo test -p connxism --test collections`): two collections plus
+uncollected floaters sharing identical vocabulary never leak into each
+other's results at full depth; collection ∩ explicit scope intersects;
+unknown collection returns empty; a moved doc leaves one and joins the
+other; drop removes exactly its members (estate len, doc lookups, feed
+row count, and search all asserted), leaving siblings and floaters
+untouched.
