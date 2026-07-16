@@ -286,6 +286,12 @@ pub struct EstateQuery {
     /// Carry text + metadata on results (`false` returns ids and scores only).
     #[serde(default = "default_true")]
     pub with_payload: bool,
+    /// Skip this many ranked results before taking `top_k` (pagination).
+    #[serde(default)]
+    pub offset: usize,
+    /// Carry each winner's stored dense vector on the candidate.
+    #[serde(default)]
+    pub with_vectors: bool,
 }
 
 impl Default for EstateQuery {
@@ -303,6 +309,8 @@ impl Default for EstateQuery {
             scope: None,
             score_threshold: None,
             with_payload: true,
+            offset: 0,
+            with_vectors: false,
         }
     }
 }
@@ -379,6 +387,18 @@ impl EstateQuery {
     /// Return ids and scores only (no text, no metadata).
     pub fn ids_only(mut self) -> Self {
         self.with_payload = false;
+        self
+    }
+
+    /// Skip the first `n` ranked results (pagination).
+    pub fn offset(mut self, n: usize) -> Self {
+        self.offset = n;
+        self
+    }
+
+    /// Carry each winner's stored dense vector on the candidate.
+    pub fn with_vectors(mut self) -> Self {
+        self.with_vectors = true;
         self
     }
 

@@ -119,6 +119,51 @@ impl ConnXRecall {
         .map_err(|e| RrfError::Recall(format!("join: {e}")))?
     }
 
+    /// The stored dense vector of one document, if present.
+    pub async fn vector_of(&self, id: &str) -> Result<Option<Embedding>> {
+        let db = self.db.clone();
+        let id = id.to_string();
+        tokio::task::spawn_blocking(move || {
+            let vecs_cf = db.cf(CF_VECS)?;
+            Ok(db
+                .0
+                .get_cf(vecs_cf, id.as_bytes())
+                .map_err(rocks_err)?
+                .map(|b| Embedding(keys::decode_vec(&b))))
+        })
+        .await
+        .map_err(|e| RrfError::Recall(format!("join: {e}")))?
+    }
+
+    /// Search matrix: pairwise cosine similarity among `ids` (upper
+    /// triangle, i < j, input order). Unknown ids are skipped.
+    pub async fn similarity_matrix(&self, ids: &[String]) -> Result<Vec<(String, String, f32)>> {
+        let db = self.db.clone();
+        let ids = ids.to_vec();
+        tokio::task::spawn_blocking(move || {
+            let vecs_cf = db.cf(CF_VECS)?;
+            let mut known: Vec<(String, Embedding)> = Vec::with_capacity(ids.len());
+            for id in &ids {
+                if let Some(b) = db.0.get_cf(vecs_cf, id.as_bytes()).map_err(rocks_err)? {
+                    known.push((id.clone(), Embedding(keys::decode_vec(&b))));
+                }
+            }
+            let mut out = Vec::with_capacity(known.len() * known.len().saturating_sub(1) / 2);
+            for i in 0..known.len() {
+                for j in (i + 1)..known.len() {
+                    out.push((
+                        known[i].0.clone(),
+                        known[j].0.clone(),
+                        known[i].1.cosine(&known[j].1),
+                    ));
+                }
+            }
+            Ok(out)
+        })
+        .await
+        .map_err(|e| RrfError::Recall(format!("join: {e}")))?
+    }
+
     /// Exact cosine search inside one **named vector space** (a sorted
     /// prefix scan over that space's rows). Names are independent spaces
     /// with independent dimensionalities.

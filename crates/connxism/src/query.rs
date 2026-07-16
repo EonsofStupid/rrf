@@ -41,12 +41,14 @@ impl ConnXRecall {
         };
 
         let dsl = q.effective_filter();
+        // Pagination ranks to offset+k depth, then skips.
+        let want = top_k.saturating_add(q.offset);
         // Filters post-filter and MaxSim reorders — both need a candidate
-        // set deeper than k for the winner to be *in* it.
+        // set deeper than the page for the winners to be *in* it.
         let fetch = if dsl.is_empty() && q.multi.is_none() {
-            top_k
+            want
         } else {
-            top_k.saturating_mul(FILTER_OVERFETCH)
+            want.saturating_mul(FILTER_OVERFETCH)
         };
 
         // A named collection restricts the id universe exactly like an
@@ -91,7 +93,7 @@ impl ConnXRecall {
                     if ids.is_empty() {
                         Vec::new()
                     } else {
-                        self.scoped_search(&text, &vector, top_k, ids).await?
+                        self.scoped_search(&text, &vector, want, ids).await?
                     }
                 }
                 _ => {
@@ -181,11 +183,20 @@ impl ConnXRecall {
         if let Some(t) = q.score_threshold {
             results.retain(|c| c.score >= t);
         }
+        // Pagination: skip the offset, take the page.
+        if q.offset > 0 {
+            results = results.into_iter().skip(q.offset).collect();
+        }
         results.truncate(top_k);
         if !q.with_payload {
             for c in results.iter_mut() {
                 c.text.clear();
                 c.metadata = Metadata::new();
+            }
+        }
+        if q.with_vectors {
+            for c in results.iter_mut() {
+                c.vector = self.vector_of(c.id.as_str()).await?;
             }
         }
         Ok(results)

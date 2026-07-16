@@ -152,6 +152,16 @@ paths); geo/datetime/uuid/full-text payload index types; nested filters.
 | 6 | `query_batch` + Euclid/Manhattan metrics on `Embedding` | ✅ batch ≡ sequential (asserted) | ✅ |
 | 7 | Green close + docs + push | fmt/clippy/test: 0 warnings, 41 suites green | ✅ |
 
+## Sprint 17 — Query-plane completions: offset, with_vectors, sampling, matrix
+
+| # | Step | Verification gate | Status |
+|---|---|---|---|
+| 1 | `EstateQuery.offset` (serde default): rank to `offset+k` depth, skip, take — pagination on every strategy (scoped, prefiltered, hybrid, named, fused) | page 2 equals the full ranking's `[k..2k]` slice exactly | ✅ |
+| 2 | `EstateQuery.with_vectors` + `Candidate.vector` (serde-defaulted contract field): winners hydrate their stored dense vector | returned vectors equal the upserted ones (1e-6); absent by default; old payloads parse | ✅ |
+| 3 | Random sampling: `Estate::sample(n, seed)` — deterministic reservoir over the doc CF (no RNG deps) | n distinct existing docs; same seed → same sample; n > corpus → whole corpus | ✅ |
+| 4 | Search matrix: `ConnXRecall::similarity_matrix(ids)` — pairwise cosine over stored vectors (upper triangle) | matrix equals direct cosine on the seeded vectors; unknown ids skipped | ✅ |
+| 5 | Green close: fmt/clippy/test, PARITY A3 rows, BENCHMARKS note, push | full workspace green | ✅ |
+
 ## Sprint 16 — Named collections in one estate
 
 | # | Step | Verification gate | Status |

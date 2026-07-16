@@ -623,3 +623,37 @@ impl Estate {
         Ok(members.len() as u64)
     }
 }
+
+impl Estate {
+    /// Random sampling: up to `n` documents drawn by a deterministic
+    /// seeded reservoir over the doc column family (same seed, same corpus
+    /// → same sample; no RNG dependencies).
+    pub fn sample(&self, n: usize, seed: u64) -> Result<Vec<crate::model::StoredDoc>> {
+        if n == 0 {
+            return Ok(Vec::new());
+        }
+        let handle = self.db.cf(crate::keys::CF_DOCS)?;
+        let mut reservoir: Vec<crate::model::StoredDoc> = Vec::with_capacity(n);
+        let mut state = seed ^ 0x9E37_79B9_7F4A_7C15;
+        let mut next = move |bound: u64| -> u64 {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state % bound.max(1)
+        };
+        let mut seen = 0u64;
+        for item in self.db.0.iterator_cf(handle, rocksdb::IteratorMode::Start) {
+            let (_, v) = item.map_err(rocks_err)?;
+            seen += 1;
+            if reservoir.len() < n {
+                reservoir.push(serde_json::from_slice(&v)?);
+            } else {
+                let j = next(seen);
+                if (j as usize) < n {
+                    reservoir[j as usize] = serde_json::from_slice(&v)?;
+                }
+            }
+        }
+        Ok(reservoir)
+    }
+}

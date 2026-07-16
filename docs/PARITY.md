@@ -45,10 +45,10 @@ Method: enumerated from the reference trees (`openapi.json` paths, gRPC
 | SearchGroups / QueryGroups (group by payload field) | `query_grouped` (n groups × m per group, best-first) | ✅ |
 | Recommend / RecommendBatch / RecommendGroups (pos/neg examples) | `recommend` (avg-positive − avg-negative steering, examples excluded; a2a verb + client) | ✅ core |
 | Discover / DiscoverBatch (context pairs steering) | `discover` (pair-agreement rerank over the fetched pool) | ✅ core |
-| Search matrix (pairs/offsets similarity matrix) | analytics over recall | ⬜ P5 |
+| Search matrix (pairs/offsets similarity matrix) | `similarity_matrix(ids)` — pairwise cosine over stored vectors, unknown ids skipped (gated vs direct cosine) | ✅ |
 | Facet (value counts over payload field) | `Estate::facet` (exact, v1 scan) | ✅ |
-| Random sampling | recall sampling | ⬜ P5 |
-| Score threshold / offset / with_payload / with_vectors selectors | `EstateQuery::threshold` + `ids_only` (lean payload) | ✅ threshold/payload; offset/with_vectors 🔨 |
+| Random sampling | `Estate::sample(n, seed)` — deterministic seeded reservoir over the doc CF (gated: reproducible, distinct, exact edge cases) | ✅ |
+| Score threshold / offset / with_payload / with_vectors selectors | `EstateQuery::threshold` + `ids_only` + `offset` (exact pagination on every strategy) + `with_vectors` (`Candidate.vector`) | ✅ |
 
 ### A4. Index & storage internals
 | Capability | rrf home | Status |

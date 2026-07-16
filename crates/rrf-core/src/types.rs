@@ -281,6 +281,10 @@ pub struct Candidate {
     /// Structured metadata carried from the record.
     #[serde(default)]
     pub metadata: Metadata,
+    /// The stored dense vector, when the query asked for it
+    /// (`with_vectors`). Absent otherwise.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vector: Option<Embedding>,
 }
 
 impl Candidate {
@@ -291,6 +295,7 @@ impl Candidate {
             text: text.into(),
             score,
             metadata: Metadata::new(),
+            vector: None,
         }
     }
 }

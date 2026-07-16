@@ -359,3 +359,16 @@ unknown collection returns empty; a moved doc leaves one and joins the
 other; drop removes exactly its members (estate len, doc lookups, feed
 row count, and search all asserted), leaving siblings and floaters
 untouched.
+
+## Sprint 17: offset, with_vectors, sampling, similarity matrix (2026-07-16)
+
+Four small A3 rows closed, all wire-riding serde defaults:
+`EstateQuery.offset` ranks to `offset+k` depth then pages (gated: each
+page equals the full ranking's slice, on the fused pipeline);
+`with_vectors` hydrates each winner's stored dense vector onto
+`Candidate.vector` (gated equal to the upserted vectors, absent by
+default, old payloads parse); `Estate::sample(n, seed)` draws a
+deterministic seeded reservoir over the doc CF (reproducible, distinct,
+n>corpus → whole corpus); `similarity_matrix(ids)` returns the pairwise
+cosine upper triangle over stored vectors, skipping unknown ids (gated
+against direct cosine, 1e-6).
