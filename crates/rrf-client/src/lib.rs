@@ -19,7 +19,7 @@
 
 use serde::Deserialize;
 
-use rrf_core::{Document, RecallResult, Result, RrfError};
+use rrf_core::{Candidate, Document, EstateQuery, RecallResult, Result, RrfError};
 use rrf_net::{tcp, Message};
 
 /// One page of a node's changefeed.
@@ -114,5 +114,42 @@ impl Client {
     pub async fn map(&self, query: &str) -> Result<serde_json::Value> {
         self.call("map", serde_json::json!({ "query": query }))
             .await
+    }
+
+    /// Run a typed query against the node's estate: filters (DSL + equality),
+    /// score threshold, scope, lean payload — the full query plane. Text-only
+    /// queries are embedded by the node, so this client stays weightless.
+    pub async fn query(&self, q: &EstateQuery) -> Result<Vec<Candidate>> {
+        let body = self.call("query", serde_json::to_value(q)?).await?;
+        let candidates = body
+            .get("candidates")
+            .cloned()
+            .ok_or_else(|| RrfError::Net("query reply missing candidates".into()))?;
+        Ok(serde_json::from_value(candidates)?)
+    }
+
+    /// Recommend by example ids: steer toward `positive`, away from
+    /// `negative`; the examples never appear in the results.
+    pub async fn recommend(
+        &self,
+        positive: Vec<String>,
+        negative: Vec<String>,
+        top_k: usize,
+    ) -> Result<Vec<Candidate>> {
+        let body = self
+            .call(
+                "recommend",
+                serde_json::json!({
+                    "positive": positive,
+                    "negative": negative,
+                    "top_k": top_k,
+                }),
+            )
+            .await?;
+        let candidates = body
+            .get("candidates")
+            .cloned()
+            .ok_or_else(|| RrfError::Net("recommend reply missing candidates".into()))?;
+        Ok(serde_json::from_value(candidates)?)
     }
 }

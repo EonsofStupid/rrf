@@ -140,6 +140,18 @@ Deferred honestly: `protoc` still absent in this container → gRPC surface
 stays deferred (a2a JSON wire + `rrf-client` + MCP remain the integration
 paths); geo/datetime/uuid/full-text payload index types; nested filters.
 
+## Sprint 10 — The query plane everywhere + retrieval strategies
+
+| # | Step | Verification gate | Status |
+|---|---|---|---|
+| 1 | Query contract moved to `rrf-core` (`EstateQuery`, `Filter`, `Condition` are pure data; connxism executes and re-exports) — thin clients need no storage dep | ✅ workspace green after the move; connxism API unchanged for consumers | ✅ |
+| 2 | a2a `query` verb: body IS an `EstateQuery`; text-only queries embedded server-side; `recommend` verb beside it; estate-less nodes refuse with typed errors | ✅ over live TCP: DSL binds, lean payloads, typed refusals | ✅ |
+| 3 | `Client::query` + `Client::recommend`; MCP `rrf_query` tool (DSL pass-through) | ✅ client tests + MCP end-to-end with a filter clause | ✅ |
+| 4 | Grouped search: `query_grouped(q, field, groups, group_size)` | ✅ invariants: distinct keys, ≤ sizes, membership, best-first group order | ✅ |
+| 5 | Recommend / Discover: example-steered and context-pair-steered retrieval | ✅ two-cluster gates: recommend 10/10 in the positive cluster (examples excluded); discover 3/10 → 7/10 (all pool positives ranked first) | ✅ |
+| 6 | `query_batch` + Euclid/Manhattan metrics on `Embedding` | ✅ batch ≡ sequential (asserted) | ✅ |
+| 7 | Green close + docs + push | fmt/clippy/test: 0 warnings, 41 suites green | ✅ |
+
 ## Sprint log
 
 - **S1 opened 2026-07-15.** Sliver/RRD design recovered into ADR-0002 during

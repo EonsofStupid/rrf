@@ -109,6 +109,72 @@ impl Handler for FlowNode {
                 }))))
             }
 
+            // `query`: the full typed query plane over the wire. The body IS
+            // an `EstateQuery` (filters, threshold, scope, lean payload).
+            // Text-only queries are embedded server-side by the flow's
+            // embedder, so thin clients never need model weights.
+            "query" => {
+                let Some(estate) = &self.estate else {
+                    return Ok(Some(msg.reply(serde_json::json!({
+                        "error": "no estate attached to this node"
+                    }))));
+                };
+                let mut q: rrf_core::EstateQuery = match serde_json::from_value(msg.body.clone()) {
+                    Ok(q) => q,
+                    Err(e) => {
+                        return Ok(Some(msg.reply(serde_json::json!({
+                            "error": format!("malformed query: {e}")
+                        }))));
+                    }
+                };
+                if q.vector.is_none() {
+                    if let Some(text) = q.text.clone() {
+                        q.vector = Some(self.flow.embed_query(&text).await?);
+                    }
+                }
+                let candidates = estate.recall().query(q).await?;
+                Ok(Some(
+                    msg.reply(serde_json::json!({ "candidates": candidates })),
+                ))
+            }
+
+            // `recommend`: steer by example ids, over the wire.
+            // Body: {"positive": ["id", ...], "negative": [...], "top_k": 10}
+            "recommend" => {
+                let Some(estate) = &self.estate else {
+                    return Ok(Some(msg.reply(serde_json::json!({
+                        "error": "no estate attached to this node"
+                    }))));
+                };
+                let ids = |key: &str| -> Vec<String> {
+                    msg.body
+                        .get(key)
+                        .and_then(|v| v.as_array())
+                        .map(|a| {
+                            a.iter()
+                                .filter_map(|x| x.as_str().map(str::to_string))
+                                .collect()
+                        })
+                        .unwrap_or_default()
+                };
+                let positive = ids("positive");
+                let negative = ids("negative");
+                let top_k = msg
+                    .body
+                    .get("top_k")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(10)
+                    .min(1024) as usize;
+                match estate.recall().recommend(&positive, &negative, top_k).await {
+                    Ok(candidates) => Ok(Some(
+                        msg.reply(serde_json::json!({ "candidates": candidates })),
+                    )),
+                    Err(e) => Ok(Some(
+                        msg.reply(serde_json::json!({ "error": e.to_string() })),
+                    )),
+                }
+            }
+
             // `index`: ingest a batch of documents over a2a.
             // Body: {"docs": [{"id": "...", "text": "..."}, ...]}
             "index" => {

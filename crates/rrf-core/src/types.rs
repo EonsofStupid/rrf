@@ -141,6 +141,31 @@ impl Embedding {
             Embedding(self.0.iter().map(|x| x / n).collect())
         }
     }
+
+    /// Euclidean (L2) distance. Returns `f32::INFINITY` on dimension mismatch.
+    pub fn euclidean(&self, other: &Embedding) -> f32 {
+        if self.0.len() != other.0.len() {
+            return f32::INFINITY;
+        }
+        self.0
+            .iter()
+            .zip(&other.0)
+            .map(|(a, b)| (a - b) * (a - b))
+            .sum::<f32>()
+            .sqrt()
+    }
+
+    /// Manhattan (L1) distance. Returns `f32::INFINITY` on dimension mismatch.
+    pub fn manhattan(&self, other: &Embedding) -> f32 {
+        if self.0.len() != other.0.len() {
+            return f32::INFINITY;
+        }
+        self.0
+            .iter()
+            .zip(&other.0)
+            .map(|(a, b)| (a - b).abs())
+            .sum()
+    }
 }
 
 /// A retrieval query.

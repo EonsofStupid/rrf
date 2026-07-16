@@ -1,23 +1,15 @@
-//! The typed query surface: one spec, every retrieval capability.
-//!
-//! [`EstateQuery`] is the builder consumers drive (and the seam a future
-//! RRQL parser compiles into): hybrid text+vector search, the typed
-//! **filter DSL** ([`Filter`]: must / should / must_not over equality,
-//! match-any, range, exists), optional routed **scope**, a **score
-//! threshold**, a lean payload selector, and top-k. Facets, filtered
-//! counts, and cursor-paged **scroll** live beside it on the estate.
+//! Query execution: one spec ([`rrf_core::EstateQuery`], pure data in the
+//! core contract), every retrieval capability of the estate.
 //!
 //! Filter execution is two-strategy: **filter-first** (exact id-set from
 //! payload secondary indexes, then exact scoring inside it) when every
 //! referenced field is indexed and the set is small enough; **post-filter**
-//! (over-fetch + hydrate + retain) otherwise.
+//! (over-fetch + hydrate + retain) otherwise. Facets, filtered counts, and
+//! cursor-paged **scroll** live beside it on the estate.
 
-use serde::{Deserialize, Serialize};
-
-use rrf_core::{Candidate, Embedding, Metadata, Recall as _, Result};
+use rrf_core::{Candidate, Embedding, EstateQuery, Metadata, Recall as _, Result};
 
 use crate::estate::{rocks_err, Estate};
-use crate::filter::{Condition, Filter};
 use crate::keys::CF_DOCS;
 use crate::model::StoredDoc;
 use crate::store::ConnXRecall;
@@ -28,104 +20,6 @@ const FILTER_OVERFETCH: usize = 8;
 /// Above this many index-matched ids, exact scoring over the set costs more
 /// than over-fetch + post-filter; fall back.
 const INDEXED_SCOPE_MAX: usize = 4096;
-
-fn default_true() -> bool {
-    true
-}
-
-/// A typed retrieval request.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct EstateQuery {
-    /// Query text (drives the lexical half and, via the caller's embedder,
-    /// usually the vector too).
-    pub text: Option<String>,
-    /// Dense query vector.
-    pub vector: Option<Embedding>,
-    /// Results wanted.
-    pub top_k: usize,
-    /// Metadata equality filter: every key must match exactly (legacy form;
-    /// merged into `dsl` as `must` equality clauses at execution).
-    #[serde(default)]
-    pub filter: Metadata,
-    /// The typed filter DSL: must / should / must_not clauses.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub dsl: Option<Filter>,
-    /// Restrict to these ids (e.g. a routed neighborhood). Exact scoring.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub scope: Option<Vec<String>>,
-    /// Drop candidates scoring below this.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub score_threshold: Option<f32>,
-    /// Carry text + metadata on results (`false` returns ids and scores only).
-    #[serde(default = "default_true")]
-    pub with_payload: bool,
-}
-
-impl Default for EstateQuery {
-    fn default() -> Self {
-        EstateQuery {
-            text: None,
-            vector: None,
-            top_k: 0,
-            filter: Metadata::new(),
-            dsl: None,
-            scope: None,
-            score_threshold: None,
-            with_payload: true,
-        }
-    }
-}
-
-impl EstateQuery {
-    /// A hybrid query for the top `k`.
-    pub fn hybrid(text: impl Into<String>, vector: Embedding, k: usize) -> Self {
-        EstateQuery {
-            text: Some(text.into()),
-            vector: Some(vector),
-            top_k: k,
-            ..EstateQuery::default()
-        }
-    }
-
-    /// Add a metadata equality condition.
-    pub fn must(mut self, key: impl Into<String>, value: serde_json::Value) -> Self {
-        self.filter.insert(key.into(), value);
-        self
-    }
-
-    /// Attach a typed filter (must / should / must_not clauses).
-    pub fn filtered(mut self, filter: Filter) -> Self {
-        self.dsl = Some(filter);
-        self
-    }
-
-    /// Restrict to a routed scope.
-    pub fn within(mut self, scope: Vec<String>) -> Self {
-        self.scope = Some(scope);
-        self
-    }
-
-    /// Drop candidates scoring below `t`.
-    pub fn threshold(mut self, t: f32) -> Self {
-        self.score_threshold = Some(t);
-        self
-    }
-
-    /// Return ids and scores only (no text, no metadata).
-    pub fn ids_only(mut self) -> Self {
-        self.with_payload = false;
-        self
-    }
-
-    /// The effective filter: DSL clauses plus legacy equality pairs.
-    fn effective_filter(&self) -> Filter {
-        let mut dsl = self.dsl.clone().unwrap_or_default();
-        for (k, v) in &self.filter {
-            dsl.must.push(Condition::eq(k.clone(), v.clone()));
-        }
-        dsl
-    }
-}
 
 impl ConnXRecall {
     /// Execute a typed query. Strategy, in order: explicit scope wins;

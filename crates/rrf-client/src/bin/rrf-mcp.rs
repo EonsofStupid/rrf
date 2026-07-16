@@ -6,6 +6,8 @@
 //!
 //! - `rrf_ask`     — full pipeline: RRD gate → hybrid recall → rerank →
 //!   readiness; returns candidates + verdict + intent.
+//! - `rrf_query`   — the typed query plane: filter DSL (must/should/
+//!   must_not over eq/any/range/exists), score threshold, lean payload.
 //! - `rrf_index`   — ingest documents.
 //! - `rrf_changes` — page the durable changefeed.
 //!
@@ -27,6 +29,24 @@ fn tool_list() -> serde_json::Value {
                 "type": "object",
                 "properties": { "query": { "type": "string" } },
                 "required": ["query"]
+            }
+        },
+        {
+            "name": "rrf_query",
+            "description": "Typed retrieval against the node's estate: hybrid search with a filter DSL (must/should/must_not clauses over eq/any/range/exists), optional score threshold, lean id-only payloads.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "text": { "type": "string", "description": "Query text (embedded server-side)." },
+                    "top_k": { "type": "integer", "description": "Results wanted (default 10)." },
+                    "dsl": {
+                        "type": "object",
+                        "description": "Filter: {must:[..], should:[..], must_not:[..]}; each condition is {op:'eq',key,value} | {op:'any',key,values} | {op:'range',key,gte?,lte?,gt?,lt?} | {op:'exists',key}."
+                    },
+                    "score_threshold": { "type": "number" },
+                    "with_payload": { "type": "boolean" }
+                },
+                "required": ["text"]
             }
         },
         {
@@ -68,6 +88,34 @@ async fn call_tool(client: &Client, name: &str, args: &serde_json::Value) -> ser
                 .ask(query)
                 .await
                 .map(|r| serde_json::to_value(r).unwrap_or_default())
+                .map_err(|e| e.to_string())
+        }
+        "rrf_query" => {
+            let mut q = rrf_core::EstateQuery::text(
+                args.get("text").and_then(|t| t.as_str()).unwrap_or(""),
+                args.get("top_k").and_then(|k| k.as_u64()).unwrap_or(10) as usize,
+            );
+            if let Some(dsl) = args.get("dsl") {
+                match serde_json::from_value(dsl.clone()) {
+                    Ok(f) => q.dsl = Some(f),
+                    Err(e) => {
+                        return serde_json::json!({
+                            "content": [{ "type": "text", "text": format!("bad dsl: {e}") }],
+                            "isError": true
+                        })
+                    }
+                }
+            }
+            if let Some(t) = args.get("score_threshold").and_then(|v| v.as_f64()) {
+                q.score_threshold = Some(t as f32);
+            }
+            if let Some(p) = args.get("with_payload").and_then(|v| v.as_bool()) {
+                q.with_payload = p;
+            }
+            client
+                .query(&q)
+                .await
+                .map(|c| serde_json::json!({ "candidates": c }))
                 .map_err(|e| e.to_string())
         }
         "rrf_index" => {

@@ -1,0 +1,355 @@
+//! The typed query contract: what any consumer sends to any recall store.
+//!
+//! These are pure data types — no storage, no execution. The estate (or any
+//! remote node, over the a2a wire) executes them; clients build them. That
+//! split is why a thin client can speak the full query plane without
+//! depending on a storage engine.
+
+use serde::{Deserialize, Serialize};
+
+use crate::types::{Embedding, Metadata};
+
+/// One testable condition over a metadata field.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "op", rename_all = "snake_case")]
+pub enum Condition {
+    /// The field equals this value exactly.
+    Eq {
+        /// Metadata field name.
+        key: String,
+        /// Required value.
+        value: serde_json::Value,
+    },
+    /// The field equals any of these values.
+    Any {
+        /// Metadata field name.
+        key: String,
+        /// Accepted values.
+        values: Vec<serde_json::Value>,
+    },
+    /// The field is a number inside the given (half-)open interval.
+    Range {
+        /// Metadata field name.
+        key: String,
+        /// Exclusive lower bound.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        gt: Option<f64>,
+        /// Inclusive lower bound.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        gte: Option<f64>,
+        /// Exclusive upper bound.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        lt: Option<f64>,
+        /// Inclusive upper bound.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        lte: Option<f64>,
+    },
+    /// The field is present (any value).
+    Exists {
+        /// Metadata field name.
+        key: String,
+    },
+}
+
+impl Condition {
+    /// Equality condition.
+    pub fn eq(key: impl Into<String>, value: serde_json::Value) -> Self {
+        Condition::Eq {
+            key: key.into(),
+            value,
+        }
+    }
+
+    /// Match-any condition.
+    pub fn any(key: impl Into<String>, values: Vec<serde_json::Value>) -> Self {
+        Condition::Any {
+            key: key.into(),
+            values,
+        }
+    }
+
+    /// Inclusive numeric range `[gte, lte]` (pass `None` to leave a side open).
+    pub fn range(key: impl Into<String>, gte: Option<f64>, lte: Option<f64>) -> Self {
+        Condition::Range {
+            key: key.into(),
+            gt: None,
+            gte,
+            lt: None,
+            lte,
+        }
+    }
+
+    /// Existence condition.
+    pub fn exists(key: impl Into<String>) -> Self {
+        Condition::Exists { key: key.into() }
+    }
+
+    /// The metadata field this condition reads.
+    pub fn key(&self) -> &str {
+        match self {
+            Condition::Eq { key, .. }
+            | Condition::Any { key, .. }
+            | Condition::Range { key, .. }
+            | Condition::Exists { key } => key,
+        }
+    }
+
+    /// Whether `metadata` satisfies this condition.
+    pub fn matches(&self, metadata: &Metadata) -> bool {
+        match self {
+            Condition::Eq { key, value } => metadata.get(key) == Some(value),
+            Condition::Any { key, values } => metadata
+                .get(key)
+                .map(|v| values.contains(v))
+                .unwrap_or(false),
+            Condition::Range {
+                key,
+                gt,
+                gte,
+                lt,
+                lte,
+            } => match metadata.get(key).and_then(|v| v.as_f64()) {
+                Some(x) => {
+                    gt.map(|b| x > b).unwrap_or(true)
+                        && gte.map(|b| x >= b).unwrap_or(true)
+                        && lt.map(|b| x < b).unwrap_or(true)
+                        && lte.map(|b| x <= b).unwrap_or(true)
+                }
+                None => false,
+            },
+            Condition::Exists { key } => metadata.contains_key(key),
+        }
+    }
+}
+
+/// A boolean combination of [`Condition`]s: every `must` holds, at least one
+/// `should` holds (when any are given), no `must_not` holds.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct Filter {
+    /// Every condition must hold.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub must: Vec<Condition>,
+    /// At least one must hold, when any are given.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub should: Vec<Condition>,
+    /// None may hold.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub must_not: Vec<Condition>,
+}
+
+impl Filter {
+    /// An empty filter (matches everything).
+    pub fn new() -> Self {
+        Filter::default()
+    }
+
+    /// Add a `must` clause.
+    pub fn must(mut self, c: Condition) -> Self {
+        self.must.push(c);
+        self
+    }
+
+    /// Add a `should` clause.
+    pub fn should(mut self, c: Condition) -> Self {
+        self.should.push(c);
+        self
+    }
+
+    /// Add a `must_not` clause.
+    pub fn must_not(mut self, c: Condition) -> Self {
+        self.must_not.push(c);
+        self
+    }
+
+    /// Whether no clauses are present.
+    pub fn is_empty(&self) -> bool {
+        self.must.is_empty() && self.should.is_empty() && self.must_not.is_empty()
+    }
+
+    /// Whether `metadata` satisfies the whole filter.
+    pub fn matches(&self, metadata: &Metadata) -> bool {
+        self.must.iter().all(|c| c.matches(metadata))
+            && (self.should.is_empty() || self.should.iter().any(|c| c.matches(metadata)))
+            && !self.must_not.iter().any(|c| c.matches(metadata))
+    }
+
+    /// Every field name any clause reads.
+    pub fn keys(&self) -> impl Iterator<Item = &str> {
+        self.must
+            .iter()
+            .chain(&self.should)
+            .chain(&self.must_not)
+            .map(Condition::key)
+    }
+}
+
+fn default_true() -> bool {
+    true
+}
+
+/// A typed retrieval request.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EstateQuery {
+    /// Query text (drives the lexical half and, via the caller's embedder,
+    /// usually the vector too).
+    pub text: Option<String>,
+    /// Dense query vector.
+    pub vector: Option<Embedding>,
+    /// Results wanted.
+    pub top_k: usize,
+    /// Metadata equality filter: every key must match exactly (legacy form;
+    /// merged into `dsl` as `must` equality clauses at execution).
+    #[serde(default)]
+    pub filter: Metadata,
+    /// The typed filter DSL: must / should / must_not clauses.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dsl: Option<Filter>,
+    /// Restrict to these ids (e.g. a routed neighborhood). Exact scoring.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope: Option<Vec<String>>,
+    /// Drop candidates scoring below this.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub score_threshold: Option<f32>,
+    /// Carry text + metadata on results (`false` returns ids and scores only).
+    #[serde(default = "default_true")]
+    pub with_payload: bool,
+}
+
+impl Default for EstateQuery {
+    fn default() -> Self {
+        EstateQuery {
+            text: None,
+            vector: None,
+            top_k: 0,
+            filter: Metadata::new(),
+            dsl: None,
+            scope: None,
+            score_threshold: None,
+            with_payload: true,
+        }
+    }
+}
+
+impl EstateQuery {
+    /// A hybrid query for the top `k`.
+    pub fn hybrid(text: impl Into<String>, vector: Embedding, k: usize) -> Self {
+        EstateQuery {
+            text: Some(text.into()),
+            vector: Some(vector),
+            top_k: k,
+            ..EstateQuery::default()
+        }
+    }
+
+    /// A text-only query for the top `k` (the executor embeds it, or answers
+    /// lexically if it has no embedder).
+    pub fn text(text: impl Into<String>, k: usize) -> Self {
+        EstateQuery {
+            text: Some(text.into()),
+            top_k: k,
+            ..EstateQuery::default()
+        }
+    }
+
+    /// Add a metadata equality condition.
+    pub fn must(mut self, key: impl Into<String>, value: serde_json::Value) -> Self {
+        self.filter.insert(key.into(), value);
+        self
+    }
+
+    /// Attach a typed filter (must / should / must_not clauses).
+    pub fn filtered(mut self, filter: Filter) -> Self {
+        self.dsl = Some(filter);
+        self
+    }
+
+    /// Restrict to a routed scope.
+    pub fn within(mut self, scope: Vec<String>) -> Self {
+        self.scope = Some(scope);
+        self
+    }
+
+    /// Drop candidates scoring below `t`.
+    pub fn threshold(mut self, t: f32) -> Self {
+        self.score_threshold = Some(t);
+        self
+    }
+
+    /// Return ids and scores only (no text, no metadata).
+    pub fn ids_only(mut self) -> Self {
+        self.with_payload = false;
+        self
+    }
+
+    /// The effective filter: DSL clauses plus legacy equality pairs.
+    pub fn effective_filter(&self) -> Filter {
+        let mut dsl = self.dsl.clone().unwrap_or_default();
+        for (k, v) in &self.filter {
+            dsl.must.push(Condition::eq(k.clone(), v.clone()));
+        }
+        dsl
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn meta(pairs: &[(&str, serde_json::Value)]) -> Metadata {
+        let mut m = Metadata::new();
+        for (k, v) in pairs {
+            m.insert((*k).to_string(), v.clone());
+        }
+        m
+    }
+
+    #[test]
+    fn clause_semantics() {
+        let m = meta(&[
+            ("team", serde_json::json!("ops")),
+            ("priority", serde_json::json!(3)),
+        ]);
+
+        assert!(Filter::new()
+            .must(Condition::eq("team", serde_json::json!("ops")))
+            .must(Condition::range("priority", Some(1.0), Some(4.0)))
+            .matches(&m));
+
+        assert!(!Filter::new()
+            .must_not(Condition::eq("team", serde_json::json!("ops")))
+            .matches(&m));
+
+        // should: at least one must hold when any are given.
+        assert!(Filter::new()
+            .should(Condition::eq("team", serde_json::json!("eng")))
+            .should(Condition::exists("priority"))
+            .matches(&m));
+        assert!(!Filter::new()
+            .should(Condition::eq("team", serde_json::json!("eng")))
+            .matches(&m));
+
+        // range on a missing / non-numeric field never matches.
+        assert!(!Condition::range("missing", Some(0.0), None).matches(&m));
+        assert!(!Condition::range("team", Some(0.0), None).matches(&m));
+    }
+
+    #[test]
+    fn serde_roundtrip() {
+        let f = Filter::new()
+            .must(Condition::eq("team", serde_json::json!("ops")))
+            .should(Condition::any(
+                "kind",
+                vec![serde_json::json!("doc"), serde_json::json!("mail")],
+            ))
+            .must_not(Condition::range("priority", None, Some(1.0)));
+        let q = EstateQuery::text("rollout", 5).filtered(f).threshold(0.2);
+        let json = serde_json::to_string(&q).unwrap();
+        let back: EstateQuery = serde_json::from_str(&json).unwrap();
+        let f = back.dsl.unwrap();
+        assert_eq!(f.must.len(), 1);
+        assert_eq!(f.should.len(), 1);
+        assert_eq!(f.must_not.len(), 1);
+        assert_eq!(back.score_threshold, Some(0.2));
+        assert!(back.with_payload, "payload defaults on over the wire");
+    }
+}

@@ -26,17 +26,19 @@ mod pending;
 mod query;
 mod rels;
 mod store;
+mod strategies;
 
 pub use estate::{Estate, EstateConfig};
-pub use filter::{Condition, Filter};
 pub use index::{Bm25Params, Posting, Postings};
 pub use model::{
     now_ms, now_ns, Change, ChangeOp, ConnectorInfo, ConnectorKind, EstateInfo, NodeInfo, Shape,
     StoredDoc, SyncState, SyncStatus, Transport, TrendPoint, WarpPoint,
 };
-pub use query::EstateQuery;
 pub use rels::{Relation, TraversalSpec};
+/// Re-exported from the core contract so estate consumers keep one import.
+pub use rrf_core::{Condition, EstateQuery, Filter};
 pub use store::ConnXRecall;
+pub use strategies::Group;
 
 /// Re-export so downstream crates can name the trait without a second dep.
 pub use rrf_core::Recall;

@@ -199,3 +199,31 @@ accuracy decision.
 
 Reproduce: `cargo test -p recall quantized_recall_gate -- --nocapture` and
 `cargo test -p connxism --test quantized -- --nocapture`.
+
+## Sprint 10: the query plane goes everywhere (2026-07-16)
+
+The typed query contract (`EstateQuery` + `Filter`) moved into `rrf-core` —
+pure data, no storage dependency — so the thin client speaks the **full**
+filter DSL over the a2a wire, and the MCP `rrf_query` tool exposes it to
+any MCP host. Text-only queries are embedded server-side: clients stay
+weightless.
+
+New retrieval strategies, all gated in-tree
+(`cargo test -p connxism --test strategies -- --nocapture`):
+
+- **Grouped search** — n groups × m per group, groups ordered by best hit;
+  invariants asserted (distinct keys, membership, ordering).
+- **Recommend** — steer toward positive examples, away from negatives, on a
+  two-cluster corpus: **10/10 of the top-10 land in the positive cluster**,
+  examples never returned; unknown positives are a typed error.
+- **Discover** — context-pair agreement rerank: cluster-A hits in the top-10
+  went **3/10 (neutral) → 7/10 (steered)** — every A member of the fetched
+  pool ranked first (7 were all the pool held; the mechanism reranks the
+  pool it fetches, honestly).
+- **Batch** — one wire round-trip, results identical to one-at-a-time
+  (asserted).
+
+Wire gates (`cargo test -p rrf-client`): filter DSL binds over TCP (every
+hit satisfies the clause set), lean payloads arrive lean, recommend works
+remotely, estate-less nodes refuse `query` with a typed error, and the MCP
+binding answers `rrf_query` with DSL end-to-end through a spawned server.

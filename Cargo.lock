@@ -790,11 +790,13 @@ dependencies = [
 name = "rrf-client"
 version = "0.0.1"
 dependencies = [
+ "connxism",
  "rrf-core",
  "rrf-flow",
  "rrf-net",
  "serde",
  "serde_json",
+ "tempfile",
  "tokio",
 ]
 

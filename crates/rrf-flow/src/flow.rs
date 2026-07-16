@@ -197,6 +197,12 @@ impl ReasonReadyFlow {
         Ok((result, map))
     }
 
+    /// Embed one query text with the flow's embedder (what the a2a `query`
+    /// verb uses when a typed query arrives with text but no vector).
+    pub async fn embed_query(&self, text: &str) -> Result<rrf_core::Embedding> {
+        self.embedder.embed_one(text).await
+    }
+
     /// The active configuration.
     pub fn config(&self) -> &FlowConfig {
         &self.config

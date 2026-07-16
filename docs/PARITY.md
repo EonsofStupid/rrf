@@ -40,11 +40,11 @@ Method: enumerated from the reference trees (`openapi.json` paths, gRPC
 | Capability | rrf home | Status |
 |---|---|---|
 | Search / SearchBatch (dense KNN + filter + params) | ANN graph + pending overlay + filters | ✅ |
-| Universal Query / QueryBatch / prefetch pipelines | `EstateQuery` typed builder (hybrid/filter/scope) | ✅ core; batch/prefetch 🔨 |
+| Universal Query / QueryBatch / prefetch pipelines | `EstateQuery` (typed contract in `rrf-core`, executed by the estate **and over the a2a wire / MCP**) + `query_batch` | ✅ core+batch; prefetch 🔨 |
 | Hybrid (dense + sparse/lexical fusion, RRF) | `hybrid_search` (BM25+dense, RRF-fused) | ✅ |
-| SearchGroups / QueryGroups (group by payload field) | grouped recall | ⬜ P3 |
-| Recommend / RecommendBatch / RecommendGroups (pos/neg examples) | recall strategies | ⬜ P4 |
-| Discover / DiscoverBatch (context pairs steering) | recall strategies | ⬜ P4 |
+| SearchGroups / QueryGroups (group by payload field) | `query_grouped` (n groups × m per group, best-first) | ✅ |
+| Recommend / RecommendBatch / RecommendGroups (pos/neg examples) | `recommend` (avg-positive − avg-negative steering, examples excluded; a2a verb + client) | ✅ core |
+| Discover / DiscoverBatch (context pairs steering) | `discover` (pair-agreement rerank over the fetched pool) | ✅ core |
 | Search matrix (pairs/offsets similarity matrix) | analytics over recall | ⬜ P5 |
 | Facet (value counts over payload field) | `Estate::facet` (exact, v1 scan) | ✅ |
 | Random sampling | recall sampling | ⬜ P5 |
@@ -53,7 +53,7 @@ Method: enumerated from the reference trees (`openapi.json` paths, gRPC
 ### A4. Index & storage internals
 | Capability | rrf home | Status |
 |---|---|---|
-| Distance metrics: Cosine ✅, Dot, Euclid, Manhattan | `rrf-core::Embedding` + SIMD kernels | ✅ cosine/dot → 🔨 P2 rest |
+| Distance metrics: Cosine ✅, Dot, Euclid, Manhattan | `rrf-core::Embedding` (cosine/dot SIMD kernels; euclidean/manhattan) | ✅ |
 | HNSW-class ANN graph (m, ef_construct, ef) | `recall::AnnIndex` (recall@10 ≥ 0.95 gated; out-of-band build) | ✅ |
 | Plain (exact) index fallback | `FlatRecall` / estate scan | ✅ |
 | Quantization: scalar u8 / PQ / binary / 1.5-bit+2-bit (TQ) | `recall::quant` SQ8 + exact rescore from durable vectors (recall@10 0.976 measured, 3.4× smaller) | ✅ scalar; PQ/binary 🔨 P2.5 |
