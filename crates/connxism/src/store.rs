@@ -40,6 +40,7 @@ pub struct ConnXRecall {
     ann: Arc<StdRwLock<AnnIndex>>,
     pending: Arc<crate::pending::Pending>,
     feed_notify: Arc<tokio::sync::Notify>,
+    quotas: Arc<crate::estate::Quotas>,
     analyzer: Arc<rrf_core::text::Analyzer>,
     writer: Arc<Mutex<()>>,
     params: Bm25Params,
@@ -57,6 +58,7 @@ impl Estate {
             ann: self.ann.clone(),
             pending: self.pending.clone(),
             feed_notify: self.feed_notify.clone(),
+            quotas: Arc::new(self.quotas.clone()),
             analyzer: Arc::new(self.info().analyzer.clone()),
             writer: Arc::new(Mutex::new(())),
             params: Bm25Params::default(),
@@ -356,17 +358,57 @@ impl Recall for ConnXRecall {
         if records.is_empty() {
             return Ok(());
         }
+        // Quotas first: batch size and per-doc payload bytes reject at
+        // the boundary, before any write.
+        if let Some(cap) = self.quotas.max_batch {
+            if records.len() > cap {
+                return Err(RrfError::Quota(format!(
+                    "batch of {} exceeds max_batch {cap}",
+                    records.len()
+                )));
+            }
+        }
+        if let Some(cap) = self.quotas.max_payload_bytes {
+            for r in &records {
+                let bytes = serde_json::to_vec(&r.metadata)?.len();
+                if bytes > cap {
+                    return Err(RrfError::Quota(format!(
+                        "payload of {bytes} bytes on `{}` exceeds max_payload_bytes {cap}",
+                        r.id.as_str()
+                    )));
+                }
+            }
+        }
         // Serialize writers: counters/census are read-modify-write.
         let _guard = self.writer.lock().await;
         let db = self.db.clone();
         let pending = self.pending.clone();
         let analyzer = self.analyzer.clone();
+        let max_docs = self.quotas.max_docs;
         tokio::task::spawn_blocking(move || {
             // Two-phase: durable write commits first…
             let for_index: Vec<(Id, Embedding)> = records
                 .iter()
                 .map(|r| (r.id.clone(), r.embedding.clone()))
                 .collect();
+            // Doc cap: net-new docs counted inside the serialized writer,
+            // so the check is race-free.
+            if let Some(cap) = max_docs {
+                let existing = db.get_u64(META_DOC_COUNT)?;
+                let net_new = records
+                    .iter()
+                    .filter(|r| {
+                        db.get_json::<StoredDoc>(CF_DOCS, r.id.as_str().as_bytes())
+                            .map(|d| d.is_none())
+                            .unwrap_or(true)
+                    })
+                    .count() as u64;
+                if existing + net_new > cap {
+                    return Err(RrfError::Quota(format!(
+                        "{existing} docs + {net_new} new exceeds max_docs {cap}"
+                    )));
+                }
+            }
             upsert_blocking(&db, &analyzer, records)?;
             // …then graph ops enqueue for the out-of-band applier. Ingest is
             // never blocked by graph construction; searches stay correct by
@@ -1175,5 +1217,12 @@ impl ConnXRecall {
         .map_err(|e| RrfError::Recall(format!("join: {e}")))??;
         self.feed_notify.notify_waiters();
         Ok(())
+    }
+}
+
+impl ConnXRecall {
+    /// The configured query-size cap, if any (quota enforcement).
+    pub(crate) fn quota_max_top_k(&self) -> Option<usize> {
+        self.quotas.max_top_k
     }
 }

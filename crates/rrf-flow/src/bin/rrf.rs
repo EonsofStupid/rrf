@@ -35,7 +35,12 @@ async fn main() -> anyhow::Result<()> {
     let mut estate_handle: Option<Arc<connxism::Estate>> = None;
     let flow = match std::env::var("RRF_ESTATE").ok() {
         Some(path) => {
-            let estate = Arc::new(connxism::Estate::open(&path, "rrf")?);
+            let mut config = connxism::EstateConfig::default();
+            if std::env::var("RRF_STRICT").map(|v| v == "1" || v == "true") == Ok(true) {
+                config.quotas = connxism::Quotas::strict();
+                tracing::info!("strict mode: {:?}", config.quotas);
+            }
+            let estate = Arc::new(connxism::Estate::open_with(&path, "rrf", config)?);
             if let Some(snap) =
                 estate.get_component_json::<rrd::BaselineSnapshot>("rrd:baseline")?
             {

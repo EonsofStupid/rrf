@@ -548,3 +548,19 @@ Gates: flush + compact answer over live TCP with per-CF sizes; every
 query path exact after a churned (overwrite/remove) estate compacts —
 filters, df counters, hybrid, tombstones; fsync estates accept writes
 and stay exact; kill-9 suite still green.
+
+## Sprint 26: strict mode / resource limits (2026-07-16)
+
+`Quotas` on `EstateConfig` — `max_docs` (net-new counted inside the
+serialized writer, so the cap is race-free and overwrites still pass),
+`max_payload_bytes` (per-doc serialized metadata), `max_top_k`,
+`max_batch` — all rejecting with the new typed `RrfError::Quota` at the
+boundary, before any write. Configured limits ride `HealthReport.quotas`;
+the daemon takes `RRF_STRICT=1` for sane strict defaults (64 KiB
+payloads, top-k 1024, batch 4096). The wire `query` verb now replies
+`{"error": …}` on refusals instead of dropping the connection (same
+family of fix as Sprint 25's unknown-verb reply).
+
+Gates: every quota one-under passes / one-over rejects typed; doc cap
+allows overwrites at the cap; health carries the limits over TCP; an
+over-limit wire query gets a clean refusal and the node stays healthy.

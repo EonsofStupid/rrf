@@ -32,6 +32,10 @@ pub enum RrfError {
     #[error("net: {0}")]
     Net(String),
 
+    /// A configured resource limit refused the operation.
+    #[error("quota: {0}")]
+    Quota(String),
+
     /// A vector was offered at the wrong dimension.
     #[error("dimension mismatch: expected {expected}, got {got}")]
     DimMismatch {

@@ -78,7 +78,7 @@ Method: enumerated from the reference trees (`openapi.json` paths, gRPC
 | `/issues` (self-reported problems) | `Estate::issues(threshold)` — applier backlog, dim unset, feed/doc divergence — surfaced in the `health` verb and `rrf_issues_total` (gated: fires on backlog, clean when drained) | ✅ |
 | Telemetry endpoint | events/trends ✅ (DuckDB-native) | ✅ different-and-better |
 | API keys / RBAC / JWT | capability tokens on a2a ✅ (L3 v1); RBAC/JWT 🔨 | ✅ v1 |
-| Strict mode / resource limits | estate quotas | ⬜ P5 |
+| Strict mode / resource limits | `Quotas` (max_docs, max_payload_bytes, max_top_k, max_batch) — typed `RrfError::Quota` at the write/query boundaries, reported in health, clean wire refusals; daemon `RRF_STRICT=1` | ✅ |
 
 ---
 

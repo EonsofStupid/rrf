@@ -134,10 +134,16 @@ impl Handler for FlowNode {
                         q.vector = Some(self.flow.embed_query(&text).await?);
                     }
                 }
-                let candidates = estate.recall().query(q).await?;
-                Ok(Some(
-                    msg.reply(serde_json::json!({ "candidates": candidates })),
-                ))
+                match estate.recall().query(q).await {
+                    Ok(candidates) => Ok(Some(
+                        msg.reply(serde_json::json!({ "candidates": candidates })),
+                    )),
+                    // Refusals (quotas, depth caps) reply cleanly instead
+                    // of dropping the connection.
+                    Err(e) => Ok(Some(
+                        msg.reply(serde_json::json!({ "error": e.to_string() })),
+                    )),
+                }
             }
 
             // `recommend`: steer by example ids, over the wire.

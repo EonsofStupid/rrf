@@ -152,6 +152,15 @@ paths); geo/datetime/uuid/full-text payload index types; nested filters.
 | 6 | `query_batch` + Euclid/Manhattan metrics on `Embedding` | ✅ batch ≡ sequential (asserted) | ✅ |
 | 7 | Green close + docs + push | fmt/clippy/test: 0 warnings, 41 suites green | ✅ |
 
+## Sprint 26 — Strict mode / resource limits
+
+| # | Step | Verification gate | Status |
+|---|---|---|---|
+| 1 | `Quotas { max_docs, max_payload_bytes, max_top_k, max_batch }` on `EstateConfig`; typed `RrfError::Quota`; enforced at the write boundary (batch size, per-doc payload bytes, estate doc cap inside the serialized writer) and the query boundary (top_k) | each quota: one-under passes, one-over rejects with the typed error | ✅ |
+| 2 | Health reports configured limits (`HealthReport.quotas`, serde default); daemon strict mode via `RRF_STRICT=1` (sane default caps) | health carries the limits | ✅ |
+| 3 | Wire: the `query` verb replies `{"error": …}` on quota refusal instead of dropping the connection | over-limit wire query returns a clean refusal | ✅ |
+| 4 | Green close: fmt/clippy/test, PARITY row (strict mode / resource limits), BENCHMARKS note, push | full workspace green | ✅ |
+
 ## Sprint 25 — Flush/fsync semantics + compaction + optimizer status
 
 | # | Step | Verification gate | Status |

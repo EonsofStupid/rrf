@@ -101,6 +101,37 @@ pub(crate) fn rocks_err(e: rocksdb::Error) -> RrfError {
     RrfError::Recall(format!("kvs: {e}"))
 }
 
+/// Resource limits enforced at the write and query boundaries. `None`
+/// means unlimited. Operational config (like quantization), not index
+/// identity — set at open, reported in health.
+#[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct Quotas {
+    /// Estate-wide document cap.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_docs: Option<u64>,
+    /// Per-document metadata size cap (serialized JSON bytes).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_payload_bytes: Option<usize>,
+    /// Query `top_k` cap.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_top_k: Option<usize>,
+    /// Upsert batch-size cap.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_batch: Option<usize>,
+}
+
+impl Quotas {
+    /// Sane strict-mode defaults (the daemon's `RRF_STRICT=1`).
+    pub fn strict() -> Self {
+        Quotas {
+            max_docs: None,
+            max_payload_bytes: Some(64 * 1024),
+            max_top_k: Some(1024),
+            max_batch: Some(4096),
+        }
+    }
+}
+
 /// Open-time choices for an estate.
 #[derive(Debug, Clone, Default)]
 pub struct EstateConfig {
@@ -118,6 +149,8 @@ pub struct EstateConfig {
     /// Durability over throughput; the WAL already survives process
     /// crashes either way — this survives power loss.
     pub fsync_writes: bool,
+    /// Resource limits (strict mode). Default: unlimited.
+    pub quotas: Quotas,
 }
 
 /// One operator estate: the kvs-connectome over a single RocksDB.
@@ -135,6 +168,8 @@ pub struct Estate {
     /// Fired after every committed changefeed append (upsert/remove), so
     /// push-stream watchers wake event-driven instead of polling.
     pub(crate) feed_notify: Arc<tokio::sync::Notify>,
+    /// Resource limits enforced by the recall store.
+    pub(crate) quotas: Quotas,
     applier: Option<std::thread::JoinHandle<()>>,
     info: EstateInfo,
 }
@@ -217,6 +252,7 @@ impl Estate {
             pending,
             quantized: config.quantized,
             feed_notify: Arc::new(tokio::sync::Notify::new()),
+            quotas: config.quotas.clone(),
             applier: Some(applier),
             info,
         })
@@ -764,6 +800,9 @@ pub struct HealthReport {
     /// Live SST bytes per column family (optimizer status).
     #[serde(default)]
     pub cf_bytes: Vec<(String, u64)>,
+    /// The configured resource limits.
+    #[serde(default)]
+    pub quotas: Quotas,
 }
 
 /// One self-reported operational concern.
@@ -793,6 +832,7 @@ impl Estate {
             named_dims: info.named_dims,
             quantized: self.quantized,
             cf_bytes: self.cf_sizes()?,
+            quotas: self.quotas.clone(),
         })
     }
 

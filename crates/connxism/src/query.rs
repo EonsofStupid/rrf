@@ -31,6 +31,14 @@ impl ConnXRecall {
     /// inside it; otherwise hybrid (ANN + BM25, fused) with over-fetch +
     /// post-filter.
     pub async fn query(&self, q: EstateQuery) -> Result<Vec<Candidate>> {
+        if let Some(cap) = self.quota_max_top_k() {
+            if q.top_k > cap {
+                return Err(rrf_core::RrfError::Quota(format!(
+                    "top_k {} exceeds max_top_k {cap}",
+                    q.top_k
+                )));
+            }
+        }
         self.query_depth(q, 0).await
     }
 
