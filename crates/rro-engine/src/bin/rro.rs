@@ -39,7 +39,7 @@ async fn main() -> anyhow::Result<()> {
     // quietly serving synthetic vectors under a real model's name.
     let embed_cfg = EmbedderConfig::from_env()?;
     let rerank_cfg = RerankerConfig::from_env()?;
-    let embedder = build_embedder(&embed_cfg)?;
+    let embedder = build_embedder(&embed_cfg).await?;
     let reranker = build_reranker(&rerank_cfg)?;
     tracing::info!(
         embedder = embed_cfg.kind.as_str(),

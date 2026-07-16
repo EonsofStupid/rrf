@@ -68,9 +68,13 @@ pub enum EmbedderKind {
     Deterministic,
     /// Qwen-family embedding backbone via candle. Requires `candle` + weights.
     CandleQwen,
+    /// llama.cpp `--embedding` server over OpenAI-compatible HTTP.
+    LlamaCpp,
+    /// vLLM OpenAI server over HTTP.
+    Vllm,
     /// ONNX-exported embedder via `ort`. Requires `onnx` + weights.
     Onnx,
-    /// Delegate to an external embedding endpoint (borrow another node's GPU).
+    /// Delegate to another RRO node's model over the a2a wire (MODELS.md §5).
     Remote,
 }
 
@@ -80,15 +84,19 @@ impl EmbedderKind {
         match self {
             EmbedderKind::Deterministic => "deterministic",
             EmbedderKind::CandleQwen => "candle-qwen",
+            EmbedderKind::LlamaCpp => "llamacpp",
+            EmbedderKind::Vllm => "vllm",
             EmbedderKind::Onnx => "onnx",
             EmbedderKind::Remote => "remote",
         }
     }
 
     /// Every selectable kind, for error messages and `--help` output.
-    pub const ALL: [EmbedderKind; 4] = [
+    pub const ALL: [EmbedderKind; 6] = [
         EmbedderKind::Deterministic,
         EmbedderKind::CandleQwen,
+        EmbedderKind::LlamaCpp,
+        EmbedderKind::Vllm,
         EmbedderKind::Onnx,
         EmbedderKind::Remote,
     ];
@@ -101,6 +109,8 @@ impl std::str::FromStr for EmbedderKind {
         match normalize(s).as_str() {
             "deterministic" => Ok(EmbedderKind::Deterministic),
             "candle-qwen" | "qwen" | "candle" => Ok(EmbedderKind::CandleQwen),
+            "llamacpp" | "llama-cpp" | "llama" => Ok(EmbedderKind::LlamaCpp),
+            "vllm" => Ok(EmbedderKind::Vllm),
             "onnx" => Ok(EmbedderKind::Onnx),
             "remote" => Ok(EmbedderKind::Remote),
             other => Err(unknown_kind("RRO_EMBEDDER", other, &EmbedderKind::ALL.map(|k| k.as_str()))),
@@ -272,7 +282,7 @@ impl RerankerConfig {
 /// The weightless [`EmbedderKind::Deterministic`] arm always builds. Every
 /// other arm needs its feature and its weights; when one is missing you get an
 /// error naming exactly what to do about it.
-pub fn build_embedder(cfg: &EmbedderConfig) -> Result<Arc<dyn Embedder>> {
+pub async fn build_embedder(cfg: &EmbedderConfig) -> Result<Arc<dyn Embedder>> {
     match cfg.kind {
         EmbedderKind::Deterministic => Ok(Arc::new(match cfg.dim {
             Some(d) => embedder::DeterministicEmbedder::with_dim(d),
@@ -309,6 +319,21 @@ pub fn build_embedder(cfg: &EmbedderConfig) -> Result<Arc<dyn Embedder>> {
             {
                 Err(feature_off("onnx", "onnx", "RRO_EMBEDDER"))
             }
+        }
+
+        EmbedderKind::LlamaCpp | EmbedderKind::Vllm => {
+            let (kind, default_ep) = match cfg.kind {
+                EmbedderKind::LlamaCpp => (
+                    embedder::OpenAiKind::LlamaCpp,
+                    "http://127.0.0.1:8090/v1/embeddings",
+                ),
+                _ => (embedder::OpenAiKind::Vllm, "http://127.0.0.1:8092/v1/embeddings"),
+            };
+            let ep = cfg.endpoint.clone().unwrap_or_else(|| default_ep.to_string());
+            let mut ocfg = embedder::OpenAiEmbedConfig::new(ep, kind);
+            ocfg.batch = cfg.batch.max(1);
+            ocfg.truncate_dim = cfg.dim;
+            Ok(Arc::new(embedder::OpenAiEmbedder::connect(ocfg).await?))
         }
 
         EmbedderKind::Remote => Err(not_yet_wired(
@@ -440,19 +465,21 @@ mod tests {
     // weights, and no network.
     #[tokio::test]
     async fn deterministic_builds_weightless_and_embeds() {
-        let e = build_embedder(&EmbedderConfig::default()).expect("deterministic must build");
+        let e = build_embedder(&EmbedderConfig::default())
+            .await
+            .expect("deterministic must build");
         let v = e.embed_one("the cat sat on the mat").await.unwrap();
         assert_eq!(v.dim(), 384);
         assert_eq!(e.model_name(), "deterministic-hash");
     }
 
-    #[test]
-    fn deterministic_honors_requested_dim() {
+    #[tokio::test]
+    async fn deterministic_honors_requested_dim() {
         let cfg = EmbedderConfig {
             dim: Some(128),
             ..Default::default()
         };
-        assert_eq!(build_embedder(&cfg).unwrap().dim(), 128);
+        assert_eq!(build_embedder(&cfg).await.unwrap().dim(), 128);
     }
 
     #[test]
@@ -488,8 +515,8 @@ mod tests {
 
     // A backend that cannot run must never resolve to the synthetic embedder:
     // that is the exact mechanism that produced fake accuracy numbers.
-    #[test]
-    fn unavailable_backend_errors_instead_of_falling_back() {
+    #[tokio::test]
+    async fn unavailable_backend_errors_instead_of_falling_back() {
         for kind in [
             EmbedderKind::CandleQwen,
             EmbedderKind::Onnx,
@@ -499,7 +526,7 @@ mod tests {
                 kind,
                 ..Default::default()
             };
-            let err = match build_embedder(&cfg) {
+            let err = match build_embedder(&cfg).await {
                 Ok(_) => panic!("{} must not build in a weightless workspace", kind.as_str()),
                 Err(e) => e.to_string(),
             };

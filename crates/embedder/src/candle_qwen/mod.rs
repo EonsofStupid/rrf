@@ -27,16 +27,10 @@ use async_trait::async_trait;
 use candle_core::{DType, Device, Tensor};
 use candle_nn::VarBuilder;
 use candle_transformers::models::qwen3::Config;
+use crate::DEFAULT_QUERY_TASK;
 use rro_core::{Embedder, Embedding, Result, RroError};
 use tokenizers::Tokenizer;
 
-/// The instruction Qwen3-Embedding prepends to a **query** (never a document).
-///
-/// The card's default retrieval task. It ships in
-/// `config_sentence_transformers.json` under `prompts.query`, and the card notes
-/// instructions are worth 1–5% on downstream tasks.
-pub const DEFAULT_QUERY_TASK: &str =
-    "Given a web search query, retrieve relevant passages that answer the query";
 
 /// Everything the Qwen3 forward pass needs that is *not* generic to embedders.
 ///
