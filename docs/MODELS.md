@@ -15,6 +15,35 @@ and is UNVERIFIED for real retrieval until this lands._
 - **Compute:** CPU works; CUDA or Metal strongly preferred for the reranker.
 - **Toolchain:** rust stable, clang/libclang (already used by rocksdb).
 
+## 0.5 Turnkey: get the weights (one command)
+
+The base models are ~1.2 GB of safetensors each — too big to vendor in git — so
+they are pulled on demand and verified byte-exact:
+
+```sh
+./scripts/fetch-models.sh            # embedder + reranker -> ./models/
+./scripts/fetch-models.sh embedder   # or just one
+./scripts/fetch-models.sh --check    # verify what's on disk, download nothing
+```
+
+It is idempotent and resumable (a byte-exact file is skipped; a partial one is
+resumed), prefers the `huggingface` CLI when present and falls back to
+`curl`/`wget`, and honors `HF_ENDPOINT` (mirror), `HF_REV`, and `HF_TOKEN`. The
+base models — `Qwen/Qwen3-Embedding-0.6B` and `Qwen/Qwen3-Reranker-0.6B`
+(both apache-2.0) — land in `models/qwen3-embedding-0.6b` and
+`models/qwen3-reranker-0.6b`.
+
+Then either export `RRO_EMBEDDER=candle-qwen` + `RRO_EMBEDDER_WEIGHTS=…` and
+build `--features candle`, or let the quickstart do all of it:
+
+```sh
+RRO_REAL=1 ./scripts/quickstart.sh   # fetch (if needed) -> build candle -> boot real models
+```
+
+Whichever box the network policy blocks HF on (this dev container does), set
+`HF_ENDPOINT=https://hf-mirror.com` or pre-stage `models/` from a box that can
+reach it — the loaders only ever read a local directory.
+
 ## 1. The design goal (non-negotiable)
 
 **Modular AND part of the engine. Truly swappable, max performance, expandable.**
@@ -66,7 +95,7 @@ pub fn build_embedder(cfg: &EmbedderConfig) -> Result<Arc<dyn Embedder>> {
 // Same shape: build_reranker(&RerankerConfig) -> Arc<dyn Reranker>.
 ```
 
-`rro-engine`'s daemon (`bin/rrf.rs`) reads `RRO_EMBEDDER*` / `RRO_RERANKER*` from
+`rro-engine`'s daemon (`bin/rro.rs`) reads `RRO_EMBEDDER*` / `RRO_RERANKER*` from
 env, calls `build_embedder` / `build_reranker`, and hands the results to
 `ReasonReadyObject::builder()`. **That is the entire swap mechanism.**
 

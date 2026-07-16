@@ -13,6 +13,15 @@ publish.workspace = true
 name = "rro"
 path = "src/bin/rro.rs"
 
+[features]
+default = []
+# Build the daemon with the real candle backends compiled in. Off by default so
+# the workspace builds weightless (no model weights, no inference deps). With it,
+# `RRO_EMBEDDER=candle-qwen` / `RRO_RERANKER=candle-cross-encoder` load real
+# weights; without it, selecting those kinds is a clear config error at startup,
+# never a silent fallback to the synthetic embedder. See docs/MODELS.md.
+candle = ["model-registry/candle"]
+
 [dependencies]
 rro-core = { workspace = true }
 model-registry = { workspace = true }

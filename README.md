@@ -70,10 +70,20 @@ prometheus **/metrics** + probes, self-reported issues. SQ8 quantization
 ## Turnkey
 
 ```sh
-./scripts/quickstart.sh    # build → boot (estate+RRD+a2a+events) → smoke over the wire
-./scripts/mesh.sh 3        # a local mesh: 3 engines, each a2a-addressable
+./scripts/quickstart.sh          # build → boot (estate+RRD+a2a+events) → smoke over the wire
+./scripts/mesh.sh 3              # a local mesh: 3 engines, each a2a-addressable
 ./scripts/quickstart.sh stop
+
+# Real models (Qwen3 embedder + reranker), fully turnkey:
+./scripts/fetch-models.sh        # pull the base weights (~1.2 GB each, verified)
+RRO_REAL=1 ./scripts/quickstart.sh   # fetch-if-needed → build --features candle → boot real
 ```
+
+The default build is **weightless** (synthetic embedder, dev/CI only). The base
+embedder/reranker weights are too large to vendor in git, so
+`scripts/fetch-models.sh` pulls them on demand and verifies them byte-exact;
+`RRO_REAL=1` wires them into the daemon in one command. Details:
+**[docs/MODELS.md](docs/MODELS.md)**.
 
 Deploy: **Podman Quadlets** — `deploy/Containerfile` (build),
 `deploy/rro.container` + `deploy/rro-estate.volume` (rootless systemd units),
