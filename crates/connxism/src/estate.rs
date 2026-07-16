@@ -332,6 +332,25 @@ impl Estate {
         self.pending.quiesce();
     }
 
+    // ---- snapshots ----------------------------------------------------------------
+
+    /// Write a consistent point-in-time snapshot of the whole estate to
+    /// `path` (RocksDB checkpoint: hard-links immutable SST files, copies the
+    /// WAL — cheap and crash-consistent). The snapshot directory opens as a
+    /// fully working estate via [`Estate::open`]; the ANN graph rebuilds from
+    /// its durable vectors as on any open.
+    pub fn snapshot_to(&self, path: impl AsRef<Path>) -> Result<()> {
+        let checkpoint = rocksdb::checkpoint::Checkpoint::new(&self.db.0).map_err(rocks_err)?;
+        checkpoint
+            .create_checkpoint(path.as_ref())
+            .map_err(rocks_err)?;
+        rrf_core::events::emit(
+            "estate.snapshot",
+            serde_json::json!({ "path": path.as_ref().display().to_string() }),
+        );
+        Ok(())
+    }
+
     // ---- component state --------------------------------------------------------
 
     /// Persist engine-component state (e.g. the RRD shape baseline) under the

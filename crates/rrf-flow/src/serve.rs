@@ -22,6 +22,8 @@ pub struct ServeOptions {
     pub listen: Option<String>,
     /// Estate to expose on the a2a surface (`changes` subscription paging).
     pub estate: Option<std::sync::Arc<connxism::Estate>>,
+    /// Capability token: when set, every a2a message except `ping` must bear it.
+    pub token: Option<String>,
 }
 
 impl ServeOptions {
@@ -43,6 +45,9 @@ pub async fn serve(flow: Arc<ReasonReadyFlow>, opts: ServeOptions) -> Result<()>
     let mut node = FlowNode::new(flow.clone(), NodeId::new(&opts.node_id));
     if let Some(estate) = &opts.estate {
         node = node.with_estate(estate.clone());
+    }
+    if let Some(token) = &opts.token {
+        node = node.with_token(token.clone());
     }
     let node = Arc::new(node);
 

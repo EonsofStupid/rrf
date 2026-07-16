@@ -41,6 +41,10 @@ pub struct Message {
     pub to: NodeId,
     /// The action, e.g. `recall`, `classify`, `ping`.
     pub verb: String,
+    /// Capability token (v1: shared secret). Nodes configured with a token
+    /// reject messages that don't bear it. Absent on open nodes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token: Option<String>,
     /// Free-form payload.
     pub body: serde_json::Value,
 }
@@ -58,17 +62,26 @@ impl Message {
             from: from.into(),
             to: to.into(),
             verb: verb.into(),
+            token: None,
             body,
         }
     }
 
+    /// Attach a capability token.
+    pub fn with_token(mut self, token: impl Into<String>) -> Self {
+        self.token = Some(token.into());
+        self
+    }
+
     /// Build a reply to this message, swapping from/to and keeping the id.
+    /// Replies never echo the bearer token.
     pub fn reply(&self, body: serde_json::Value) -> Self {
         Message {
             id: self.id.clone(),
             from: self.to.clone(),
             to: self.from.clone(),
             verb: format!("{}.reply", self.verb),
+            token: None,
             body,
         }
     }

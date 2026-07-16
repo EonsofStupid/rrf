@@ -16,6 +16,7 @@ use crate::flow::ReasonReadyFlow;
 pub struct FlowNode {
     flow: Arc<ReasonReadyFlow>,
     estate: Option<Arc<connxism::Estate>>,
+    token: Option<String>,
     me: NodeId,
 }
 
@@ -25,6 +26,7 @@ impl FlowNode {
         FlowNode {
             flow,
             estate: None,
+            token: None,
             me: me.into(),
         }
     }
@@ -34,11 +36,31 @@ impl FlowNode {
         self.estate = Some(estate);
         self
     }
+
+    /// Require a capability token: every message (except `ping`, the
+    /// liveness probe) must bear it or is refused with `unauthorized`.
+    pub fn with_token(mut self, token: impl Into<String>) -> Self {
+        self.token = Some(token.into());
+        self
+    }
 }
 
 #[async_trait]
 impl Handler for FlowNode {
     async fn handle(&self, msg: Message) -> Result<Option<Message>> {
+        // L3 in its first form: fresh authorization at every action. Ping
+        // stays open as the liveness probe.
+        if let Some(required) = &self.token {
+            if msg.verb != "ping" && msg.token.as_deref() != Some(required.as_str()) {
+                rrf_core::events::emit(
+                    "a2a.unauthorized",
+                    serde_json::json!({ "verb": msg.verb, "from": msg.from.as_str() }),
+                );
+                return Ok(Some(msg.reply(serde_json::json!({
+                    "error": "unauthorized"
+                }))));
+            }
+        }
         match msg.verb.as_str() {
             "ping" => Ok(Some(msg.reply(serde_json::json!({
                 "pong": true,

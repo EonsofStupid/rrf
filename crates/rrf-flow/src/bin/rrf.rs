@@ -69,6 +69,7 @@ async fn main() -> anyhow::Result<()> {
         node_id: std::env::var("RRF_NODE").unwrap_or_else(|_| "rrf".to_string()),
         listen: std::env::var("RRF_LISTEN").ok(),
         estate: estate_handle,
+        token: std::env::var("RRF_TOKEN").ok(),
     };
 
     let estate_for_shutdown = opts.estate.clone();

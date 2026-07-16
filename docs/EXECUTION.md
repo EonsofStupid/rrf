@@ -102,6 +102,19 @@ IMAP-class driver (needs a live mailbox; the driver trait is its socket).
 | 4 | Deploy artifacts: Dockerfile (multi-stage), systemd unit (clean SIGTERM = baseline commit), config.env | authored; Docker build not yet CI-verified (no daemon in this container) — flagged honestly | ✅/⚠ |
 | 5 | docs/COMPARISON.md — the head-to-head; README rewritten to the engine as it is | reflects only measured claims | ✅ |
 
+## Sprint 7 — P5 ops: snapshots, crash-proof, capability auth (active)
+
+| # | Step | Verification gate | Status |
+|---|---|---|---|
+| 1 | Estate snapshots: `Estate::snapshot_to(path)` via RocksDB checkpoint; a snapshot opens as a full working estate | ✅ point-in-time verified (post-snapshot writes excluded; relations captured) | ✅ |
+| 2 | **Kill-9 crash suite**: a child process ingests then `abort()` (no destructors, no flush) — the reopened estate must be consistent (counts, search, feed) and the ANN rebuilds | ✅ in-tree; **30/30 hard-death rounds recovered** (10× loop × 3 rounds) | ✅ |
+| 3 | a2a capability auth v1: shared-secret token on the wire (`Message.token`, serde-defaulted); nodes with a token reject non-bearers (ping stays open); RRF_TOKEN env | ✅ authorized/unauthorized/wrong-token over live TCP; `a2a.unauthorized` evented | ✅ |
+| 4 | Green close + docs + push | CI-green tree | ✅ |
+
+Deferred honestly: gRPC surface + MCP transport binding (next slice of P5 —
+tonic/proto scaffolding deserves its own sprint), full IAM (capability
+attenuation per L3, after tokens prove the seam).
+
 ## Sprint log
 
 - **S1 opened 2026-07-15.** Sliver/RRD design recovered into ADR-0002 during
