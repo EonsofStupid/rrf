@@ -285,3 +285,19 @@ Gates (`cargo test -p connxism --test multivec`):
 
 Honest scope note: named-space search is exact (scan), not ANN — right
 up to mid-size spaces; per-space graphs are the follow-up.
+
+## Sprint 13: push-stream changefeed over a2a (2026-07-16)
+
+`watch` joins `changes`: one long-lived a2a connection, the node drains the
+durable feed from the client's seq cursor and then pushes each new change
+the moment its write commits — event-driven via the estate's feed signal
+(a write-side notify), with **zero polling on either side**. Cancel = drop
+the connection; resume = the same seq cursor the poll verb uses; the token
+gate covers streams. `Client::watch(since, callback)` is the Clyffy-side
+handle; the transport grew a general `Handler::handle_stream` hook, so
+future streamed verbs (query streaming, tailing) ride the same frame path.
+
+Gates (`cargo test -p rrf-flow --test watch`): history drained in order,
+live upserts AND a remove arrive as pushed frames on the one connection
+within timeout, seqs strictly increase, reconnect from the returned cursor
+replays exactly the missed change, unauthorized watch refused.

@@ -192,4 +192,75 @@ impl Handler for FlowNode {
             _ => Ok(None),
         }
     }
+
+    /// `watch`: the push-stream subscription. Body: {"since_seq": 0}. The
+    /// node drains the durable changefeed from the cursor into frames
+    /// (`{"change": .., "next_seq": ..}`), then awaits the estate's feed
+    /// signal — event-driven, no polling interval anywhere. Resume is the
+    /// same seq cursor the poll-based `changes` verb uses. The stream ends
+    /// when the peer hangs up (failed send tears the task down).
+    async fn handle_stream(
+        &self,
+        msg: Message,
+        tx: tokio::sync::mpsc::Sender<Message>,
+    ) -> Result<bool> {
+        if msg.verb != "watch" {
+            return Ok(false);
+        }
+        if let Some(required) = &self.token {
+            if msg.token.as_deref() != Some(required.as_str()) {
+                rrf_core::events::emit(
+                    "a2a.unauthorized",
+                    serde_json::json!({ "verb": "watch", "from": msg.from.as_str() }),
+                );
+                let _ = tx
+                    .send(msg.reply(serde_json::json!({ "error": "unauthorized" })))
+                    .await;
+                return Ok(true);
+            }
+        }
+        let Some(estate) = self.estate.clone() else {
+            let _ = tx
+                .send(msg.reply(serde_json::json!({ "error": "no estate attached to this node" })))
+                .await;
+            return Ok(true);
+        };
+
+        let mut since = msg
+            .body
+            .get("since_seq")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+        let signal = estate.feed_signal();
+
+        tokio::spawn(async move {
+            loop {
+                // Arm the signal BEFORE draining: a write landing between
+                // the drain and the await still wakes us (no lost updates).
+                let notified = signal.notified();
+                let page = {
+                    let estate = estate.clone();
+                    match tokio::task::spawn_blocking(move || estate.changes(since, 256)).await {
+                        Ok(Ok(page)) => page,
+                        _ => break,
+                    }
+                };
+                if page.is_empty() {
+                    notified.await;
+                    continue;
+                }
+                for change in page {
+                    since = change.seq + 1;
+                    let frame = msg.reply(serde_json::json!({
+                        "change": change,
+                        "next_seq": since,
+                    }));
+                    if tx.send(frame).await.is_err() {
+                        return; // peer hung up
+                    }
+                }
+            }
+        });
+        Ok(true)
+    }
 }

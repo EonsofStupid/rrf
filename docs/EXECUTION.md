@@ -152,6 +152,16 @@ paths); geo/datetime/uuid/full-text payload index types; nested filters.
 | 6 | `query_batch` + Euclid/Manhattan metrics on `Embedding` | ✅ batch ≡ sequential (asserted) | ✅ |
 | 7 | Green close + docs + push | fmt/clippy/test: 0 warnings, 41 suites green | ✅ |
 
+## Sprint 13 — Push-stream changefeed subscriptions over a2a
+
+| # | Step | Verification gate | Status |
+|---|---|---|---|
+| 1 | `Handler::handle_stream` in rrf-net (default: not-a-stream) + serve loop forwards stream frames until the producer closes | existing single-reply verbs untouched (whole suite green) | ✅ |
+| 2 | Write-side signal: `Estate` feed `Notify`, fired by `ConnXRecall::upsert`/`remove` after commit — watchers wake event-driven, zero internal polling | watch test observes frames arrive without any poll interval | ✅ |
+| 3 | `watch` verb on FlowNode (token-enforced): drains `changes(since)` pages into frames, then awaits the signal; resume-by-seq preserved | frames carry `change` + `next_seq`; seqs strictly increasing | ✅ |
+| 4 | `Client::watch(since, on_change)` — long-lived connection, callback per change, cursor returned on stop; dropping the callback cancels | e2e over TCP: live upserts arrive as frames; reconnect with returned cursor sees only new changes; unauthorized watch refused | ✅ |
+| 5 | Green close: fmt/clippy/test, PARITY LIVE/KILL row push-stream ✅, BENCHMARKS note, push | full workspace green | ✅ |
+
 ## Sprint 12 — Multi-vector per point (named spaces + late interaction)
 
 | # | Step | Verification gate | Status |

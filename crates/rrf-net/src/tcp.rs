@@ -62,6 +62,24 @@ async fn serve_conn(stream: TcpStream, handler: Arc<dyn Handler>) -> Result<()> 
             continue;
         }
         let msg: Message = serde_json::from_str(&line)?;
+
+        // Streamed verbs first: the handler may claim the message and feed
+        // frames through the channel; the connection then dedicates itself
+        // to forwarding until the producer closes (or the peer hangs up,
+        // which fails the write and tears the producer down with it).
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<Message>(64);
+        if handler.handle_stream(msg.clone(), tx).await? {
+            while let Some(frame) = rx.recv().await {
+                let mut buf = serde_json::to_string(&frame)?;
+                buf.push('\n');
+                write_half
+                    .write_all(buf.as_bytes())
+                    .await
+                    .map_err(|e| RrfError::Net(format!("write: {e}")))?;
+            }
+            continue;
+        }
+
         if let Some(reply) = handler.handle(msg).await? {
             let mut buf = serde_json::to_string(&reply)?;
             buf.push('\n');

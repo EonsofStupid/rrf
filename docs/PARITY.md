@@ -94,7 +94,7 @@ SHOW, SLEEP, UPDATE, UPSERT, USE`
 | CRUD: CREATE/INSERT/SELECT/UPDATE/UPSERT/DELETE | typed query builder (`rrf-flow`) | 🔨 P3 |
 | **RELATE** (graph edges) + graph traversal in SELECT (`->edge->node`) | `Estate::relate/traverse` + routed `scoped_search` (gate 1.000 vs 0.025) | ✅ |
 | DEFINE ×17: access, analyzer, api, bucket, config, database, event, field, function, index, model, module, namespace, param, sequence, table, user | estate catalog (subset; see per-row mapping in C) | 🔨 P3–P6 |
-| LIVE / KILL (live queries) | seq-resumable `changes` paging over a2a ✅; push-stream 🔨 | ✅ poll |
+| LIVE / KILL (live queries) | poll (`changes`) ✅ + push-stream `watch` over a2a: event-driven frames (estate feed signal, zero polling), seq-resume, token-gated, `Client::watch` (KILL = drop the connection) | ✅ |
 | SHOW CHANGES (changefeeds) | durable feed CF, atomic with writes | ✅ |
 | Transactions (BEGIN/COMMIT/CANCEL) | RocksDB TransactionDB | 🔨 P3 |
 | INFO (ns/db/table/index introspection) | estate info + `INFO`-verb on a2a | ✅ partial |

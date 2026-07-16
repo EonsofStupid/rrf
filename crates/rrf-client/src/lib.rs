@@ -110,6 +110,67 @@ impl Client {
         Ok(serde_json::from_value(body)?)
     }
 
+    /// Push-stream subscription: hold one long-lived connection and invoke
+    /// `on_change` for every change frame the node pushes (event-driven on
+    /// the node side — no polling anywhere). Return `false` from the
+    /// callback to stop watching; the cursor to resume from is returned.
+    /// The same `since_seq` cursor works across `watch` and [`Client::changes`].
+    pub async fn watch<F>(&self, since_seq: u64, mut on_change: F) -> Result<u64>
+    where
+        F: FnMut(serde_json::Value) -> bool + Send,
+    {
+        use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+
+        let stream = tokio::net::TcpStream::connect(self.addr.as_str())
+            .await
+            .map_err(|e| RrfError::Net(format!("connect: {e}")))?;
+        let (read_half, mut write_half) = stream.into_split();
+
+        let mut msg = Message::request(
+            self.from.as_str(),
+            "rrf",
+            "watch",
+            serde_json::json!({ "since_seq": since_seq }),
+        );
+        if let Some(t) = &self.token {
+            msg = msg.with_token(t.clone());
+        }
+        let mut buf = serde_json::to_string(&msg)?;
+        buf.push('\n');
+        write_half
+            .write_all(buf.as_bytes())
+            .await
+            .map_err(|e| RrfError::Net(format!("write: {e}")))?;
+
+        let mut cursor = since_seq;
+        let mut lines = BufReader::new(read_half).lines();
+        while let Some(line) = lines
+            .next_line()
+            .await
+            .map_err(|e| RrfError::Net(format!("read: {e}")))?
+        {
+            if line.trim().is_empty() {
+                continue;
+            }
+            let frame: Message = serde_json::from_str(&line)?;
+            if let Some(err) = frame.body.get("error").and_then(|e| e.as_str()) {
+                return Err(RrfError::Net(format!("node refused `watch`: {err}")));
+            }
+            if let Some(next) = frame.body.get("next_seq").and_then(|v| v.as_u64()) {
+                cursor = next;
+            }
+            let change = frame
+                .body
+                .get("change")
+                .cloned()
+                .unwrap_or(serde_json::Value::Null);
+            if !on_change(change) {
+                break; // dropping the connection cancels the stream server-side
+            }
+        }
+        Ok(cursor)
+    }
+
     /// The connectome map for a query (JSON graph the UI renders).
     pub async fn map(&self, query: &str) -> Result<serde_json::Value> {
         self.call("map", serde_json::json!({ "query": query }))

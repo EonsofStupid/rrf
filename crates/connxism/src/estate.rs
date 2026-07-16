@@ -94,6 +94,9 @@ pub struct Estate {
     pub(crate) pending: Arc<crate::pending::Pending>,
     /// Whether the graph stores SQ8 codes (search paths rescore exactly).
     pub(crate) quantized: bool,
+    /// Fired after every committed changefeed append (upsert/remove), so
+    /// push-stream watchers wake event-driven instead of polling.
+    pub(crate) feed_notify: Arc<tokio::sync::Notify>,
     applier: Option<std::thread::JoinHandle<()>>,
     info: EstateInfo,
 }
@@ -158,9 +161,17 @@ impl Estate {
             ann,
             pending,
             quantized: config.quantized,
+            feed_notify: Arc::new(tokio::sync::Notify::new()),
             applier: Some(applier),
             info,
         })
+    }
+
+    /// The changefeed signal: notified after every committed upsert/remove.
+    /// Watchers await it between [`Estate::changes`] drains — event-driven
+    /// push, no polling interval.
+    pub fn feed_signal(&self) -> Arc<tokio::sync::Notify> {
+        self.feed_notify.clone()
     }
 
     /// Estate metadata.

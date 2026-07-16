@@ -40,6 +40,7 @@ pub struct ConnXRecall {
     pub(crate) db: Db,
     ann: Arc<StdRwLock<AnnIndex>>,
     pending: Arc<crate::pending::Pending>,
+    feed_notify: Arc<tokio::sync::Notify>,
     writer: Arc<Mutex<()>>,
     params: Bm25Params,
     /// Rescore graph hits exactly from the durable vectors (set when the
@@ -55,6 +56,7 @@ impl Estate {
             db: self.db.clone(),
             ann: self.ann.clone(),
             pending: self.pending.clone(),
+            feed_notify: self.feed_notify.clone(),
             writer: Arc::new(Mutex::new(())),
             params: Bm25Params::default(),
             rescore: self.quantized,
@@ -325,10 +327,13 @@ impl Recall for ConnXRecall {
             for (id, emb) in for_index {
                 pending.push_upsert(id, emb);
             }
-            Ok(())
+            Ok::<_, RrfError>(())
         })
         .await
-        .map_err(|e| RrfError::Recall(format!("join: {e}")))?
+        .map_err(|e| RrfError::Recall(format!("join: {e}")))??;
+        // Wake push-stream watchers: the feed rows are committed.
+        self.feed_notify.notify_waiters();
+        Ok(())
     }
 
     async fn search(&self, query: &Embedding, top_k: usize) -> Result<Vec<Candidate>> {
@@ -416,10 +421,12 @@ impl Recall for ConnXRecall {
         tokio::task::spawn_blocking(move || {
             remove_blocking(&db, id.as_str())?;
             pending.push_remove(id);
-            Ok(())
+            Ok::<_, RrfError>(())
         })
         .await
-        .map_err(|e| RrfError::Recall(format!("join: {e}")))?
+        .map_err(|e| RrfError::Recall(format!("join: {e}")))??;
+        self.feed_notify.notify_waiters();
+        Ok(())
     }
 
     async fn quiesce(&self) -> Result<()> {

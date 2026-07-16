@@ -825,6 +825,7 @@ dependencies = [
  "recall",
  "reranker",
  "rrd",
+ "rrf-client",
  "rrf-core",
  "rrf-net",
  "serde",
