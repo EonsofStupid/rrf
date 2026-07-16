@@ -216,17 +216,16 @@ async fn discover_model(host: &str, port: u16, path: &str, timeout: Duration) ->
         Some(i) => format!("{}/models", &path[..i]),
         None => "/v1/models".to_string(),
     };
-    let req = format!(
-        "GET {models_path} HTTP/1.1\r\nHost: {host}:{port}\r\nConnection: close\r\n\r\n"
-    );
+    let req =
+        format!("GET {models_path} HTTP/1.1\r\nHost: {host}:{port}\r\nConnection: close\r\n\r\n");
     let raw = http_roundtrip(host, port, &req, timeout).await?;
     let text = String::from_utf8_lossy(&raw);
     let json = text
         .split_once("\r\n\r\n")
         .map(|(_, b)| b)
         .ok_or_else(|| embed_err("malformed /v1/models response"))?;
-    let v: serde_json::Value = serde_json::from_str(json)
-        .map_err(|e| embed_err(format!("parse /v1/models: {e}")))?;
+    let v: serde_json::Value =
+        serde_json::from_str(json).map_err(|e| embed_err(format!("parse /v1/models: {e}")))?;
     // OpenAI shape: {"data":[{"id":...}]}. llama.cpp also exposes {"models":[{"name":...}]}.
     let id = v
         .get("data")
@@ -289,7 +288,10 @@ fn parse_embeddings(json: &str, want: usize, endpoint: &str) -> Result<Vec<Vec<f
     // trust arrival order, or vectors silently attach to the wrong text.
     let mut rows: Vec<(usize, Vec<f32>)> = Vec::with_capacity(data.len());
     for (i, item) in data.iter().enumerate() {
-        let idx = item.get("index").and_then(|x| x.as_u64()).unwrap_or(i as u64) as usize;
+        let idx = item
+            .get("index")
+            .and_then(|x| x.as_u64())
+            .unwrap_or(i as u64) as usize;
         let emb = item
             .get("embedding")
             .and_then(|e| e.as_array())
@@ -381,10 +383,16 @@ mod tests {
     #[test]
     fn url_parsing() {
         let (h, p, path) = parse_url("http://127.0.0.1:8090/v1/embeddings").unwrap();
-        assert_eq!((h.as_str(), p, path.as_str()), ("127.0.0.1", 8090, "/v1/embeddings"));
+        assert_eq!(
+            (h.as_str(), p, path.as_str()),
+            ("127.0.0.1", 8090, "/v1/embeddings")
+        );
 
         let (h, p, path) = parse_url("http://localhost:8092").unwrap();
-        assert_eq!((h.as_str(), p, path.as_str()), ("localhost", 8092, "/v1/embeddings"));
+        assert_eq!(
+            (h.as_str(), p, path.as_str()),
+            ("localhost", 8092, "/v1/embeddings")
+        );
 
         assert!(parse_url("https://x/y").is_err(), "TLS is not supported");
         assert!(parse_url("127.0.0.1:8090").is_err(), "scheme required");

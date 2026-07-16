@@ -10,8 +10,8 @@
 //!   cargo test -p reranker --test rerank_lift -- --ignored --nocapture
 //! ```
 
-use rro_core::{Candidate, Reranker};
 use reranker::{HttpRerankConfig, HttpRerankKind, HttpReranker, LexicalReranker};
+use rro_core::{Candidate, Reranker};
 
 /// A small golden set: each query has exactly one correct document among
 /// distractors that share vocabulary with it. Lexical overlap alone should
@@ -113,7 +113,10 @@ async fn llamacpp_reranker_lifts_over_bm25() {
         "the cross-encoder ({ce}) did WORSE than BM25 ({bm25}) — that is a real finding, \
          not a flaky test: report it rather than deleting this assertion"
     );
-    assert!(ce >= 1.0, "cross-encoder should rank every gold first, got {ce}");
+    assert!(
+        ce >= 1.0,
+        "cross-encoder should rank every gold first, got {ce}"
+    );
 }
 
 #[tokio::test]
@@ -127,8 +130,14 @@ async fn vllm_reranker_lifts_over_bm25() {
     println!("  vllm ({}):", r.model_name());
     let ce = golden_at_1(&r).await;
     println!("  => BM25 {bm25:.2} -> vllm {ce:.2}");
-    assert!(ce >= bm25, "vLLM cross-encoder ({ce}) did worse than BM25 ({bm25})");
-    assert!(ce >= 1.0, "cross-encoder should rank every gold first, got {ce}");
+    assert!(
+        ce >= bm25,
+        "vLLM cross-encoder ({ce}) did worse than BM25 ({bm25})"
+    );
+    assert!(
+        ce >= 1.0,
+        "cross-encoder should rank every gold first, got {ce}"
+    );
 }
 
 /// Both engines serve the same model (llama-nemotron-rerank-1b-v2) on this box,
@@ -149,7 +158,10 @@ async fn llamacpp_and_vllm_agree_on_order() {
         let vo = v.rerank(c.query, candidates(c), 4).await.unwrap();
         let lord: Vec<&str> = lo.iter().map(|c| c.id.as_str()).collect();
         let vord: Vec<&str> = vo.iter().map(|c| c.id.as_str()).collect();
-        println!("  q={:?}\n    llamacpp={lord:?}\n    vllm    ={vord:?}", c.query);
+        println!(
+            "  q={:?}\n    llamacpp={lord:?}\n    vllm    ={vord:?}",
+            c.query
+        );
         assert_eq!(
             lord[0], vord[0],
             "same model, same query, but the engines disagree on the top document"
@@ -220,7 +232,11 @@ async fn candle_reranker_scores_are_calibrated_probabilities() {
             "What is the capital of China?",
             vec![
                 Candidate::new("good", "The capital of China is Beijing.", 0.0),
-                Candidate::new("bad", "Bananas are a tropical fruit rich in potassium.", 0.0),
+                Candidate::new(
+                    "bad",
+                    "Bananas are a tropical fruit rich in potassium.",
+                    0.0,
+                ),
             ],
             2,
         )
@@ -249,14 +265,25 @@ async fn candle_reranker_scores_are_calibrated_probabilities() {
 #[tokio::test]
 #[ignore]
 async fn candle_score_dump() {
-    let Ok(dir) = std::env::var("RRO_TEST_QWEN_RERANK_WEIGHTS") else { return };
+    let Ok(dir) = std::env::var("RRO_TEST_QWEN_RERANK_WEIGHTS") else {
+        return;
+    };
     let r = reranker::CandleQwenReranker::load(reranker::CandleRerankConfig::new(&dir)).unwrap();
     for c in CASES {
         println!("\n  QUERY: {:?}   (gold = d{})", c.query, gold_index(c));
         let out = r.rerank(c.query, candidates(c), 4).await.unwrap();
         for cand in &out {
-            let mark = if cand.id.as_str() == format!("d{}", gold_index(c)) { " <-- GOLD" } else { "" };
-            println!("    {:>10.6}  {}  {:?}{mark}", cand.score, cand.id.as_str(), &cand.text[..cand.text.len().min(60)]);
+            let mark = if cand.id.as_str() == format!("d{}", gold_index(c)) {
+                " <-- GOLD"
+            } else {
+                ""
+            };
+            println!(
+                "    {:>10.6}  {}  {:?}{mark}",
+                cand.score,
+                cand.id.as_str(),
+                &cand.text[..cand.text.len().min(60)]
+            );
         }
     }
 }

@@ -23,14 +23,13 @@ pub use encoder::Qwen3Encoder;
 
 use std::path::{Path, PathBuf};
 
+use crate::DEFAULT_QUERY_TASK;
 use async_trait::async_trait;
 use candle_core::{DType, Device, Tensor};
 use candle_nn::VarBuilder;
 use candle_transformers::models::qwen3::Config;
-use crate::DEFAULT_QUERY_TASK;
 use rro_core::{Embedder, Embedding, Result, RroError};
 use tokenizers::Tokenizer;
-
 
 /// Everything the Qwen3 forward pass needs that is *not* generic to embedders.
 ///
@@ -144,7 +143,9 @@ impl CandleQwenEmbedder {
 
         let name = format!(
             "candle-qwen3-{}",
-            dir.file_name().and_then(|s| s.to_str()).unwrap_or("unknown")
+            dir.file_name()
+                .and_then(|s| s.to_str())
+                .unwrap_or("unknown")
         );
 
         let me = CandleQwenEmbedder {

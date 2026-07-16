@@ -155,7 +155,9 @@ impl CandleQwenReranker {
 
         let name = format!(
             "candle-qwen3-rerank-{}",
-            dir.file_name().and_then(|s| s.to_str()).unwrap_or("unknown")
+            dir.file_name()
+                .and_then(|s| s.to_str())
+                .unwrap_or("unknown")
         );
 
         let me = CandleQwenReranker {
@@ -205,7 +207,8 @@ impl CandleQwenReranker {
                 .get_ids()
                 .to_vec();
             body.truncate(room);
-            let mut v = Vec::with_capacity(self.prefix_ids.len() + body.len() + self.suffix_ids.len());
+            let mut v =
+                Vec::with_capacity(self.prefix_ids.len() + body.len() + self.suffix_ids.len());
             v.extend_from_slice(&self.prefix_ids);
             v.extend_from_slice(&body);
             v.extend_from_slice(&self.suffix_ids);

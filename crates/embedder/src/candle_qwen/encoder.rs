@@ -209,14 +209,18 @@ impl Attention {
             .transpose(1, 2)?;
 
         // Per-head RMSNorm on q and k — the Qwen3-specific bit.
-        let q = self
-            .q_norm
-            .forward(&q.flatten(0, 2)?)?
-            .reshape((b, self.num_heads, l, self.head_dim))?;
-        let k = self
-            .k_norm
-            .forward(&k.flatten(0, 2)?)?
-            .reshape((b, self.num_kv_heads, l, self.head_dim))?;
+        let q = self.q_norm.forward(&q.flatten(0, 2)?)?.reshape((
+            b,
+            self.num_heads,
+            l,
+            self.head_dim,
+        ))?;
+        let k = self.k_norm.forward(&k.flatten(0, 2)?)?.reshape((
+            b,
+            self.num_kv_heads,
+            l,
+            self.head_dim,
+        ))?;
 
         let (q, k) = self.rotary.apply(&q, &k)?;
 

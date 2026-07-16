@@ -13,15 +13,15 @@
 #[cfg(feature = "candle")]
 mod candle_qwen;
 mod deterministic;
-mod openai;
 mod devpulse;
+mod openai;
 mod tokenize;
 
 #[cfg(feature = "candle")]
-pub use candle_qwen::{CandleQwenEmbedder, QwenEmbedConfig, Qwen3Encoder};
-pub use openai::{OpenAiEmbedConfig, OpenAiEmbedder, OpenAiKind};
+pub use candle_qwen::{CandleQwenEmbedder, Qwen3Encoder, QwenEmbedConfig};
 pub use deterministic::DeterministicEmbedder;
 pub use devpulse::{DevPulseEmbedder, ModelSpec};
+pub use openai::{OpenAiEmbedConfig, OpenAiEmbedder, OpenAiKind};
 
 /// Re-export so downstream crates can name the trait without a second dep.
 /// The instruction Qwen3-Embedding prepends to a **query** — never a document.

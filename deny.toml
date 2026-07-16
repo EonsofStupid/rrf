@@ -7,7 +7,15 @@ all-features = true
 version = 2
 yanked = "deny"
 # Add specific advisory ignores here with a justification comment when needed.
-ignore = []
+ignore = [
+    # RUSTSEC-2024-0436: `paste` is unmaintained (archived), NOT vulnerable.
+    # It arrives only transitively through the candle inference stack
+    # (gemm -> candle-core -> candle-transformers), which is compiled solely
+    # under the optional `candle` feature. The advisory itself states "no safe
+    # upgrade is available" — the whole gemm/candle ecosystem still depends on
+    # it — so there is nothing to bump. Revisit when candle drops the gemm dep.
+    "RUSTSEC-2024-0436",
+]
 
 [licenses]
 version = 2
