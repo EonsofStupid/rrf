@@ -21,10 +21,10 @@ and is UNVERIFIED for real retrieval until this lands._
 Achieved by three rules:
 
 1. **The trait is the only contract.** `Embedder` / `Reranker` /`Classifier`
-   already exist in `rrf-core/src/traits.rs`. Nothing in the flow, estate, or
+   already exist in `rro-core/src/traits.rs`. Nothing in the flow, estate, or
    query plane knows which backend is behind them. Real models drop in here.
 2. **Selection is data, not code.** A backend **registry** builds the concrete
-   impl from config (`RRF_EMBEDDER=candle-qwen|onnx|remote|deterministic`). Adding
+   impl from config (`RRO_EMBEDDER=candle-qwen|onnx|remote|deterministic`). Adding
    a new backend = add one enum arm + one constructor; zero flow changes.
 3. **Performance lives inside the backend, behind the trait.** Batching, graph
    warmup, mmap weights, device placement, quantization — all internal to the
@@ -66,9 +66,9 @@ pub fn build_embedder(cfg: &EmbedderConfig) -> Result<Arc<dyn Embedder>> {
 // Same shape: build_reranker(&RerankerConfig) -> Arc<dyn Reranker>.
 ```
 
-`rrf-flow`'s daemon (`bin/rrf.rs`) reads `RRF_EMBEDDER*` / `RRF_RERANKER*` from
+`rro-engine`'s daemon (`bin/rrf.rs`) reads `RRO_EMBEDDER*` / `RRO_RERANKER*` from
 env, calls `build_embedder` / `build_reranker`, and hands the results to
-`ReasonReadyFlow::builder()`. **That is the entire swap mechanism.**
+`ReasonReadyObject::builder()`. **That is the entire swap mechanism.**
 
 ## 3. The Qwen embedder (candle) — exact steps
 
@@ -77,7 +77,7 @@ Target: `Qwen/Qwen3-Embedding-0.6B` (1024-dim; safetensors + tokenizer.json).
 1. **Deps** (behind `candle` feature): `candle-core`, `candle-nn`,
    `candle-transformers`, `tokenizers`, `safetensors`, `hf-hub` (or read local
    paths). Pin versions; commit `Cargo.lock`.
-2. **Weights**: `hf-hub` snapshot download to `RRF_EMBEDDER_WEIGHTS`, OR accept a
+2. **Weights**: `hf-hub` snapshot download to `RRO_EMBEDDER_WEIGHTS`, OR accept a
    local dir. Files: `model.safetensors`, `tokenizer.json`, `config.json`,
    `1_Pooling/config.json` (pooling mode), `config_sentence_transformers.json`.
 3. **Load** (`CandleQwenEmbedder::load`): mmap safetensors via
@@ -89,7 +89,7 @@ Target: `Qwen/Qwen3-Embedding-0.6B` (1024-dim; safetensors + tokenizer.json).
    forward → **pooling per the model's `1_Pooling` config** (Qwen3-Embedding
    uses last-token / mean per its card — read it, don't guess) → **L2-normalize**
    (the estate's cosine path assumes it) → collect `Embedding`.
-5. **Performance:** honor `RRF_EMBED_BATCH`; reuse the tokenizer; keep tensors on
+5. **Performance:** honor `RRO_EMBED_BATCH`; reuse the tokenizer; keep tensors on
    device; f16/bf16 on GPU; expose `dim()` from config. No allocation per token
    in the hot loop.
 
@@ -97,7 +97,7 @@ Target: `Qwen/Qwen3-Embedding-0.6B` (1024-dim; safetensors + tokenizer.json).
 - **Sanity:** cosine("king","queen") > cosine("king","banana"); paraphrases
   score high, unrelated low. Assert in an ignored-by-default test that runs with
   `--features candle` and weights present.
-- **Re-run the bake-off** (`rrf-bench`) with the real embedder on both RRF and
+- **Re-run the bake-off** (`rro-bench`) with the real embedder on both RRF and
   the baseline, identical corpus. Record HONEST numbers in BENCHMARKS.md — they
   may differ hugely from the synthetic 1.000. **This is the first real answer to
   "is the engine worth it."**
@@ -112,8 +112,8 @@ Target: a Nemotron-class / cross-encoder reranker (query,doc)→relevance score.
 2. `CandleNemotronReranker::rerank(query, candidates)`: for each candidate, form
    the cross-encoder input `(query, doc.text)`, tokenize, forward, take the
    relevance logit; sort descending; return re-scored candidates. Batch the
-   forward passes (`RRF_EMBED_BATCH`).
-3. Wire it as the flow's reranker via the registry when `RRF_RERANKER=candle-nemotron`.
+   forward passes (`RRO_EMBED_BATCH`).
+3. Wire it as the flow's reranker via the registry when `RRO_RERANKER=candle-nemotron`.
 
 ### GATE
 - On a labeled set (or the planted-golden bench), the reranker must **lift**
@@ -133,7 +133,7 @@ Target: a Nemotron-class / cross-encoder reranker (query,doc)→relevance score.
   embedders, all behind the same registry.
 
 ## 6. Definition of done
-- `RRF_EMBEDDER=candle-qwen` boots a node that embeds real text; `deterministic`
+- `RRO_EMBEDDER=candle-qwen` boots a node that embeds real text; `deterministic`
   still works for CI. Swapping is one env var. ✅ modular + part of engine.
 - Bake-off re-run on real embeddings; numbers recorded honestly; ANN re-tuned;
   reranker lift measured. ✅ the engine is finally *evaluated*.

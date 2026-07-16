@@ -15,7 +15,7 @@ RUN_DIR="${RRF_HOME:-$ROOT/.rrf}"
 ESTATE="$RUN_DIR/estate"
 EVENTS="$RUN_DIR/events.jsonl"
 PIDFILE="$RUN_DIR/rrf.pid"
-ADDR="${RRF_LISTEN:-127.0.0.1:7878}"
+ADDR="${RRO_LISTEN:-127.0.0.1:7878}"
 
 stop() {
   if [[ -f "$PIDFILE" ]] && kill -0 "$(cat "$PIDFILE")" 2>/dev/null; then
@@ -32,12 +32,12 @@ if [[ "${1:-}" == "stop" ]]; then stop; exit 0; fi
 mkdir -p "$RUN_DIR"
 
 echo "── building (release) ─────────────────────────────────────────"
-cargo build --release --bin rrf --bin rrf-bench
+cargo build --release --bin rrf --bin rro-bench
 
 echo "── booting the engine ─────────────────────────────────────────"
 [[ -f "$PIDFILE" ]] && stop
-RRF_ESTATE="$ESTATE" RRF_LISTEN="$ADDR" RRF_EVENTS="$EVENTS" RUST_LOG=info \
-  "$ROOT/target/release/rrf" >>"$RUN_DIR/rrf.log" 2>&1 &
+RRO_ESTATE="$ESTATE" RRO_LISTEN="$ADDR" RRO_EVENTS="$EVENTS" RUST_LOG=info \
+  "$ROOT/target/release/rrf" >>"$RUN_DIR/rro.log" 2>&1 &
 echo $! > "$PIDFILE"
 
 for _ in $(seq 1 50); do
@@ -49,7 +49,7 @@ echo "estate:    $ESTATE"
 echo "events:    $EVENTS"
 
 echo "── smoke test: full pipeline over a2a (layer-2) ───────────────"
-"$ROOT/target/release/rrf-bench" --docs 500 --queries 25 --store estate \
+"$ROOT/target/release/rro-bench" --docs 500 --queries 25 --store estate \
   --remote "$ADDR" | grep -E "accuracy|p50|throughput" || true
 
 echo "── flow stages the engine emitted while answering ─────────────"
@@ -57,5 +57,5 @@ grep '"flow.stage"' "$EVENTS" | tail -5 || echo "(no stage events yet)"
 
 echo
 echo "READY. Ask it something:"
-echo "  target/release/rrf-bench --docs 0 --queries 1 --remote $ADDR   # or speak a2a JSON on $ADDR"
+echo "  target/release/rro-bench --docs 0 --queries 1 --remote $ADDR   # or speak a2a JSON on $ADDR"
 echo "Stop it:  ./scripts/quickstart.sh stop"

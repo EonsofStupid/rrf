@@ -3,7 +3,7 @@
 //! graceful flush) with counts, search, and the changefeed intact.
 
 use connxism::Estate;
-use rrf_core::{Embedding, Recall, VectorRecord};
+use rro_core::{Embedding, Recall, VectorRecord};
 
 fn rec(id: &str, seed: u64, text: &str) -> VectorRecord {
     // Deterministic non-trivial vector.

@@ -2,14 +2,14 @@
 //!
 //! Exact nearest-neighbour by full scan. For the corpus sizes the engine is
 //! born on this is correct and fast; when the working set outgrows a linear
-//! scan, swap in an ANN index behind the same [`rrf_core::Recall`] trait — the
+//! scan, swap in an ANN index behind the same [`rro_core::Recall`] trait — the
 //! flow never notices.
 
 use std::collections::HashMap;
 use std::sync::RwLock;
 
 use async_trait::async_trait;
-use rrf_core::{Candidate, Embedding, Id, Recall, Result, RrfError, VectorRecord};
+use rro_core::{Candidate, Embedding, Id, Recall, Result, RroError, VectorRecord};
 
 /// A flat (exhaustive) in-memory vector store.
 #[derive(Default)]
@@ -28,14 +28,14 @@ impl FlatRecall {
         let mut d = self
             .dim
             .write()
-            .map_err(|_| RrfError::Recall("dim lock poisoned".into()))?;
+            .map_err(|_| RroError::Recall("dim lock poisoned".into()))?;
         match *d {
             None => {
                 *d = Some(emb.dim());
                 Ok(())
             }
             Some(expected) if expected == emb.dim() => Ok(()),
-            Some(expected) => Err(RrfError::DimMismatch {
+            Some(expected) => Err(RroError::DimMismatch {
                 expected,
                 got: emb.dim(),
             }),
@@ -52,7 +52,7 @@ impl Recall for FlatRecall {
         let mut map = self
             .inner
             .write()
-            .map_err(|_| RrfError::Recall("store lock poisoned".into()))?;
+            .map_err(|_| RroError::Recall("store lock poisoned".into()))?;
         for r in records {
             map.insert(r.id.clone(), r);
         }
@@ -67,10 +67,10 @@ impl Recall for FlatRecall {
         if let Some(expected) = *self
             .dim
             .read()
-            .map_err(|_| RrfError::Recall("dim lock poisoned".into()))?
+            .map_err(|_| RroError::Recall("dim lock poisoned".into()))?
         {
             if expected != query.dim() {
-                return Err(RrfError::DimMismatch {
+                return Err(RroError::DimMismatch {
                     expected,
                     got: query.dim(),
                 });
@@ -80,7 +80,7 @@ impl Recall for FlatRecall {
         let map = self
             .inner
             .read()
-            .map_err(|_| RrfError::Recall("store lock poisoned".into()))?;
+            .map_err(|_| RroError::Recall("store lock poisoned".into()))?;
 
         // Score everything cheaply first; clone payloads only for the winners.
         let mut scored: Vec<(&Id, f32)> = map
@@ -106,14 +106,14 @@ impl Recall for FlatRecall {
         Ok(self
             .inner
             .read()
-            .map_err(|_| RrfError::Recall("store lock poisoned".into()))?
+            .map_err(|_| RroError::Recall("store lock poisoned".into()))?
             .len())
     }
 
     async fn remove(&self, id: &Id) -> Result<()> {
         self.inner
             .write()
-            .map_err(|_| RrfError::Recall("store lock poisoned".into()))?
+            .map_err(|_| RroError::Recall("store lock poisoned".into()))?
             .remove(id);
         Ok(())
     }
@@ -156,6 +156,6 @@ mod tests {
         let err = store
             .upsert(vec![VectorRecord::new("b", emb(&[1.0, 0.0, 0.0]), "y")])
             .await;
-        assert!(matches!(err, Err(RrfError::DimMismatch { .. })));
+        assert!(matches!(err, Err(RroError::DimMismatch { .. })));
     }
 }

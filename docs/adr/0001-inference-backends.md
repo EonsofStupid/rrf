@@ -52,7 +52,7 @@ vLLM to Rust.**
 
 ## Consequences
 
-- `rrf-core` defines model traits (`Embedder`, `Reranker`, and a future
+- `rro-core` defines model traits (`Embedder`, `Reranker`, and a future
   `Generator`); backends are cargo features so builds stay lean.
 - Config selects backends at runtime; a small provider registry resolves them.
 - A bake-off harness compares backends on the same eval set (quality: recall@k,

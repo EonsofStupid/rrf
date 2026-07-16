@@ -33,7 +33,7 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
 
-use rrf_core::{Embedding, Metadata};
+use rro_core::{Embedding, Metadata};
 
 pub use baseline::{BaselineSnapshot, ShapeBaseline, DRIFT_THRESHOLD};
 pub use gates::{ActionGate, DeepEvaluator, GateVerdict, L0Config, LexicalSignals, SourceStamp};
@@ -87,7 +87,7 @@ impl Rrd {
     /// stores it; restarts restore it — the baseline grows across sessions).
     pub fn baseline_snapshot(&self) -> BaselineSnapshot {
         let snap = self.baseline.write().expect("baseline lock").snapshot();
-        rrf_core::events::emit(
+        rro_core::events::emit(
             "rrd.baseline.snapshot",
             serde_json::json!({
                 "version": snap.version,
@@ -163,7 +163,7 @@ impl Rrd {
         // L0 — deterministic gate: size/schema arithmetic, no scanning.
         let l0 = gates::l0_deterministic(&self.l0, text, metadata.len(), false);
         if l0 == GateVerdict::Block {
-            rrf_core::events::emit(
+            rro_core::events::emit(
                 "rrd.gate",
                 serde_json::json!({ "tier": "l0", "verdict": "block", "doc": doc_id }),
             );
@@ -222,7 +222,7 @@ impl Rrd {
             baseline.observe(&context, sliver_id, predicted);
             let drift = baseline.drift(&context);
             if drift > baseline::DRIFT_THRESHOLD {
-                rrf_core::events::emit(
+                rro_core::events::emit(
                     "rrd.drift",
                     serde_json::json!({
                         "context": context,
@@ -241,7 +241,7 @@ impl Rrd {
                 .expect("plans lock")
                 .insert(sliver_id, compiled.clone());
             self.compiles.fetch_add(1, Ordering::Relaxed);
-            rrf_core::events::emit(
+            rro_core::events::emit(
                 "rrd.compile",
                 serde_json::json!({
                     "sliver_id": sliver_id,

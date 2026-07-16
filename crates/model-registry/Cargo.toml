@@ -20,7 +20,7 @@ candle = []
 onnx = []
 
 [dependencies]
-rrf-core = { workspace = true }
+rro-core = { workspace = true }
 embedder = { workspace = true }
 reranker = { workspace = true }
 

@@ -29,7 +29,7 @@ pub use jsonl::JsonlDriver;
 use async_trait::async_trait;
 use connxism::{ConnXRecall, Estate, SyncState, SyncStatus};
 use rrd::{GateVerdict, Rrd, SourceStamp};
-use rrf_core::{Document, Embedder, Recall, Result, RrfError};
+use rro_core::{Document, Embedder, Recall, Result, RroError};
 
 /// Estate key the RRD shape baseline persists under.
 const BASELINE_KEY: &str = "rrd:baseline";
@@ -82,7 +82,7 @@ pub async fn sync(
 ) -> Result<SyncReport> {
     let conn = estate
         .connector(connector_id)?
-        .ok_or_else(|| RrfError::msg(format!("no such connector: {connector_id}")))?;
+        .ok_or_else(|| RroError::msg(format!("no such connector: {connector_id}")))?;
 
     // The baseline persists in the estate and grows across sessions: restore
     // it into a fresh Rrd before the first observation of this run.
@@ -152,7 +152,7 @@ pub async fn sync(
             tags.push(format!("mode:{}", rro.mode.name()));
             post.push((doc.id.as_str().to_string(), tags));
 
-            let mut r = rrf_core::VectorRecord::new(doc.id.clone(), emb.clone(), doc.text.clone());
+            let mut r = rro_core::VectorRecord::new(doc.id.clone(), emb.clone(), doc.text.clone());
             r.metadata = doc.metadata.clone();
             records.push(r);
         }
@@ -180,7 +180,7 @@ pub async fn sync(
                 status: SyncStatus::Syncing,
             },
         )?;
-        rrf_core::events::emit(
+        rro_core::events::emit(
             "connector.batch",
             serde_json::json!({
                 "connector": connector_id,
@@ -216,7 +216,7 @@ pub async fn sync(
     // durable "this is normal" the next session restores and grows.
     estate.put_component_json(BASELINE_KEY, &rrd.baseline_snapshot())?;
 
-    rrf_core::events::emit(
+    rro_core::events::emit(
         "connector.synced",
         serde_json::json!({
             "connector": connector_id,

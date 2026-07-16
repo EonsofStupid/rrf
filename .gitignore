@@ -14,3 +14,8 @@ Cargo.lock.bak
 .idea/
 .vscode/
 *.swp
+
+# Runtime estate + event stream (was committed by accident as .rrf/)
+/.rro/
+/.rrf/
+*.jsonl.tmp

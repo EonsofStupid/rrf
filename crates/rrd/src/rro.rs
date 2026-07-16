@@ -2,7 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use rrf_core::Metadata;
+use rro_core::Metadata;
 
 use crate::gates::{GateVerdict, LexicalSignals, SourceStamp};
 use crate::mode::Mode;

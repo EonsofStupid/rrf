@@ -81,7 +81,7 @@ impl ShapeRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rrf_core::Metadata;
+    use rro_core::Metadata;
 
     fn shape(keys: &[&str]) -> ShapeFingerprint {
         let m: Metadata = keys

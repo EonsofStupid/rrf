@@ -27,10 +27,10 @@ Make everything after this measurable and gated.
 - The ingestion machine: bounded intake, batch/linger, concurrent batches,
   observable state (`Idle → Ingesting → Draining → Indexed`), graceful drain.
 - `estate_map`: the whole estate rendered as one connectome.
-- `rrf-bench`: ingest throughput + hybrid query latency, real numbers.
+- `rro-bench`: ingest throughput + hybrid query latency, real numbers.
 
 ## Phase 2 — Backend abstraction + bake-off ⬜
-- `Generator` trait in `rrf-core`; backend features `candle` / `llamacpp` /
+- `Generator` trait in `rro-core`; backend features `candle` / `llamacpp` /
   `vllm` / `candle-vllm`; a provider registry resolving backends from config.
 - candle in-process forward passes for the DevPULSE embedder (Qwen) and
   reranker (Nemotron) behind `candle`.

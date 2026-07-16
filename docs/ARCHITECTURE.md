@@ -10,7 +10,7 @@ is a *pluggable boundary*, never a hard dependency.
 
 ## Design laws
 
-1. **Everything swappable is a trait in `rrf-core`.** The flow depends on
+1. **Everything swappable is a trait in `rro-core`.** The flow depends on
    capabilities, not implementations. Components are chosen at build time
    (cargo features) and/or runtime (config).
 2. **Weightless by default.** The whole pipeline compiles and runs with zero
@@ -25,7 +25,7 @@ is a *pluggable boundary*, never a hard dependency.
 ## Crate map
 
 ```
-rrf-core ──────────────── the contract: domain types + component traits
+rro-core ──────────────── the contract: domain types + component traits
    ▲  ▲  ▲  ▲
    │  │  │  └── classifier   Reason Ready daemon (readiness judgment + service)
    │  │  └───── reranker     true-relevance ordering (BM25 default; DevPULSE)
@@ -36,14 +36,14 @@ connectome ────────────── the visual/relational map 
 connxism ──────────────── the kvs-connectome: persistent estate (RocksDB) —
                           nodes, warp points, connectors, docs, vectors,
                           BM25 postings, tags, shapes, trends
-rrf-net ───────────────── a2a / node surface (in-proc bus + TCP transport)
-rrf-flow ──────────────── orchestrator + ingestion machine + `rrf` daemon +
-                          `rrf-bench` harness (depends on all)
+rro-net ───────────────── a2a / node surface (in-proc bus + TCP transport)
+rro-engine ──────────────── orchestrator + ingestion machine + `rrf` daemon +
+                          `rro-bench` harness (depends on all)
 ```
 
-`rrf-core` is the single source of truth. No crate depends on another
-component crate's internals — only on the traits and types in `rrf-core`.
-`rrf-flow` is the only crate that composes concrete implementations.
+`rro-core` is the single source of truth. No crate depends on another
+component crate's internals — only on the traits and types in `rro-core`.
+`rro-engine` is the only crate that composes concrete implementations.
 
 ## The flow (one pass)
 

@@ -1,6 +1,6 @@
 //! Timing probe for the ANN hot loop (build + search), full-precision store.
 use recall::{AnnConfig, AnnIndex};
-use rrf_core::{Embedding, Id};
+use rro_core::{Embedding, Id};
 
 fn pseudo_vec(seed: u64, dim: usize) -> Vec<f32> {
     let mut x = seed.wrapping_add(0x9E3779B97F4A7C15);

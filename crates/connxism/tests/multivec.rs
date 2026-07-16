@@ -3,7 +3,7 @@
 //! MaxSim late-interaction rescore, and the query-plane wiring.
 
 use connxism::{Estate, EstateQuery};
-use rrf_core::{maxsim, Embedding, Recall, VectorRecord};
+use rro_core::{maxsim, Embedding, Recall, VectorRecord};
 
 fn lcg(seed: &mut u64) -> f32 {
     *seed ^= *seed << 13;

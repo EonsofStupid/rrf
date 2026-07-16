@@ -2,12 +2,12 @@
 //!
 //! Any [`Classifier`] can be run as an embedded daemon. Requests arrive over a
 //! channel and are answered on a per-request oneshot, so the flow — or a remote
-//! peer over `rrf-net` — can ask "is this ready to reason on?" without owning
+//! peer over `rro-net` — can ask "is this ready to reason on?" without owning
 //! the model. This is the shape the tuned DevPULSE classifier will run in.
 
 use std::sync::Arc;
 
-use rrf_core::{Candidate, Classifier, Readiness, Result, RrfError};
+use rro_core::{Candidate, Classifier, Readiness, Result, RroError};
 use tokio::sync::{mpsc, oneshot};
 
 /// A single readiness request routed to the daemon.
@@ -34,9 +34,9 @@ impl DaemonHandle {
                 reply,
             })
             .await
-            .map_err(|_| RrfError::Classify("daemon stopped".into()))?;
+            .map_err(|_| RroError::Classify("daemon stopped".into()))?;
         rx.await
-            .map_err(|_| RrfError::Classify("daemon dropped the request".into()))?
+            .map_err(|_| RroError::Classify("daemon dropped the request".into()))?
     }
 }
 

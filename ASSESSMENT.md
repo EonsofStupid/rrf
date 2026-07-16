@@ -31,7 +31,7 @@ works regardless of what produces the vectors):
 - **recall (970 loc)** — the ANN graph (recall@10 ≥ 0.95 gated vs exact).
   Its *quality* was only ever checked on synthetic vectors, but the graph
   algorithm itself is real.
-- **The trait seam is the payoff** — `rrf-core/src/traits.rs`: `Embedder`,
+- **The trait seam is the payoff** — `rro-core/src/traits.rs`: `Embedder`,
   `Reranker`, `Classifier`, `Recall`. Real Qwen/Nemotron drop in **behind these
   traits** without touching the flow, the estate, or the query plane. That is
   exactly why you don't restart: the socket for the real models is already there.
@@ -48,7 +48,7 @@ works regardless of what produces the vectors):
 1. `cargo add candle-core candle-transformers tokenizers` behind the `candle`
    feature; fill the `TODO` in `devpulse.rs` — load Qwen3-Embedding, run the
    forward pass, mean-pool. (Nemotron reranker the same, behind `Reranker`.)
-2. Swap the default embedder for it in `rrf-flow`.
+2. Swap the default embedder for it in `rro-engine`.
 3. Re-run the bake-off. **Now** the accuracy number means something.
 
 That is roughly one focused session — **in the right box**, not this one.

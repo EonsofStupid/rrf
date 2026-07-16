@@ -114,7 +114,7 @@ fn infer_role(field: &str, ty: &str) -> FieldRole {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rrf_core::Metadata;
+    use rro_core::Metadata;
 
     #[test]
     fn mail_fields_get_sensible_roles() {

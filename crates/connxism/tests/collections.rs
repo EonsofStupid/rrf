@@ -3,7 +3,7 @@
 //! and the collection field rides the query contract's wire shape.
 
 use connxism::{Estate, EstateQuery};
-use rrf_core::{Embedding, Recall, VectorRecord};
+use rro_core::{Embedding, Recall, VectorRecord};
 
 fn lcg(seed: &mut u64) -> f32 {
     *seed ^= *seed << 13;

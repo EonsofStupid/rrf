@@ -9,7 +9,7 @@
 //! - **documents**, **vectors**, and the persistent **BM25 inverted index**,
 //! - **tags**, the **shape** census, and **trend** time-series.
 //!
-//! [`ConnXRecall`] implements [`rrf_core::Recall`] over the estate: dense
+//! [`ConnXRecall`] implements [`rro_core::Recall`] over the estate: dense
 //! cosine search, lexical BM25 search, and **hybrid** search fused by
 //! reciprocal rank fusion. The flow plugs it in exactly like the in-memory
 //! store — persistence is a component choice, not an architecture change.
@@ -39,9 +39,9 @@ pub use model::{
 };
 pub use rels::{Relation, TraversalSpec};
 /// Re-exported from the core contract so estate consumers keep one import.
-pub use rrf_core::{Condition, EstateQuery, Filter};
+pub use rro_core::{Condition, EstateQuery, Filter};
 pub use store::ConnXRecall;
 pub use strategies::Group;
 
 /// Re-export so downstream crates can name the trait without a second dep.
-pub use rrf_core::Recall;
+pub use rro_core::Recall;

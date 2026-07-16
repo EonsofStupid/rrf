@@ -4,8 +4,8 @@
 //! persisted analyzer survives reopen (creation config wins once, forever).
 
 use connxism::{Estate, EstateConfig};
-use rrf_core::text::Analyzer;
-use rrf_core::{Embedding, Recall, VectorRecord};
+use rro_core::text::Analyzer;
+use rro_core::{Embedding, Recall, VectorRecord};
 
 fn rec(id: &str, text: &str) -> VectorRecord {
     VectorRecord::new(id, Embedding(vec![0.1, 0.2, 0.3, 0.4]), text)

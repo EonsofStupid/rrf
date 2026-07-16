@@ -27,8 +27,8 @@ store doing *less* work over HTTP.
 | # | Step | Verification gate | Status |
 |---|---|---|---|
 | 1 | This outline | committed | ✅ |
-| 2 | **accuracy@k** in `rrf-bench`: planted golden docs (one unique-marked golden per query; accuracy = golden in top-k) | unit test on planting; metric printed + evented | ✅ estate **1.000**, mem-dense 0.936 (hybrid is the difference) |
-| 3 | **a2a remote path**: `rrf-bench --remote <addr>` queries a live `rrf` daemon over layer-2 TCP (full pipeline per query) | remote run returns identical accuracy to local; latency recorded | ✅ remote **1.000** == local; p50 191 ms vs 188 ms local (+3 ms for the wire); ingest 6,480 docs/sec over a2a |
+| 2 | **accuracy@k** in `rro-bench`: planted golden docs (one unique-marked golden per query; accuracy = golden in top-k) | unit test on planting; metric printed + evented | ✅ estate **1.000**, mem-dense 0.936 (hybrid is the difference) |
+| 3 | **a2a remote path**: `rro-bench --remote <addr>` queries a live `rrf` daemon over layer-2 TCP (full pipeline per query) | remote run returns identical accuracy to local; latency recorded | ✅ remote **1.000** == local; p50 191 ms vs 188 ms local (+3 ms for the wire); ingest 6,480 docs/sec over a2a |
 | 4 | **Baseline harness** (outside the tree): same corpus, same precomputed vectors, into ChromaDB embedded + ChromaDB HTTP server | baseline ingest/query/accuracy numbers emitted | ✅ 566–586 docs/sec, acc 0.572–0.606, p50 3–5 ms |
 | 5 | **The bake-off**: rrf (local + a2a) vs baseline (embedded + HTTP), identical inputs | results table + methodology in BENCHMARKS.md; no metric asserted without a run | ✅ 11.7× durable ingest, 1.000 vs 0.606 accuracy, +3 ms wire cost; ANN latency gap quantified → P2 |
 | 6 | Green close: fmt/clippy/tests, baselines re-gated, commit+push | CI-green tree | ✅ |
@@ -108,7 +108,7 @@ IMAP-class driver (needs a live mailbox; the driver trait is its socket).
 |---|---|---|---|
 | 1 | Estate snapshots: `Estate::snapshot_to(path)` via RocksDB checkpoint; a snapshot opens as a full working estate | ✅ point-in-time verified (post-snapshot writes excluded; relations captured) | ✅ |
 | 2 | **Kill-9 crash suite**: a child process ingests then `abort()` (no destructors, no flush) — the reopened estate must be consistent (counts, search, feed) and the ANN rebuilds | ✅ in-tree; **30/30 hard-death rounds recovered** (10× loop × 3 rounds) | ✅ |
-| 3 | a2a capability auth v1: shared-secret token on the wire (`Message.token`, serde-defaulted); nodes with a token reject non-bearers (ping stays open); RRF_TOKEN env | ✅ authorized/unauthorized/wrong-token over live TCP; `a2a.unauthorized` evented | ✅ |
+| 3 | a2a capability auth v1: shared-secret token on the wire (`Message.token`, serde-defaulted); nodes with a token reject non-bearers (ping stays open); RRO_TOKEN env | ✅ authorized/unauthorized/wrong-token over live TCP; `a2a.unauthorized` evented | ✅ |
 | 4 | Green close + docs + push | CI-green tree | ✅ |
 
 Deferred honestly: gRPC surface + MCP transport binding (next slice of P5 —
@@ -121,8 +121,8 @@ attenuation per L3, after tokens prove the seam).
 |---|---|---|---|
 | 1 | `EstateQuery` builder: text/vector/top_k + metadata **filter** + optional scope, executed hybrid with over-fetch post-filter (payload hydration for lexical hits) | ✅ every hit satisfies the filter | ✅ |
 | 2 | Facets, filtered count, scroll (cursor-paged listing) on the estate | ✅ facet counts exact (20/40 split); scroll covers all 60 docs, zero overlap | ✅ |
-| 3 | `rrf-client` crate: typed async client over a2a (ping/ask/index/changes/map, token-aware) — what Clyffy imports | ✅ against a live node; typed refusals surfaced | ✅ |
-| 4 | **MCP binding, real**: `rrf-mcp` stdio server (JSON-RPC 2.0; initialize / tools list+call) bridging any MCP client to a node | ✅ end-to-end: spawned the binary, spoke MCP, full-pipeline answers came back with candidates | ✅ |
+| 3 | `rro-client` crate: typed async client over a2a (ping/ask/index/changes/map, token-aware) — what Clyffy imports | ✅ against a live node; typed refusals surfaced | ✅ |
+| 4 | **MCP binding, real**: `rro-mcp` stdio server (JSON-RPC 2.0; initialize / tools list+call) bridging any MCP client to a node | ✅ end-to-end: spawned the binary, spoke MCP, full-pipeline answers came back with candidates | ✅ |
 | 5 | Green close + docs + push | CI-green tree | ✅ |
 
 ## Sprint 9 — Filter DSL + payload indexes + quantization
@@ -137,16 +137,16 @@ attenuation per L3, after tokens prove the seam).
 | 6 | Green close + docs + push | CI-green tree (fmt/clippy/test: 0 warnings, 40 suites green) | ✅ |
 
 Deferred honestly: `protoc` still absent in this container → gRPC surface
-stays deferred (a2a JSON wire + `rrf-client` + MCP remain the integration
+stays deferred (a2a JSON wire + `rro-client` + MCP remain the integration
 paths); geo/datetime/uuid/full-text payload index types; nested filters.
 
 ## Sprint 10 — The query plane everywhere + retrieval strategies
 
 | # | Step | Verification gate | Status |
 |---|---|---|---|
-| 1 | Query contract moved to `rrf-core` (`EstateQuery`, `Filter`, `Condition` are pure data; connxism executes and re-exports) — thin clients need no storage dep | ✅ workspace green after the move; connxism API unchanged for consumers | ✅ |
+| 1 | Query contract moved to `rro-core` (`EstateQuery`, `Filter`, `Condition` are pure data; connxism executes and re-exports) — thin clients need no storage dep | ✅ workspace green after the move; connxism API unchanged for consumers | ✅ |
 | 2 | a2a `query` verb: body IS an `EstateQuery`; text-only queries embedded server-side; `recommend` verb beside it; estate-less nodes refuse with typed errors | ✅ over live TCP: DSL binds, lean payloads, typed refusals | ✅ |
-| 3 | `Client::query` + `Client::recommend`; MCP `rrf_query` tool (DSL pass-through) | ✅ client tests + MCP end-to-end with a filter clause | ✅ |
+| 3 | `Client::query` + `Client::recommend`; MCP `rro_query` tool (DSL pass-through) | ✅ client tests + MCP end-to-end with a filter clause | ✅ |
 | 4 | Grouped search: `query_grouped(q, field, groups, group_size)` | ✅ invariants: distinct keys, ≤ sizes, membership, best-first group order | ✅ |
 | 5 | Recommend / Discover: example-steered and context-pair-steered retrieval | ✅ two-cluster gates: recommend 10/10 in the positive cluster (examples excluded); discover 3/10 → 7/10 (all pool positives ranked first) | ✅ |
 | 6 | `query_batch` + Euclid/Manhattan metrics on `Embedding` | ✅ batch ≡ sequential (asserted) | ✅ |
@@ -179,8 +179,8 @@ not a rider. PARITY row stays 🔨.
 
 | # | Step | Verification gate | Status |
 |---|---|---|---|
-| 1 | `Quotas { max_docs, max_payload_bytes, max_top_k, max_batch }` on `EstateConfig`; typed `RrfError::Quota`; enforced at the write boundary (batch size, per-doc payload bytes, estate doc cap inside the serialized writer) and the query boundary (top_k) | each quota: one-under passes, one-over rejects with the typed error | ✅ |
-| 2 | Health reports configured limits (`HealthReport.quotas`, serde default); daemon strict mode via `RRF_STRICT=1` (sane default caps) | health carries the limits | ✅ |
+| 1 | `Quotas { max_docs, max_payload_bytes, max_top_k, max_batch }` on `EstateConfig`; typed `RroError::Quota`; enforced at the write boundary (batch size, per-doc payload bytes, estate doc cap inside the serialized writer) and the query boundary (top_k) | each quota: one-under passes, one-over rejects with the typed error | ✅ |
+| 2 | Health reports configured limits (`HealthReport.quotas`, serde default); daemon strict mode via `RRO_STRICT=1` (sane default caps) | health carries the limits | ✅ |
 | 3 | Wire: the `query` verb replies `{"error": …}` on quota refusal instead of dropping the connection | over-limit wire query returns a clean refusal | ✅ |
 | 4 | Green close: fmt/clippy/test, PARITY row (strict mode / resource limits), BENCHMARKS note, push | full workspace green | ✅ |
 
@@ -223,7 +223,7 @@ not a rider. PARITY row stays 🔨.
 
 | # | Step | Verification gate | Status |
 |---|---|---|---|
-| 1 | `rrf-core::geo`: `{lat, lon}` extraction from metadata, haversine (mean-radius great-circle, meters), `Condition::GeoRadius`/`GeoBox` with exact post-filter `matches` | haversine unit gates on known city pairs; condition matches on hand-checked points | ✅ |
+| 1 | `rro-core::geo`: `{lat, lon}` extraction from metadata, haversine (mean-radius great-circle, meters), `Condition::GeoRadius`/`GeoBox` with exact post-filter `matches` | haversine unit gates on known city pairs; condition matches on hand-checked points | ✅ |
 | 2 | `PIDX_GEO` typed keys: 26-bit/axis quantization, Z-order (Morton) interleave authored from the concept — monotone per axis, so one `[z(min corner), z(max corner)]` scan covers any box (false positives culled by an exact doc-level post-check) | Morton monotonicity property test; index-resolved id-sets EQUAL brute-force truth | ✅ |
 | 3 | Index-first geo filters: radius → bounding box → Z-range scan → exact haversine/box check against stored metadata; wired into `ids_for_condition` (query plane + counts get it free) | seeded city grid: box + radius id-sets equal brute force; query plane returns exactly the truth set; overwrite retracts | ✅ |
 | 4 | Honest limits documented: no antimeridian wrap in v1 (boxes must not cross ±180°), poles clamp | stated in code + PARITY | ✅ |
@@ -235,7 +235,7 @@ not a rider. PARITY row stays 🔨.
 |---|---|---|---|
 | 1 | `Estate::health()` snapshot (docs, feed seq, applier backlog via new `Pending::backlog()`, collections, dims, quantized) + `Estate::issues(threshold)` self-report (dim unset with docs, applier backlog high, feed/doc-count divergence) | issues reports a planted applier backlog; healthy estate reports none | ✅ |
 | 2 | `health` a2a verb (uptime + estate snapshot) + `Client::health` | verb answers with live numbers over TCP | ✅ |
-| 3 | Zero-dep ops HTTP listener (`serve_ops`): GET `/metrics` (prometheus text), `/healthz` `/livez` `/readyz` (200 ok), 404 else; daemon mounts it via `RRF_OPS_ADDR` | raw-socket GET parses: 200 + `rrf_docs_total <n>` gauges; healthz 200 | ✅ |
+| 3 | Zero-dep ops HTTP listener (`serve_ops`): GET `/metrics` (prometheus text), `/healthz` `/livez` `/readyz` (200 ok), 404 else; daemon mounts it via `RRO_OPS_ADDR` | raw-socket GET parses: 200 + `rro_docs_total <n>` gauges; healthz 200 | ✅ |
 | 4 | Green close: fmt/clippy/test, PARITY A5 rows, BENCHMARKS note, push | full workspace green | ✅ |
 
 ## Sprint 19 — The sprint 12–18 surface over the wire + MCP
@@ -244,7 +244,7 @@ not a rider. PARITY row stays 🔨.
 |---|---|---|---|
 | 1 | a2a verbs (token-gated like all verbs): `matrix`, `sample`, `collections`, `drop_collection`, `create_alias`, `aliases`, `delete_alias`, `set_payload`, `overwrite_payload`, `delete_payload_keys`, `clear_payload` (named/sparse search already ride `query` via `using`/`sparse` — gated over the wire, no new verbs) | each verb answers over live TCP | ✅ |
 | 2 | `Client` methods for every verb above | wire results equal local calls (matrix pairwise scores, deterministic sample, collection lists, alias redirects, payload visibility) | ✅ |
-| 3 | MCP: `rrf_collections` (list/drop/alias actions) + `rrf_payload` (set/overwrite/delete_keys/clear) tools | tool registry lists them; actions bridge to the node | ✅ |
+| 3 | MCP: `rro_collections` (list/drop/alias actions) + `rro_payload` (set/overwrite/delete_keys/clear) tools | tool registry lists them; actions bridge to the node | ✅ |
 | 4 | Green close: fmt/clippy/test, PARITY mesh/tooling rows, BENCHMARKS note, push | full workspace green | ✅ |
 
 ## Sprint 18 — Aliases + per-point payload CRUD
@@ -278,7 +278,7 @@ not a rider. PARITY row stays 🔨.
 
 | # | Step | Verification gate | Status |
 |---|---|---|---|
-| 1 | `rrf-core::time`: zero-dep RFC3339 → epoch-ms (offsets, fractional seconds, leap days); `Condition::DateRange` (gt/gte/lt/lte as RFC3339 strings) with post-filter `matches` | unit gates: known timestamps, offset math, ordering | ✅ |
+| 1 | `rro-core::time`: zero-dep RFC3339 → epoch-ms (offsets, fractional seconds, leap days); `Condition::DateRange` (gt/gte/lt/lte as RFC3339 strings) with post-filter `matches` | unit gates: known timestamps, offset math, ordering | ✅ |
 | 2 | Typed pidx keys: datetime-parsing strings → `PIDX_DT` (order-preserving epoch), UUID-format strings → `PIDX_UUID` (16 raw bytes); symmetric encode on write & query so Eq/Any/Exists just work | key-order unit gates | ✅ |
 | 3 | `DateRange` index-first: ordered scan under the DT tag with early stop; `Estate::rebuild_payload_index` (drop + backfill — REBUILD INDEX parity + the migration path for re-typed rows) | filter unit test: exact id-set from the index equals brute force; rebuild keeps queries working | ✅ |
 | 4 | `Analyzer::highlight`: byte-offset spans of tokens whose analyzed form matches the analyzed query (stemmed query highlights the inflected surface form; prefix analyzer highlights by prefix) | spans slice the original text to the expected surface forms | ✅ |
@@ -288,7 +288,7 @@ not a rider. PARITY row stays 🔨.
 
 | # | Step | Verification gate | Status |
 |---|---|---|---|
-| 1 | `rrf-core::text::Analyzer`: tokenizer (word / whitespace / prefix edge-grams) × lowercase × stopwords × Porter stemmer (authored from the published algorithm, zero-dep) | stemmer unit gates on canonical spec pairs; prefix/whitespace tokenizer unit gates | ✅ |
+| 1 | `rro-core::text::Analyzer`: tokenizer (word / whitespace / prefix edge-grams) × lowercase × stopwords × Porter stemmer (authored from the published algorithm, zero-dep) | stemmer unit gates on canonical spec pairs; prefix/whitespace tokenizer unit gates | ✅ |
 | 2 | Estate-configurable: `EstateConfig.analyzer` persisted into `EstateInfo` at creation (serde default = legacy word+lower+stop, so existing estates are untouched); BM25 postings AND lexical queries both run through the estate's analyzer | reopen keeps the analyzer; index/query agreement asserted | ✅ |
 | 3 | Retrieval gates: stemmed estate matches "run"→"running" doc lexically, legacy estate doesn't; stopwords produce zero postings rows; prefix analyzer serves autocomplete ("con"→"connectome") | in-tree tests | ✅ |
 | 4 | Green close: fmt/clippy/test, PARITY analyzer rows, BENCHMARKS note, push | full workspace green | ✅ |
@@ -297,7 +297,7 @@ not a rider. PARITY row stays 🔨.
 
 | # | Step | Verification gate | Status |
 |---|---|---|---|
-| 1 | `Handler::handle_stream` in rrf-net (default: not-a-stream) + serve loop forwards stream frames until the producer closes | existing single-reply verbs untouched (whole suite green) | ✅ |
+| 1 | `Handler::handle_stream` in rro-net (default: not-a-stream) + serve loop forwards stream frames until the producer closes | existing single-reply verbs untouched (whole suite green) | ✅ |
 | 2 | Write-side signal: `Estate` feed `Notify`, fired by `ConnXRecall::upsert`/`remove` after commit — watchers wake event-driven, zero internal polling | watch test observes frames arrive without any poll interval | ✅ |
 | 3 | `watch` verb on FlowNode (token-enforced): drains `changes(since)` pages into frames, then awaits the signal; resume-by-seq preserved | frames carry `change` + `next_seq`; seqs strictly increasing | ✅ |
 | 4 | `Client::watch(since, on_change)` — long-lived connection, callback per change, cursor returned on stop; dropping the callback cancels | e2e over TCP: live upserts arrive as frames; reconnect with returned cursor sees only new changes; unauthorized watch refused | ✅ |
@@ -307,7 +307,7 @@ not a rider. PARITY row stays 🔨.
 
 | # | Step | Verification gate | Status |
 |---|---|---|---|
-| 1 | Contract: `VectorRecord.named` (name → vector, per-space dims) + `VectorRecord.multi` (token vectors); `rrf_core::maxsim` (Σ_q max_d q·d); `EstateQuery.using` + `EstateQuery.multi` ride the wire via serde defaults | serde roundtrip incl. new fields; old payloads still parse | ✅ |
+| 1 | Contract: `VectorRecord.named` (name → vector, per-space dims) + `VectorRecord.multi` (token vectors); `rro_core::maxsim` (Σ_q max_d q·d); `EstateQuery.using` + `EstateQuery.multi` ride the wire via serde defaults | serde roundtrip incl. new fields; old payloads still parse | ✅ |
 | 2 | Storage: `nvecs` CF (`name \x00 doc` → f32-LE) + `mvecs` CF (doc → [n][dim][f32…]); per-name dim guard in `EstateInfo.named_dims`; retraction on overwrite/remove via `StoredDoc.named_spaces`/`multi_len` | planted named vector retrieved; overwrite drops removed names; remove retracts; dim mismatch errors | ✅ |
 | 3 | `named_search`: exact cosine over one named space (sorted prefix scan) | ranking + scores equal brute force over the space; cross-space isolation (title-hit ≠ body-hit) | ✅ |
 | 4 | Late interaction: MaxSim rescore stage in the query plane (`using` routes the dense half; `multi` rescores fetch-deep candidates) | MaxSim scores equal brute force; planted-token doc ranks first under `multi` and does NOT under plain dense | ✅ |

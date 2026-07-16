@@ -21,7 +21,7 @@
 use std::cmp::Ordering;
 use std::collections::{BinaryHeap, HashMap};
 
-use rrf_core::{Embedding, Id};
+use rro_core::{Embedding, Id};
 
 /// Tuning for the graph.
 #[derive(Debug, Clone)]
@@ -72,7 +72,7 @@ impl Store {
     fn dot_query(&self, node: u32, dim: usize, q: &[f32], qsum: f32) -> f32 {
         let start = node as usize * dim;
         match self {
-            Store::Full(vectors) => rrf_core::simd::dot(&vectors[start..start + dim], q),
+            Store::Full(vectors) => rro_core::simd::dot(&vectors[start..start + dim], q),
             Store::Sq8 { codes, params } => {
                 crate::quant::dot_query(&codes[start..start + dim], &params[node as usize], q, qsum)
             }
@@ -84,7 +84,7 @@ impl Store {
         let (sa, sb) = (a as usize * dim, b as usize * dim);
         match self {
             Store::Full(vectors) => {
-                rrf_core::simd::dot(&vectors[sa..sa + dim], &vectors[sb..sb + dim])
+                rro_core::simd::dot(&vectors[sa..sa + dim], &vectors[sb..sb + dim])
             }
             Store::Sq8 { codes, params } => crate::quant::dot_codes(
                 &codes[sa..sa + dim],

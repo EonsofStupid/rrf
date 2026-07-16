@@ -66,7 +66,7 @@ impl SessionTrigger {
         };
         self.last_activity = Some(now);
         if let Some(reason) = fired {
-            rrf_core::events::emit("rrd.trigger", serde_json::json!({ "reason": reason }));
+            rro_core::events::emit("rrd.trigger", serde_json::json!({ "reason": reason }));
         }
         fired
     }

@@ -6,7 +6,7 @@
 
 use async_trait::async_trait;
 
-use rrf_core::{Document, Result, RrfError};
+use rro_core::{Document, Result, RroError};
 
 use crate::{Batch, Driver};
 
@@ -34,7 +34,7 @@ impl Driver for JsonlDriver {
 
     async fn pull(&self, cursor: Option<&str>) -> Result<Batch> {
         let start: usize = cursor.and_then(|c| c.parse().ok()).unwrap_or(0);
-        let content = std::fs::read_to_string(&self.path).map_err(RrfError::Io)?;
+        let content = std::fs::read_to_string(&self.path).map_err(RroError::Io)?;
 
         let mut docs = Vec::new();
         let mut line_no = 0usize;
@@ -46,7 +46,7 @@ impl Driver for JsonlDriver {
             let mut value: serde_json::Value = serde_json::from_str(line)?;
             let obj = value
                 .as_object_mut()
-                .ok_or_else(|| RrfError::msg(format!("line {line_no}: not a JSON object")))?;
+                .ok_or_else(|| RroError::msg(format!("line {line_no}: not a JSON object")))?;
 
             let id = obj
                 .remove("id")

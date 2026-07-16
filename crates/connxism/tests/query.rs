@@ -2,7 +2,7 @@
 
 use connxism::{Estate, EstateQuery};
 use embedder::DeterministicEmbedder;
-use rrf_core::{Embedder, Metadata, Recall, VectorRecord};
+use rro_core::{Embedder, Metadata, Recall, VectorRecord};
 
 async fn seed(estate: &Estate) -> connxism::ConnXRecall {
     let recall = estate.recall();

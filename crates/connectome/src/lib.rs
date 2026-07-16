@@ -16,7 +16,7 @@ mod graph;
 
 pub use graph::{ConnectomeGraph, Edge, EdgeKind, Node, NodeKind};
 
-use rrf_core::{Candidate, Readiness};
+use rro_core::{Candidate, Readiness};
 
 /// Which pipeline stages to draw, in flow order.
 const STAGES: &[(&str, &str)] = &[

@@ -51,7 +51,7 @@ pub struct EstateInfo {
     /// at creation; the serde default keeps pre-analyzer estates on the
     /// legacy pipeline they were indexed with).
     #[serde(default)]
-    pub analyzer: rrf_core::text::Analyzer,
+    pub analyzer: rro_core::text::Analyzer,
 }
 
 /// How a warp point is reached.
@@ -176,7 +176,7 @@ pub struct Shape(pub BTreeMap<String, String>);
 
 impl Shape {
     /// Fingerprint a metadata map: field name → JSON type name.
-    pub fn of(metadata: &rrf_core::Metadata) -> Self {
+    pub fn of(metadata: &rro_core::Metadata) -> Self {
         let mut m = BTreeMap::new();
         for (k, v) in metadata {
             let ty = match v {
@@ -240,7 +240,7 @@ pub struct StoredDoc {
     pub text: String,
     /// Structured metadata.
     #[serde(default)]
-    pub metadata: rrf_core::Metadata,
+    pub metadata: rro_core::Metadata,
     /// Tags attached to this document.
     #[serde(default)]
     pub tags: Vec<String>,

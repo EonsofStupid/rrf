@@ -4,7 +4,7 @@
 //! on move.
 
 use connxism::{Estate, EstateQuery};
-use rrf_core::{Condition, Embedding, Filter, Recall, VectorRecord};
+use rro_core::{Condition, Embedding, Filter, Recall, VectorRecord};
 
 /// A 15×15 grid over greater NYC-ish: lat 40.5..41.2, lon -74.3..-73.6.
 fn grid() -> Vec<VectorRecord> {

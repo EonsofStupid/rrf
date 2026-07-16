@@ -9,9 +9,9 @@
 //! Three rules hold this shape (docs/MODELS.md §1):
 //!
 //! 1. **The trait is the only contract.** Real models drop in behind
-//!    [`rrf_core::Embedder`] / [`rrf_core::Reranker`].
+//!    [`rro_core::Embedder`] / [`rro_core::Reranker`].
 //! 2. **Selection is data.** [`EmbedderConfig`] / [`RerankerConfig`] are parsed
-//!    from env; `RRF_EMBEDDER=candle-qwen` is the entire swap mechanism.
+//!    from env; `RRO_EMBEDDER=candle-qwen` is the entire swap mechanism.
 //! 3. **Performance lives inside the backend.** Batching, device placement,
 //!    pooling, and quantization are the backend's business, behind the trait.
 //!
@@ -24,7 +24,7 @@
 
 use std::sync::Arc;
 
-use rrf_core::{Embedder, Reranker, Result, RrfError};
+use rro_core::{Embedder, Reranker, Result, RroError};
 
 /// Where a model runs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -39,7 +39,7 @@ pub enum Device {
 }
 
 impl std::str::FromStr for Device {
-    type Err = RrfError;
+    type Err = RroError;
 
     fn from_str(s: &str) -> Result<Self> {
         let s = s.trim().to_ascii_lowercase();
@@ -95,7 +95,7 @@ impl EmbedderKind {
 }
 
 impl std::str::FromStr for EmbedderKind {
-    type Err = RrfError;
+    type Err = RroError;
 
     fn from_str(s: &str) -> Result<Self> {
         match normalize(s).as_str() {
@@ -103,7 +103,7 @@ impl std::str::FromStr for EmbedderKind {
             "candle-qwen" | "qwen" | "candle" => Ok(EmbedderKind::CandleQwen),
             "onnx" => Ok(EmbedderKind::Onnx),
             "remote" => Ok(EmbedderKind::Remote),
-            other => Err(unknown_kind("RRF_EMBEDDER", other, &EmbedderKind::ALL.map(|k| k.as_str()))),
+            other => Err(unknown_kind("RRO_EMBEDDER", other, &EmbedderKind::ALL.map(|k| k.as_str()))),
         }
     }
 }
@@ -143,7 +143,7 @@ impl RerankerKind {
 }
 
 impl std::str::FromStr for RerankerKind {
-    type Err = RrfError;
+    type Err = RroError;
 
     fn from_str(s: &str) -> Result<Self> {
         match normalize(s).as_str() {
@@ -154,7 +154,7 @@ impl std::str::FromStr for RerankerKind {
             "onnx" => Ok(RerankerKind::Onnx),
             "remote" => Ok(RerankerKind::Remote),
             other => Err(unknown_kind(
-                "RRF_RERANKER",
+                "RRO_RERANKER",
                 other,
                 &RerankerKind::ALL.map(|k| k.as_str()),
             )),
@@ -223,7 +223,7 @@ impl Default for RerankerConfig {
     }
 }
 
-/// Default forward-pass batch size when `RRF_EMBED_BATCH` is unset.
+/// Default forward-pass batch size when `RRO_EMBED_BATCH` is unset.
 pub const DEFAULT_BATCH: usize = 32;
 
 impl EmbedderConfig {
@@ -231,38 +231,38 @@ impl EmbedderConfig {
     ///
     /// | var | meaning |
     /// |---|---|
-    /// | `RRF_EMBEDDER` | kind (default `deterministic`) |
-    /// | `RRF_EMBEDDER_WEIGHTS` | weights dir |
-    /// | `RRF_EMBEDDER_ENDPOINT` | URL, for `remote` |
-    /// | `RRF_EMBED_DIM` | output dim (MRL truncation) |
-    /// | `RRF_EMBED_BATCH` | batch size |
-    /// | `RRF_DEVICE` | `cpu` \| `cuda` \| `cuda:<n>` \| `metal` |
+    /// | `RRO_EMBEDDER` | kind (default `deterministic`) |
+    /// | `RRO_EMBEDDER_WEIGHTS` | weights dir |
+    /// | `RRO_EMBEDDER_ENDPOINT` | URL, for `remote` |
+    /// | `RRO_EMBED_DIM` | output dim (MRL truncation) |
+    /// | `RRO_EMBED_BATCH` | batch size |
+    /// | `RRO_DEVICE` | `cpu` \| `cuda` \| `cuda:<n>` \| `metal` |
     ///
     /// A malformed value is an error, not a shrug back to the default: a typo
-    /// in `RRF_EMBEDDER` must not quietly hand back synthetic vectors.
+    /// in `RRO_EMBEDDER` must not quietly hand back synthetic vectors.
     pub fn from_env() -> Result<Self> {
         Ok(EmbedderConfig {
-            kind: parse_env("RRF_EMBEDDER")?.unwrap_or_default(),
-            weights_path: var("RRF_EMBEDDER_WEIGHTS"),
-            endpoint: var("RRF_EMBEDDER_ENDPOINT"),
-            dim: parse_usize_env("RRF_EMBED_DIM")?,
-            device: parse_env("RRF_DEVICE")?.unwrap_or_default(),
-            batch: parse_usize_env("RRF_EMBED_BATCH")?.unwrap_or(DEFAULT_BATCH),
+            kind: parse_env("RRO_EMBEDDER")?.unwrap_or_default(),
+            weights_path: var("RRO_EMBEDDER_WEIGHTS"),
+            endpoint: var("RRO_EMBEDDER_ENDPOINT"),
+            dim: parse_usize_env("RRO_EMBED_DIM")?,
+            device: parse_env("RRO_DEVICE")?.unwrap_or_default(),
+            batch: parse_usize_env("RRO_EMBED_BATCH")?.unwrap_or(DEFAULT_BATCH),
         })
     }
 }
 
 impl RerankerConfig {
-    /// Read the reranker selection from the environment (`RRF_RERANKER`,
-    /// `RRF_RERANKER_WEIGHTS`, `RRF_RERANKER_ENDPOINT`, `RRF_DEVICE`,
-    /// `RRF_EMBED_BATCH`).
+    /// Read the reranker selection from the environment (`RRO_RERANKER`,
+    /// `RRO_RERANKER_WEIGHTS`, `RRO_RERANKER_ENDPOINT`, `RRO_DEVICE`,
+    /// `RRO_EMBED_BATCH`).
     pub fn from_env() -> Result<Self> {
         Ok(RerankerConfig {
-            kind: parse_env("RRF_RERANKER")?.unwrap_or_default(),
-            weights_path: var("RRF_RERANKER_WEIGHTS"),
-            endpoint: var("RRF_RERANKER_ENDPOINT"),
-            device: parse_env("RRF_DEVICE")?.unwrap_or_default(),
-            batch: parse_usize_env("RRF_EMBED_BATCH")?.unwrap_or(DEFAULT_BATCH),
+            kind: parse_env("RRO_RERANKER")?.unwrap_or_default(),
+            weights_path: var("RRO_RERANKER_WEIGHTS"),
+            endpoint: var("RRO_RERANKER_ENDPOINT"),
+            device: parse_env("RRO_DEVICE")?.unwrap_or_default(),
+            batch: parse_usize_env("RRO_EMBED_BATCH")?.unwrap_or(DEFAULT_BATCH),
         })
     }
 }
@@ -286,7 +286,7 @@ pub fn build_embedder(cfg: &EmbedderConfig) -> Result<Arc<dyn Embedder>> {
             }
             #[cfg(not(feature = "candle"))]
             {
-                Err(feature_off("candle-qwen", "candle", "RRF_EMBEDDER"))
+                Err(feature_off("candle-qwen", "candle", "RRO_EMBEDDER"))
             }
         }
 
@@ -297,7 +297,7 @@ pub fn build_embedder(cfg: &EmbedderConfig) -> Result<Arc<dyn Embedder>> {
             }
             #[cfg(not(feature = "onnx"))]
             {
-                Err(feature_off("onnx", "onnx", "RRF_EMBEDDER"))
+                Err(feature_off("onnx", "onnx", "RRO_EMBEDDER"))
             }
         }
 
@@ -323,7 +323,7 @@ pub fn build_reranker(cfg: &RerankerConfig) -> Result<Arc<dyn Reranker>> {
             }
             #[cfg(not(feature = "candle"))]
             {
-                Err(feature_off("candle-cross-encoder", "candle", "RRF_RERANKER"))
+                Err(feature_off("candle-cross-encoder", "candle", "RRO_RERANKER"))
             }
         }
 
@@ -334,7 +334,7 @@ pub fn build_reranker(cfg: &RerankerConfig) -> Result<Arc<dyn Reranker>> {
             }
             #[cfg(not(feature = "onnx"))]
             {
-                Err(feature_off("onnx", "onnx", "RRF_RERANKER"))
+                Err(feature_off("onnx", "onnx", "RRO_RERANKER"))
             }
         }
 
@@ -347,18 +347,18 @@ pub fn build_reranker(cfg: &RerankerConfig) -> Result<Arc<dyn Reranker>> {
 
 // ---- error construction: every message says what to DO ----------------------
 
-fn config_err(msg: impl Into<String>) -> RrfError {
-    RrfError::Config(msg.into())
+fn config_err(msg: impl Into<String>) -> RroError {
+    RroError::Config(msg.into())
 }
 
-fn unknown_kind(var_name: &str, got: &str, known: &[&str]) -> RrfError {
+fn unknown_kind(var_name: &str, got: &str, known: &[&str]) -> RroError {
     config_err(format!(
         "unknown {var_name} `{got}` (expected one of: {})",
         known.join(" | ")
     ))
 }
 
-fn feature_off(kind: &str, feature: &str, var_name: &str) -> RrfError {
+fn feature_off(kind: &str, feature: &str, var_name: &str) -> RroError {
     config_err(format!(
         "{var_name}=`{kind}` needs the `{feature}` feature, which this binary was not built with — \
          rebuild with `--features {feature}`, or select a weightless kind. \
@@ -367,7 +367,7 @@ fn feature_off(kind: &str, feature: &str, var_name: &str) -> RrfError {
     ))
 }
 
-fn not_yet_wired(kind: &str, spec: &str) -> RrfError {
+fn not_yet_wired(kind: &str, spec: &str) -> RroError {
     config_err(format!(
         "backend `{kind}` is not implemented yet — see {spec}. \
          It is selectable so the seam is real, but it has no forward pass; \
@@ -388,7 +388,7 @@ fn var(name: &str) -> Option<String> {
     }
 }
 
-fn parse_env<T: std::str::FromStr<Err = RrfError>>(name: &str) -> Result<Option<T>> {
+fn parse_env<T: std::str::FromStr<Err = RroError>>(name: &str) -> Result<Option<T>> {
     match var(name) {
         Some(v) => v.parse::<T>().map(Some),
         None => Ok(None),

@@ -1,11 +1,11 @@
 # Reason Ready — Measured Results
 
-**Every number here came out of a real run of `rrf-bench`.** Nothing is
+**Every number here came out of a real run of `rro-bench`.** Nothing is
 asserted that a run did not produce. Reproduce with:
 
 ```sh
-cargo run --release --bin rrf-bench -- --docs 50000 --queries 500 --store mem
-cargo run --release --bin rrf-bench -- --docs 50000 --queries 500 --store estate
+cargo run --release --bin rro-bench -- --docs 50000 --queries 500 --store mem
+cargo run --release --bin rro-bench -- --docs 50000 --queries 500 --store estate
 ```
 
 ## Environment (2026-07-15)
@@ -60,7 +60,7 @@ in this repository gets made.
 ## Bake-off vs a popular RAG store (2026-07-15, planted-v1 protocol)
 
 **Identical inputs for every row**: the same 50,500 documents and the same
-precomputed 384-d vectors (exported via `rrf-bench --export`), same shared
+precomputed 384-d vectors (exported via `rro-bench --export`), same shared
 container, release builds, same run window. Baseline: **ChromaDB 1.5.9**
 (embedded and HTTP-server modes), a widely used RAG vector store. 500 planted
 queries; accuracy@10 = the planted golden doc retrieved.
@@ -159,7 +159,7 @@ inside it. Reproduce: `cargo test -p connxism --test routing -- --nocapture`.
 ## Baselines & the regression gate
 
 Recorded container baselines live in `baselines/` (config + numbers, JSON).
-`rrf-bench --baseline <path>` re-runs the same configuration and exits
+`rro-bench --baseline <path>` re-runs the same configuration and exits
 non-zero on regression beyond tolerance — see
 [OBSERVABILITY](OBSERVABILITY.md). Runs stream JSONL events (`--events`)
 queryable directly by DuckDB.
@@ -202,9 +202,9 @@ Reproduce: `cargo test -p recall quantized_recall_gate -- --nocapture` and
 
 ## Sprint 10: the query plane goes everywhere (2026-07-16)
 
-The typed query contract (`EstateQuery` + `Filter`) moved into `rrf-core` —
+The typed query contract (`EstateQuery` + `Filter`) moved into `rro-core` —
 pure data, no storage dependency — so the thin client speaks the **full**
-filter DSL over the a2a wire, and the MCP `rrf_query` tool exposes it to
+filter DSL over the a2a wire, and the MCP `rro_query` tool exposes it to
 any MCP host. Text-only queries are embedded server-side: clients stay
 weightless.
 
@@ -223,10 +223,10 @@ New retrieval strategies, all gated in-tree
 - **Batch** — one wire round-trip, results identical to one-at-a-time
   (asserted).
 
-Wire gates (`cargo test -p rrf-client`): filter DSL binds over TCP (every
+Wire gates (`cargo test -p rro-client`): filter DSL binds over TCP (every
 hit satisfies the clause set), lean payloads arrive lean, recommend works
 remotely, estate-less nodes refuse `query` with a typed error, and the MCP
-binding answers `rrf_query` with DSL end-to-end through a spawned server.
+binding answers `rro_query` with DSL end-to-end through a spawned server.
 
 ## Sprint 11: weighted sparse joins the fusion (2026-07-16)
 
@@ -297,7 +297,7 @@ gate covers streams. `Client::watch(since, callback)` is the Clyffy-side
 handle; the transport grew a general `Handler::handle_stream` hook, so
 future streamed verbs (query streaming, tailing) ride the same frame path.
 
-Gates (`cargo test -p rrf-flow --test watch`): history drained in order,
+Gates (`cargo test -p rro-engine --test watch`): history drained in order,
 live upserts AND a remove arrive as pushed frames on the one connection
 within timeout, seqs strictly increase, reconnect from the returned cursor
 replays exactly the missed change, unauthorized watch refused.
@@ -312,7 +312,7 @@ at estate creation, persisted in `EstateInfo`, applied identically to
 postings and queries; existing estates deserialize to the exact legacy
 pipeline they were indexed with.
 
-Gates (`cargo test -p connxism --test analyzer` + rrf-core units):
+Gates (`cargo test -p connxism --test analyzer` + rro-core units):
 - stemming estate matches run/runs/running to the same doc; the legacy
   estate does not stem (both asserted);
 - pure-stopword queries return nothing (stopwords never reach postings);
@@ -391,11 +391,11 @@ mutating a missing doc errors.
 Every capability from sprints 12–18 is now remote: new a2a verbs
 (`matrix`, `sample`, `collections`, `drop_collection`, alias
 create/list/delete, the four payload ops) with matching typed `Client`
-methods, and two new MCP tools (`rrf_collections`, `rrf_payload`).
+methods, and two new MCP tools (`rro_collections`, `rro_payload`).
 Named-space and sparse search needed **no** new verbs — they already ride
 `query` via `using`/`sparse`, now gated over live TCP.
 
-Gate (`cargo test -p rrf-flow --test wire_surface`): one end-to-end test
+Gate (`cargo test -p rro-engine --test wire_surface`): one end-to-end test
 drives every verb against a live node — matrix pairs equal local (1e-6),
 same-seed sample identical, alias created over the wire redirects a wire
 query then deletes clean, payload ops visible in local reads (and a bad
@@ -410,7 +410,7 @@ live applier backlog via the new `Pending::backlog()`, collections, dims,
 quantization) and `Estate::issues(threshold)` (applier backlog, dim
 unset, feed/doc divergence). Surfaced twice: a `health` a2a verb
 (uptime + snapshot + issues, `Client::health`) and a **zero-dep** HTTP
-listener (`serve_ops`; daemon: `RRF_OPS_ADDR`) answering prometheus-0.0.4
+listener (`serve_ops`; daemon: `RRO_OPS_ADDR`) answering prometheus-0.0.4
 `/metrics` (gauges incl. per-collection doc counts) and `/healthz`
 `/livez` `/readyz` probes.
 
@@ -425,7 +425,7 @@ fires on a planted backlog and is clean after quiesce.
 
 ## Sprint 21: geo — the last core index type (2026-07-16)
 
-`{lat, lon}` metadata points are now first-class: `rrf-core::geo`
+`{lat, lon}` metadata points are now first-class: `rro-core::geo`
 (haversine great-circle in meters, unit-gated on Paris↔London;
 `Condition::GeoRadius`/`GeoBox` with exact post-filter matches) and
 `PIDX_GEO` typed keys — a Z-order/Morton encoding (26 bits/axis, ~0.3 m
@@ -451,7 +451,7 @@ regression beyond the measured noise floor (probe: 428–590 µs across
 identical runs, ±30%): mem 115k docs/sec / p50 29.5 ms / accuracy 0.94;
 estate 8.4k docs/sec durable / p50 1.73 ms / accuracy **1.00** @ 50k.
 
-**Feature-latency baseline** (`cargo run --release -p rrf-flow --example
+**Feature-latency baseline** (`cargo run --release -p rro-engine --example
 featbench`; 50k docs, 64-dim, 200 queries per path, one shared container):
 
 | path | p50 | p95 |
@@ -554,9 +554,9 @@ and stay exact; kill-9 suite still green.
 `Quotas` on `EstateConfig` — `max_docs` (net-new counted inside the
 serialized writer, so the cap is race-free and overwrites still pass),
 `max_payload_bytes` (per-doc serialized metadata), `max_top_k`,
-`max_batch` — all rejecting with the new typed `RrfError::Quota` at the
+`max_batch` — all rejecting with the new typed `RroError::Quota` at the
 boundary, before any write. Configured limits ride `HealthReport.quotas`;
-the daemon takes `RRF_STRICT=1` for sane strict defaults (64 KiB
+the daemon takes `RRO_STRICT=1` for sane strict defaults (64 KiB
 payloads, top-k 1024, batch 4096). The wire `query` verb now replies
 `{"error": …}` on refusals instead of dropping the connection (same
 family of fix as Sprint 25's unknown-verb reply).

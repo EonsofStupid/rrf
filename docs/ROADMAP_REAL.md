@@ -28,8 +28,8 @@ Full spec: **docs/MODELS.md**. Ordered work:
    bake-off table in BENCHMARKS.md marked as superseding all synthetic numbers.
 4. **Candle Nemotron reranker**: cross-encoder scoring, batched. Gate: measured
    top-k lift (NDCG@10 / golden@k) vs no-rerank.
-5. **Wire both into the daemon** via the registry + `RRF_EMBEDDER`/`RRF_RERANKER`.
-   Gate: `RRF_EMBEDDER=candle-qwen` boots + answers real queries over a2a.
+5. **Wire both into the daemon** via the registry + `RRO_EMBEDDER`/`RRO_RERANKER`.
+   Gate: `RRO_EMBEDDER=candle-qwen` boots + answers real queries over a2a.
 6. **Docs sweep**: COMPARISON/README/BENCHMARKS mark pre-real numbers superseded.
 
 ---
@@ -43,13 +43,13 @@ Text query language parsed onto the proven typed machinery. Zero new deps
 3. RELATE/traversal (`->verb->`) → relate/traverse; LIVE/KILL → `watch`;
    INFO/SHOW CHANGES → info/feed. Gate: live delivers; INFO matches.
 4. GraphQL schema over collections+fields, same executors. Gate: GraphQL ≡ EstateQuery.
-5. `rrf_sql` MCP tool + client method. Gate: wire RRQL ≡ local.
+5. `rro_sql` MCP tool + client method. Gate: wire RRQL ≡ local.
 Est. 3–5 sprints.
 
 ---
 
 ## P8 — CLUSTER: replication, sharding, distribution (big, multi-phase)
-Substrate: a2a layer (`rrf-net`, warp points, tokens) + `deploy/rrf-mesh.pod`.
+Substrate: a2a layer (`rro-net`, warp points, tokens) + `deploy/rro-mesh.pod`.
 - **P8.1 Replicated changefeed**: follower subscribes to leader `watch`, applies
   changes; feed is seq-ordered+resumable (sprint 4/13) = the replication log.
   Gate: kill follower mid-stream, restart, resume from seq, converge byte-exact.
@@ -68,8 +68,8 @@ Est. 6–10 sprints. AFTER P7, ideally after P6.
 ---
 
 ## P9 — DEPLOY (Podman Quadlets — Docker removed; finish on the box)
-In-tree now: `deploy/Containerfile`, `rrf.container`, `rrf-estate.volume`,
-`rrf-mesh.pod`, updated `config.env.example`. On a Podman box:
+In-tree now: `deploy/Containerfile`, `rro.container`, `rro-estate.volume`,
+`rro-mesh.pod`, updated `config.env.example`. On a Podman box:
 1. `podman build -f deploy/Containerfile -t localhost/rrf:latest .`.
 2. Install Quadlets; `systemctl --user daemon-reload`; verify with
    `podman-system-generator --dryrun`.

@@ -22,9 +22,9 @@ must happen immediately. No spin._
 
 ### 2. Deployment = Podman QUADLETS. NOT Docker.
 **Status: DONE WRONG.**
-- `deploy/` ships a **Dockerfile** + a plain `rrf.service`. No `.container`
+- `deploy/` ships a **Dockerfile** + a plain `rro.service`. No `.container`
   quadlet, no `.pod`, no podman anything. Podman isn't even installed here.
-- What you wanted: a Podman **Quadlet** (`rrf.container` → generated systemd
+- What you wanted: a Podman **Quadlet** (`rro.container` → generated systemd
   unit via `podman-system-generator`), rootless, not Docker.
 
 ## What IS real and worth keeping (do NOT rebuild)
@@ -36,14 +36,14 @@ model-agnostic — it stores/indexes/queries whatever vectors it's handed:
   quotas, flush/compact. Real.
 - `recall` — the ANN graph. Algorithm real; its recall *quality* was only ever
   checked on synthetic vectors, so re-verify on real ones.
-- **The trait seam** (`rrf-core/src/traits.rs`: `Embedder`/`Reranker`/
+- **The trait seam** (`rro-core/src/traits.rs`: `Embedder`/`Reranker`/
   `Classifier`/`Recall`) — this is why you don't start over. Real Qwen+Nemotron
   drop in **behind these traits**; the flow, estate, and query plane don't change.
 
 ## What must happen IMMEDIATELY (in order)
 
 1. **GET OUT OF THIS CONTAINER.** It cannot reach HF and has no disk/GPU budget.
-   Everything is pushed to `eonsofstupid/rrf` @ `258b2c1` — nothing is stranded.
+   Everything is pushed to `eonsofstupid/rrobjects` @ `258b2c1` — nothing is stranded.
    Move to an environment with: huggingface.co reachable (or weights mounted),
    real disk (10 GB+), and CPU/GPU inference budget.
 
@@ -51,12 +51,12 @@ model-agnostic — it stores/indexes/queries whatever vectors it's handed:
    - `candle-core` + `candle-transformers` + `tokenizers` behind the `candle`
      feature; fill the `TODO` in `devpulse.rs` — load Qwen3-Embedding, forward
      pass, mean-pool. Same for Nemotron behind `Reranker`.
-   - Swap the default embedder/reranker in `rrf-flow`.
+   - Swap the default embedder/reranker in `rro-engine`.
    - **Re-run the bake-off.** Only now does the accuracy number mean anything.
      Treat every current doc number as UNVERIFIED until this is done.
 
 3. **Redo deployment as Podman Quadlets:**
-   - Delete the Docker path. Author `deploy/rrf.container` (Quadlet), rootless,
+   - Delete the Docker path. Author `deploy/rro.container` (Quadlet), rootless,
      `[Container]` + `[Service]` + `[Install]`; document `systemctl --user`
      install via the podman generator. `config.env` stays as the drop-in.
 

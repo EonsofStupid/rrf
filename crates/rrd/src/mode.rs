@@ -6,7 +6,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use rrf_core::Metadata;
+use rro_core::Metadata;
 
 /// The base shapes. Every observed shape lives under exactly one mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]

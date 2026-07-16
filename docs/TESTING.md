@@ -9,8 +9,8 @@ asserted. This document is the testing contract.
 |---|---|---|
 | Unit | `cargo test` / `nextest` | component behaviour in isolation |
 | Property | `proptest` | invariants over generated inputs |
-| Integration | workspace tests | crates composed through `rrf-core` traits |
-| End-to-end | `rrf-flow` example + tests | the full pass, incl. the daemon |
+| Integration | workspace tests | crates composed through `rro-core` traits |
+| End-to-end | `rro-engine` example + tests | the full pass, incl. the daemon |
 | Fuzz | `cargo-fuzz` | the a2a wire parser + every `deserialize` |
 | Concurrency | `loom` (targeted) | shared-state locking under interleavings |
 | Snapshot | `insta` | connectome output + API payloads |
@@ -44,7 +44,7 @@ vLLM, and (experimental) candle-vllm.
 ### The measurement harness
 
 ```sh
-cargo run --release --bin rrf-bench -- --docs 50000 --queries 500 --store estate
+cargo run --release --bin rro-bench -- --docs 50000 --queries 500 --store estate
 ```
 
 Measures the full ingestion machine (embed → index → persist) and hybrid query

@@ -2,7 +2,7 @@
 //! planted-dimension retrieval, retraction on overwrite/remove, and fusion.
 
 use connxism::{Estate, EstateQuery};
-use rrf_core::{Embedding, Recall, SparseVector, VectorRecord};
+use rro_core::{Embedding, Recall, SparseVector, VectorRecord};
 
 fn lcg(seed: &mut u64) -> f32 {
     *seed ^= *seed << 13;

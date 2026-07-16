@@ -2,7 +2,7 @@
 
 use proptest::prelude::*;
 use reranker::LexicalReranker;
-use rrf_core::{Candidate, Reranker};
+use rro_core::{Candidate, Reranker};
 use std::collections::HashSet;
 
 fn block_on<F: std::future::Future>(f: F) -> F::Output {

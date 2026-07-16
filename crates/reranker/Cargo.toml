@@ -15,7 +15,7 @@ default = []
 candle = []
 
 [dependencies]
-rrf-core = { workspace = true }
+rro-core = { workspace = true }
 async-trait = { workspace = true }
 
 [dev-dependencies]

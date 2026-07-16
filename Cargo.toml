@@ -1,7 +1,7 @@
 [workspace]
 resolver = "2"
 members = [
-    "crates/rrf-core",
+    "crates/rro-core",
     "crates/embedder",
     "crates/model-registry",
     "crates/recall",
@@ -11,9 +11,9 @@ members = [
     "crates/connectors",
     "crates/connxism",
     "crates/rrd",
-    "crates/rrf-net",
-    "crates/rrf-client",
-    "crates/rrf-flow",
+    "crates/rro-net",
+    "crates/rro-client",
+    "crates/rro-engine",
 ]
 
 [workspace.package]
@@ -22,13 +22,13 @@ edition = "2021"
 rust-version = "1.90"
 license = "LicenseRef-ReasonReady-Proprietary"
 authors = ["EonsofStupid <jessay@gmail.com>"]
-repository = "https://github.com/eonsofstupid/rrf"
-homepage = "https://github.com/eonsofstupid/rrf"
+repository = "https://github.com/eonsofstupid/rrobjects"
+homepage = "https://github.com/eonsofstupid/rrobjects"
 publish = false
 
 [workspace.dependencies]
 # Internal crates
-rrf-core = { path = "crates/rrf-core" }
+rro-core = { path = "crates/rro-core" }
 embedder = { path = "crates/embedder" }
 model-registry = { path = "crates/model-registry" }
 recall = { path = "crates/recall" }
@@ -38,9 +38,9 @@ connectome = { path = "crates/connectome" }
 connectors = { path = "crates/connectors" }
 connxism = { path = "crates/connxism" }
 rrd = { path = "crates/rrd" }
-rrf-net = { path = "crates/rrf-net" }
-rrf-client = { path = "crates/rrf-client" }
-rrf-flow = { path = "crates/rrf-flow" }
+rro-net = { path = "crates/rro-net" }
+rro-client = { path = "crates/rro-client" }
+rro-engine = { path = "crates/rro-engine" }
 
 # External
 tokio = { version = "1", default-features = false }

@@ -2,7 +2,7 @@
 
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use reranker::LexicalReranker;
-use rrf_core::{Candidate, Reranker};
+use rro_core::{Candidate, Reranker};
 
 fn bench_rerank(c: &mut Criterion) {
     let rt = tokio::runtime::Builder::new_current_thread()

@@ -122,7 +122,7 @@ every `RecallResult`.
 
 ## Design (phase P4)
 
-New crate **`rrd`** (component, depends only on `rrf-core`; estate
+New crate **`rrd`** (component, depends only on `rro-core`; estate
 integration via `connxism`):
 
 - `ShapeRegistry` — shapes get stable ids + stats (promotes the existing

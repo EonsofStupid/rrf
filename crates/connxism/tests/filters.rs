@@ -3,7 +3,7 @@
 
 use connxism::{Condition, Estate, EstateQuery, Filter};
 use embedder::DeterministicEmbedder;
-use rrf_core::{Embedder, Metadata, Recall, VectorRecord};
+use rro_core::{Embedder, Metadata, Recall, VectorRecord};
 
 fn meta(team: &str, priority: i64, status: &str) -> Metadata {
     let mut m = Metadata::new();

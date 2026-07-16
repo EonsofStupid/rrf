@@ -3,7 +3,7 @@
 //! typed keys serving equality, and REBUILD INDEX re-typing legacy rows.
 
 use connxism::{Estate, EstateQuery};
-use rrf_core::{Condition, Embedding, Filter, Recall, VectorRecord};
+use rro_core::{Condition, Embedding, Filter, Recall, VectorRecord};
 
 fn rec(id: &str, created: &str, owner: &str) -> VectorRecord {
     let mut r = VectorRecord::new(

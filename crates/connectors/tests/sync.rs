@@ -7,7 +7,7 @@ use connectors::{sync, Batch, Driver, FsDriver, JsonlDriver};
 use connxism::{ChangeOp, ConnectorInfo, ConnectorKind, Estate, SyncState, SyncStatus};
 use embedder::DeterministicEmbedder;
 use rrd::Rrd;
-use rrf_core::{Recall, Result, RrfError};
+use rro_core::{Recall, Result, RroError};
 
 fn register(estate: &Estate, id: &str, provider: &str, uri: &str) {
     estate
@@ -88,7 +88,7 @@ impl<D: Driver> Driver for FailAt<D> {
     async fn pull(&self, cursor: Option<&str>) -> Result<Batch> {
         let n = self.calls.fetch_add(1, Ordering::SeqCst) + 1;
         if n == self.fail_on {
-            return Err(RrfError::msg("simulated connector outage"));
+            return Err(RroError::msg("simulated connector outage"));
         }
         self.inner.pull(cursor).await
     }

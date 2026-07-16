@@ -3,7 +3,7 @@
 //! scan, with honest fallback on non-reconstructible tags.
 
 use connxism::{Estate, EstateQuery};
-use rrf_core::{maxsim, Embedding, Recall, SparseVector, VectorRecord};
+use rro_core::{maxsim, Embedding, Recall, SparseVector, VectorRecord};
 
 fn lcg(s: &mut u64) -> f32 {
     *s ^= *s << 13;

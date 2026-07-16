@@ -27,13 +27,13 @@ if [[ "${1:-}" == "stop" ]]; then
 fi
 
 mkdir -p "$RUN_DIR"
-cargo build --release --bin rrf --bin rrf-bench >/dev/null
+cargo build --release --bin rrf --bin rro-bench >/dev/null
 
 echo "── booting a ${N}-node mesh ───────────────────────────────────"
 for i in $(seq 1 "$N"); do
   port=$((BASE_PORT + i - 1))
-  RRF_NODE="rrf-n$i" RRF_ESTATE="$RUN_DIR/estate-$i" \
-  RRF_LISTEN="127.0.0.1:$port" RRF_EVENTS="$RUN_DIR/node-$i.events.jsonl" \
+  RRO_NODE="rrf-n$i" RRO_ESTATE="$RUN_DIR/estate-$i" \
+  RRO_LISTEN="127.0.0.1:$port" RRO_EVENTS="$RUN_DIR/node-$i.events.jsonl" \
   RUST_LOG=warn "$ROOT/target/release/rrf" >>"$RUN_DIR/node-$i.log" 2>&1 &
   echo $! > "$RUN_DIR/node-$i.pid"
 done
@@ -50,7 +50,7 @@ done
 echo "── smoke: full pipeline against every node over a2a ───────────"
 for i in $(seq 1 "$N"); do
   port=$((BASE_PORT + i - 1))
-  acc=$("$ROOT/target/release/rrf-bench" --docs 200 --queries 10 --store estate \
+  acc=$("$ROOT/target/release/rro-bench" --docs 200 --queries 10 --store estate \
         --remote "127.0.0.1:$port" 2>/dev/null | grep -oE 'accuracy@10 \(golden retrieved\)\*\* \| \*\*[0-9.]+' | grep -oE '[0-9.]+$' || echo "?")
   echo "  rrf-n$i (127.0.0.1:$port): accuracy@10 = $acc"
 done

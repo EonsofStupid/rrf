@@ -13,7 +13,7 @@ use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Condvar, Mutex, RwLock as StdRwLock};
 
 use recall::AnnIndex;
-use rrf_core::{Embedding, Id};
+use rro_core::{Embedding, Id};
 
 /// Backpressure cap: above this many queued entries, producers block.
 const PENDING_CAP: usize = 200_000;
@@ -118,7 +118,7 @@ impl Pending {
     ) -> std::thread::JoinHandle<()> {
         let pending = Arc::clone(self);
         std::thread::Builder::new()
-            .name("rrf-ann-applier".into())
+            .name("rro-ann-applier".into())
             .spawn(move || loop {
                 // Collect one batch under the lock.
                 let mut batch: Vec<(Id, Option<Embedding>)> = Vec::with_capacity(APPLY_BATCH);

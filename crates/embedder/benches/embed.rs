@@ -2,7 +2,7 @@
 
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use embedder::DeterministicEmbedder;
-use rrf_core::Embedder;
+use rro_core::Embedder;
 
 fn bench_embed(c: &mut Criterion) {
     let rt = tokio::runtime::Builder::new_current_thread()

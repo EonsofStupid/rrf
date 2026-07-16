@@ -11,9 +11,9 @@ platforms fall back to Ctrl-C.
 ## The event stream (DuckDB-ready)
 
 Every meaningful transition in the engine is emitted through one global sink
-(`rrf_core::events`): structured records `{at_ms, kind, fields}` written as
-JSONL. Install it with `RRF_EVENTS=/path/events.jsonl` on the daemon or
-`--events <path>` on `rrf-bench`.
+(`rro_core::events`): structured records `{at_ms, kind, fields}` written as
+JSONL. Install it with `RRO_EVENTS=/path/events.jsonl` on the daemon or
+`--events <path>` on `rro-bench`.
 
 Current kinds:
 
@@ -23,7 +23,7 @@ Current kinds:
 | `signal.received`              | daemon | signal |
 | `ingest.batch`                 | ingestion machine | indexed, errors, batch_ms, total_indexed, docs_per_sec |
 | `ingest.finished`              | ingestion machine | received, indexed, errors, batches, docs_per_sec |
-| `bench.start` / `bench.result` / `bench.baseline` | rrf-bench | config / headline numbers / verdict |
+| `bench.start` / `bench.result` / `bench.baseline` | rro-bench | config / headline numbers / verdict |
 
 Query it directly:
 
@@ -51,10 +51,10 @@ config are refused (exit 2), so numbers are never compared across unlike runs.
 
 ```sh
 # record (per machine, per store)
-rrf-bench --docs 50000 --queries 500 --store estate --write-baseline baselines/container-estate.json
+rro-bench --docs 50000 --queries 500 --store estate --write-baseline baselines/container-estate.json
 
 # gate (exit 1 on regression beyond tolerance; default ±25%)
-rrf-bench --docs 50000 --queries 500 --store estate --baseline baselines/container-estate.json --tolerance 20
+rro-bench --docs 50000 --queries 500 --store estate --baseline baselines/container-estate.json --tolerance 20
 ```
 
 Checked metrics: ingest docs/sec (higher is better), query p50/p95 ms (lower

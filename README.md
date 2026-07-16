@@ -65,14 +65,14 @@ prometheus **/metrics** + probes, self-reported issues. SQ8 quantization
 ```
 
 Deploy: **Podman Quadlets** — `deploy/Containerfile` (build),
-`deploy/rrf.container` + `deploy/rrf-estate.volume` (rootless systemd units),
-`deploy/rrf-mesh.pod` (cluster node group), `deploy/config.env.example`. The
+`deploy/rro.container` + `deploy/rro-estate.volume` (rootless systemd units),
+`deploy/rro-mesh.pod` (cluster node group), `deploy/config.env.example`. The
 daemon handles the full signal set, drains cleanly, and commits its RRD baseline
 on shutdown so the next boot predicts warm. Install (rootless):
-`install -m644 deploy/rrf.container ~/.config/containers/systemd/ && systemctl --user daemon-reload && systemctl --user start rrf`.
+`install -m644 deploy/rro.container ~/.config/containers/systemd/ && systemctl --user daemon-reload && systemctl --user start rrf`.
 
 **Model backends** (real Qwen embedder / Nemotron reranker) plug in behind the
-`Embedder`/`Reranker` traits, selected by `RRF_EMBEDDER`/`RRF_RERANKER` — the
+`Embedder`/`Reranker` traits, selected by `RRO_EMBEDDER`/`RRO_RERANKER` — the
 default build is weightless (synthetic embedder, dev/CI only). Wiring real models
 is spec'd exactly in **docs/MODELS.md**; the full remaining plan (models, RRQL,
 cluster, deploy) is in **docs/ROADMAP_REAL.md**.
@@ -81,7 +81,7 @@ cluster, deploy) is in **docs/ROADMAP_REAL.md**.
 
 | Crate | Role |
 |---|---|
-| `rrf-core` | The contract: types, traits, events, kernels |
+| `rro-core` | The contract: types, traits, events, kernels |
 | `rrd` | **The reason-ready JIT**: gate ladder, sliver lattice, plans, RROs, semantic intent router, evolving shape baseline (predict / drift / persist) |
 | `embedder` | Perception — deterministic default + DevPULSE (Qwen) plug-point |
 | `recall` | Vector memory — ANN graph (recall@10 ≥ 0.95 gated) + exact store |
@@ -90,8 +90,8 @@ cluster, deploy) is in **docs/ROADMAP_REAL.md**.
 | `connectome` | The visual map (flow + estate), JSON/DOT |
 | `connxism` | The kvs-connectome estate: RocksDB, hybrid recall, relations, changefeed, warp points |
 | `connectors` | Resumable source drivers + the sync engine (RRD-first) |
-| `rrf-net` | a2a layer-2: in-proc bus + TCP; MCP mesh binding lands P5 |
-| `rrf-flow` | The orchestrator, `rrf` daemon, `rrf-bench` harness |
+| `rro-net` | a2a layer-2: in-proc bus + TCP; MCP mesh binding lands P5 |
+| `rro-engine` | The orchestrator, `rrf` daemon, `rro-bench` harness |
 
 ## Where everything stands
 

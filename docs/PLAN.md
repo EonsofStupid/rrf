@@ -11,9 +11,9 @@ ported, no wrappers exist, no upstream is tracked.
 ## Laws (unchanged, non-negotiable)
 
 1. **Zero lineage.** Capabilities get re-authored; code never gets copied.
-2. **Measured claims.** A number without an `rrf-bench` run does not exist.
+2. **Measured claims.** A number without an `rro-bench` run does not exist.
    Baselines gate regressions; events stream to DuckDB.
-3. **Trait boundaries.** Components plug in behind `rrf-core` traits; the flow
+3. **Trait boundaries.** Components plug in behind `rro-core` traits; the flow
    never changes when an implementation does.
 4. **Every phase lands green**: tests + clippy + bench + baseline + docs,
    committed and pushed before the next phase starts.
@@ -22,7 +22,7 @@ ported, no wrappers exist, no upstream is tracked.
 
 | Capability | Home | Proof |
 |---|---|---|
-| Engine contract (traits, types, errors) | `rrf-core` | property tests |
+| Engine contract (traits, types, errors) | `rro-core` | property tests |
 | Deterministic embedder + DevPULSE (Qwen) plug-point | `embedder` | tests + bench |
 | In-memory recall (exact cosine) | `recall` | tests + bench |
 | BM25 reranker + DevPULSE (Nemotron) plug-point | `reranker` | tests + bench |
@@ -31,11 +31,11 @@ ported, no wrappers exist, no upstream is tracked.
 | RocksDB estate: nodes, warp points, connectors, tags, shapes, trends | `connxism` | integration tests incl. reopen |
 | Persistent BM25 inverted index (LSM-native, blind puts) | `connxism` | 762→8,883 docs/sec measured |
 | Hybrid search (dense + lexical, reciprocal rank fusion) | `connxism` + contract | tests + bench |
-| Ingestion machine (backpressure, batches, observable states, drain) | `rrf-flow` | tests incl. backpressure |
-| a2a: in-proc bus + TCP transport | `rrf-net` | tests |
-| Full SignalKind set, consistently emitted | `rrf-flow` | events verified |
-| DuckDB-ready JSONL event stream | `rrf-core::events` | 199-event run verified |
-| Baseline configuration & tracking (regression gate) | `rrf-bench` | gate re-run passed |
+| Ingestion machine (backpressure, batches, observable states, drain) | `rro-engine` | tests incl. backpressure |
+| a2a: in-proc bus + TCP transport | `rro-net` | tests |
+| Full SignalKind set, consistently emitted | `rro-engine` | events verified |
+| DuckDB-ready JSONL event stream | `rro-core::events` | 199-event run verified |
+| Baseline configuration & tracking (regression gate) | `rro-bench` | gate re-run passed |
 | CI, supply-chain policy, MSRV, coverage | `.github`, `deny.toml` | CI green |
 
 Measured on this container: **115k docs/sec** ingest (mem), **8.9k docs/sec**
@@ -52,14 +52,14 @@ Legend: ✅ done · 🔨 phase assigned · ⏸ deliberately later · ❓ needs y
 |---|---|---|
 | Exact dense search | `recall::FlatRecall`, `connxism` dense scan | ✅ |
 | **ANN graph index (HNSW-class)** | `recall::AnnIndex` — authored clean, trait-swapped | **P2** 🔨 |
-| SIMD distance kernels | `rrf-core::simd` (portable + `std::simd` when stable) | P2 🔨 |
+| SIMD distance kernels | `rro-core::simd` (portable + `std::simd` when stable) | P2 🔨 |
 | Scalar quantization (int8) | `recall::quant::Scalar` | P2 🔨 |
 | Product/binary quantization | follow-on behind same trait | ⏸ P2.5 |
 | Sparse vectors + posting lists | `connxism` postings generalized to weighted sparse | P2 🔨 |
 | BM25 sparse embedding (bm25_embed) | `embedder::SparseBm25` (embedder-side, like your edge layer) | P2 🔨 |
 | Payload (metadata) filtering | filter pushdown into recall traits + estate secondary indexes | P2 🔨 |
 | Payload indexes (keyword/int/geo) | `connxism` `idx` CF family | P2 🔨 |
-| Facets / counts / scroll | `edge`-style surface on `rrf-flow` (`query/count/facet/info`) | P3 🔨 |
+| Facets / counts / scroll | `edge`-style surface on `rro-engine` (`query/count/facet/info`) | P3 🔨 |
 | Collections & optimizer | estates already partition; segment merge/optimize | P5 🔨 |
 | WAL + crash recovery | RocksDB WAL now; kill-9 recovery **proof tests** | P5 🔨 |
 | Snapshots / backup | `Estate::snapshot()` via RocksDB checkpoints | P5 🔨 |
@@ -92,9 +92,9 @@ Legend: ✅ done · 🔨 phase assigned · ⏸ deliberately later · ❓ needs y
 | Readiness gate | `classifier` ✅ → judges structured RROs, then learned DevPULSE classifier | P4/P7 🔨 |
 | Visible reasoning map | `connectome` ✅ → live UI feed over a2a `map` verb | P4 🔨 |
 | Connector sync drivers (mail/drive/db → estate) | `connectors` crate: driver trait + cursors (state machinery ✅) | P4 🔨 |
-| MCP mesh warp transport | `rrf-net::mcp` — warp points become live jump targets | P5 🔨 |
+| MCP mesh warp transport | `rro-net::mcp` — warp points become live jump targets | P5 🔨 |
 | DevPULSE models (Qwen embed, Nemotron rerank) | candle forward passes behind `candle` feature | **P7** 🔨 |
-| Inference bake-offs (vLLM, llama.cpp, candle, candle-vllm) | `rrf-bench --backend` matrix per ADR-0001 | P7 🔨 |
+| Inference bake-offs (vLLM, llama.cpp, candle, candle-vllm) | `rro-bench --backend` matrix per ADR-0001 | P7 🔨 |
 | Python owns training; Rust owns serving/memory/kernel | ADR-0001 ✅ (decided) | ✅ |
 
 ## The phases
@@ -131,7 +131,7 @@ manifests, scoped host imports (query/kv/events), warp-callable modules.
 
 **P7 — DevPULSE models & bake-offs** — candle Qwen embedder + Nemotron
 reranker forward passes, learned readiness classifier, model registry,
-`rrf-bench --backend candle|vllm|llamacpp|candle-vllm` quality+latency matrix.
+`rro-bench --backend candle|vllm|llamacpp|candle-vllm` quality+latency matrix.
 *Gate:* DevPULSE beats the weightless floor on a golden retrieval set — the
 bake-off decides the Clyffy engine with data, not preference.
 
@@ -166,6 +166,6 @@ Only after P2–P7 are proven; distributed correctness is earned, not assumed.
 ## Operating rhythm
 
 Every phase: author → test (unit/property/integration) → measure
-(`rrf-bench` + baseline gate) → document (BENCHMARKS/OBSERVABILITY/ADR) →
+(`rro-bench` + baseline gate) → document (BENCHMARKS/OBSERVABILITY/ADR) →
 commit → push. No phase is "done" without its gate output pasted into the
 docs. That is how this stays an engine and never becomes a circle again.

@@ -6,7 +6,7 @@
 //! [`crate::LexicalReranker`].
 
 use async_trait::async_trait;
-use rrf_core::{Candidate, Reranker, Result, RrfError};
+use rro_core::{Candidate, Reranker, Result, RroError};
 
 /// Spec for a DevPULSE reranker backbone.
 #[derive(Debug, Clone)]
@@ -55,7 +55,7 @@ impl DevPulseReranker {
         #[cfg(not(feature = "candle"))]
         {
             let _ = &mut self;
-            Err(RrfError::Rerank(
+            Err(RroError::Rerank(
                 "DevPULSE reranker requires the `candle` feature and tuned weights; \
                  use LexicalReranker until they are wired"
                     .into(),
@@ -72,7 +72,7 @@ impl Reranker for DevPulseReranker {
         _candidates: Vec<Candidate>,
         _top_k: usize,
     ) -> Result<Vec<Candidate>> {
-        Err(RrfError::Rerank(format!(
+        Err(RroError::Rerank(format!(
             "DevPULSE reranker `{}` has no weights loaded (build with --features candle)",
             self.spec.name
         )))

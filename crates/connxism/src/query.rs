@@ -1,4 +1,4 @@
-//! Query execution: one spec ([`rrf_core::EstateQuery`], pure data in the
+//! Query execution: one spec ([`rro_core::EstateQuery`], pure data in the
 //! core contract), every retrieval capability of the estate.
 //!
 //! Filter execution is two-strategy: **filter-first** (exact id-set from
@@ -7,7 +7,7 @@
 //! (over-fetch + hydrate + retain) otherwise. Facets, filtered counts, and
 //! cursor-paged **scroll** live beside it on the estate.
 
-use rrf_core::{Candidate, Embedding, EstateQuery, Metadata, Recall as _, Result};
+use rro_core::{Candidate, Embedding, EstateQuery, Metadata, Recall as _, Result};
 
 use crate::estate::{rocks_err, Estate};
 use crate::keys::CF_DOCS;
@@ -33,7 +33,7 @@ impl ConnXRecall {
     pub async fn query(&self, q: EstateQuery) -> Result<Vec<Candidate>> {
         if let Some(cap) = self.quota_max_top_k() {
             if q.top_k > cap {
-                return Err(rrf_core::RrfError::Quota(format!(
+                return Err(rro_core::RroError::Quota(format!(
                     "top_k {} exceeds max_top_k {cap}",
                     q.top_k
                 )));
@@ -56,7 +56,7 @@ impl ConnXRecall {
             // fold the union into the scope the outer query executes in.
             if !q.prefetch.is_empty() {
                 if depth >= Self::MAX_PREFETCH_DEPTH {
-                    return Err(rrf_core::RrfError::Recall(format!(
+                    return Err(rro_core::RroError::Recall(format!(
                         "prefetch nesting exceeds {} levels",
                         Self::MAX_PREFETCH_DEPTH
                     )));
@@ -286,7 +286,7 @@ impl ConnXRecall {
             Ok(aliases.get(&name).cloned().unwrap_or(name))
         })
         .await
-        .map_err(|e| rrf_core::RrfError::Recall(format!("join: {e}")))?
+        .map_err(|e| rro_core::RroError::Recall(format!("join: {e}")))?
     }
 
     /// One collection's member ids, off the blocking pool.
@@ -310,7 +310,7 @@ impl ConnXRecall {
             Ok(out)
         })
         .await
-        .map_err(|e| rrf_core::RrfError::Recall(format!("join: {e}")))?
+        .map_err(|e| rro_core::RroError::Recall(format!("join: {e}")))?
     }
 
     async fn unscoped(

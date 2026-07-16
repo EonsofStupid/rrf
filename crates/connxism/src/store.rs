@@ -1,7 +1,7 @@
 //! The persistent recall store: vectors + BM25 postings + payloads in one
 //! estate, hybrid-searchable.
 //!
-//! [`ConnXRecall`] implements [`rrf_core::Recall`]. `search` is dense cosine;
+//! [`ConnXRecall`] implements [`rro_core::Recall`]. `search` is dense cosine;
 //! `hybrid_search` fuses dense and lexical rankings with reciprocal rank
 //! fusion. All RocksDB work runs on the blocking pool so the tokio runtime
 //! never stalls. Postings writes are blind puts (one row per (term, doc)),
@@ -13,7 +13,7 @@ use std::sync::{Arc, RwLock as StdRwLock};
 
 use async_trait::async_trait;
 use recall::AnnIndex;
-use rrf_core::{Candidate, Embedding, Id, Recall, Result, RrfError, VectorRecord};
+use rro_core::{Candidate, Embedding, Id, Recall, Result, RroError, VectorRecord};
 use tokio::sync::Mutex;
 
 use crate::estate::{rocks_err, Db, Estate};
@@ -42,7 +42,7 @@ pub struct ConnXRecall {
     feed_notify: Arc<tokio::sync::Notify>,
     quotas: Arc<crate::estate::Quotas>,
     lexical_stats: bool,
-    analyzer: Arc<rrf_core::text::Analyzer>,
+    analyzer: Arc<rro_core::text::Analyzer>,
     writer: Arc<Mutex<()>>,
     params: Bm25Params,
     /// Rescore graph hits exactly from the durable vectors (set when the
@@ -76,7 +76,7 @@ impl ConnXRecall {
         let id = id.to_string();
         tokio::task::spawn_blocking(move || db.get_json::<StoredDoc>(CF_DOCS, id.as_bytes()))
             .await
-            .map_err(|e| RrfError::Recall(format!("join: {e}")))?
+            .map_err(|e| RroError::Recall(format!("join: {e}")))?
     }
 
     /// Weighted sparse search: exact accumulated dot product between the
@@ -84,7 +84,7 @@ impl ConnXRecall {
     /// sorted prefix scans per query dimension over the sparse postings.
     pub async fn sparse_search(
         &self,
-        query: &rrf_core::SparseVector,
+        query: &rro_core::SparseVector,
         top_k: usize,
     ) -> Result<Vec<Candidate>> {
         if query.is_empty() || top_k == 0 {
@@ -120,7 +120,7 @@ impl ConnXRecall {
                 .collect())
         })
         .await
-        .map_err(|e| RrfError::Recall(format!("join: {e}")))?
+        .map_err(|e| RroError::Recall(format!("join: {e}")))?
     }
 
     /// The stored dense vector of one document, if present.
@@ -136,7 +136,7 @@ impl ConnXRecall {
                 .map(|b| Embedding(keys::decode_vec(&b))))
         })
         .await
-        .map_err(|e| RrfError::Recall(format!("join: {e}")))?
+        .map_err(|e| RroError::Recall(format!("join: {e}")))?
     }
 
     /// Search matrix: pairwise cosine similarity among `ids` (upper
@@ -165,7 +165,7 @@ impl ConnXRecall {
             Ok(out)
         })
         .await
-        .map_err(|e| RrfError::Recall(format!("join: {e}")))?
+        .map_err(|e| RroError::Recall(format!("join: {e}")))?
     }
 
     /// Exact cosine search inside one **named vector space** (a sorted
@@ -207,7 +207,7 @@ impl ConnXRecall {
                 .collect())
         })
         .await
-        .map_err(|e| RrfError::Recall(format!("join: {e}")))?
+        .map_err(|e| RroError::Recall(format!("join: {e}")))?
     }
 
     /// Rescore candidates by MaxSim (late interaction) against their stored
@@ -237,16 +237,16 @@ impl ConnXRecall {
                             .into_iter()
                             .map(Embedding)
                             .collect();
-                        Some(rrf_core::maxsim(&q, &doc_tokens))
+                        Some(rro_core::maxsim(&q, &doc_tokens))
                     }
                     None => None,
                 };
                 out.push(s);
             }
-            Ok::<_, RrfError>(out)
+            Ok::<_, RroError>(out)
         })
         .await
-        .map_err(|e| RrfError::Recall(format!("join: {e}")))??;
+        .map_err(|e| RroError::Recall(format!("join: {e}")))??;
 
         for (c, s) in candidates.iter_mut().zip(&scores) {
             if let Some(s) = s {
@@ -283,7 +283,7 @@ impl ConnXRecall {
         }
         tokio::task::spawn_blocking(move || lexical_topk_blocking(&db, params, &terms, top_k))
             .await
-            .map_err(|e| RrfError::Recall(format!("join: {e}")))?
+            .map_err(|e| RroError::Recall(format!("join: {e}")))?
     }
 
     /// Hybrid recall **inside a scope** — the treasure half of the fusion
@@ -350,7 +350,7 @@ impl ConnXRecall {
             Ok(out)
         })
         .await
-        .map_err(|e| RrfError::Recall(format!("join: {e}")))?
+        .map_err(|e| RroError::Recall(format!("join: {e}")))?
     }
 }
 
@@ -364,7 +364,7 @@ impl Recall for ConnXRecall {
         // the boundary, before any write.
         if let Some(cap) = self.quotas.max_batch {
             if records.len() > cap {
-                return Err(RrfError::Quota(format!(
+                return Err(RroError::Quota(format!(
                     "batch of {} exceeds max_batch {cap}",
                     records.len()
                 )));
@@ -374,7 +374,7 @@ impl Recall for ConnXRecall {
             for r in &records {
                 let bytes = serde_json::to_vec(&r.metadata)?.len();
                 if bytes > cap {
-                    return Err(RrfError::Quota(format!(
+                    return Err(RroError::Quota(format!(
                         "payload of {bytes} bytes on `{}` exceeds max_payload_bytes {cap}",
                         r.id.as_str()
                     )));
@@ -407,7 +407,7 @@ impl Recall for ConnXRecall {
                     })
                     .count() as u64;
                 if existing + net_new > cap {
-                    return Err(RrfError::Quota(format!(
+                    return Err(RroError::Quota(format!(
                         "{existing} docs + {net_new} new exceeds max_docs {cap}"
                     )));
                 }
@@ -419,10 +419,10 @@ impl Recall for ConnXRecall {
             for (id, emb) in for_index {
                 pending.push_upsert(id, emb);
             }
-            Ok::<_, RrfError>(())
+            Ok::<_, RroError>(())
         })
         .await
-        .map_err(|e| RrfError::Recall(format!("join: {e}")))??;
+        .map_err(|e| RroError::Recall(format!("join: {e}")))??;
         // Wake push-stream watchers: the feed rows are committed.
         self.feed_notify.notify_waiters();
         Ok(())
@@ -441,7 +441,7 @@ impl Recall for ConnXRecall {
             dense_blocking(&db, &ann, &pending, &q, top_k, true, rescore)
         })
         .await
-        .map_err(|e| RrfError::Recall(format!("join: {e}")))?
+        .map_err(|e| RroError::Recall(format!("join: {e}")))?
     }
 
     async fn hybrid_search(
@@ -495,14 +495,14 @@ impl Recall for ConnXRecall {
             Ok(out)
         })
         .await
-        .map_err(|e| RrfError::Recall(format!("join: {e}")))?
+        .map_err(|e| RroError::Recall(format!("join: {e}")))?
     }
 
     async fn len(&self) -> Result<usize> {
         let db = self.db.clone();
         tokio::task::spawn_blocking(move || db.get_u64(META_DOC_COUNT).map(|n| n as usize))
             .await
-            .map_err(|e| RrfError::Recall(format!("join: {e}")))?
+            .map_err(|e| RroError::Recall(format!("join: {e}")))?
     }
 
     async fn remove(&self, id: &Id) -> Result<()> {
@@ -515,10 +515,10 @@ impl Recall for ConnXRecall {
         tokio::task::spawn_blocking(move || {
             remove_blocking(&db, &analyzer, id.as_str(), lexical_stats)?;
             pending.push_remove(id);
-            Ok::<_, RrfError>(())
+            Ok::<_, RroError>(())
         })
         .await
-        .map_err(|e| RrfError::Recall(format!("join: {e}")))??;
+        .map_err(|e| RroError::Recall(format!("join: {e}")))??;
         self.feed_notify.notify_waiters();
         Ok(())
     }
@@ -530,7 +530,7 @@ impl Recall for ConnXRecall {
             Ok(())
         })
         .await
-        .map_err(|e| RrfError::Recall(format!("join: {e}")))?
+        .map_err(|e| RroError::Recall(format!("join: {e}")))?
     }
 }
 
@@ -538,14 +538,14 @@ impl Recall for ConnXRecall {
 
 fn upsert_blocking(
     db: &Db,
-    analyzer: &rrf_core::text::Analyzer,
+    analyzer: &rro_core::text::Analyzer,
     records: Vec<VectorRecord>,
     lexical_stats: bool,
 ) -> Result<()> {
     // Dimension guard: fixed by the first upsert, enforced forever after.
     let mut info: EstateInfo = db
         .get_json(CF_META, META_ESTATE)?
-        .ok_or_else(|| RrfError::Recall("estate not initialized".into()))?;
+        .ok_or_else(|| RroError::Recall("estate not initialized".into()))?;
     let dim = records[0].embedding.dim();
     match info.dim {
         None => {
@@ -553,13 +553,13 @@ fn upsert_blocking(
             db.put_json(CF_META, META_ESTATE, &info)?;
         }
         Some(expected) if expected != dim => {
-            return Err(RrfError::DimMismatch { expected, got: dim });
+            return Err(RroError::DimMismatch { expected, got: dim });
         }
         _ => {}
     }
     for r in &records {
         if r.embedding.dim() != dim {
-            return Err(RrfError::DimMismatch {
+            return Err(RroError::DimMismatch {
                 expected: dim,
                 got: r.embedding.dim(),
             });
@@ -620,7 +620,7 @@ fn upsert_blocking(
                     named_dims_dirty = true;
                 }
                 Some(&expected) if expected != v.dim() => {
-                    return Err(RrfError::DimMismatch {
+                    return Err(RroError::DimMismatch {
                         expected,
                         got: v.dim(),
                     });
@@ -631,7 +631,7 @@ fn upsert_blocking(
         // Late-interaction token vectors must agree among themselves.
         if let Some(first) = r.multi.first() {
             if r.multi.iter().any(|t| t.dim() != first.dim()) {
-                return Err(RrfError::Recall(
+                return Err(RroError::Recall(
                     "multi-vector token dims disagree within one record".into(),
                 ));
             }
@@ -1066,7 +1066,7 @@ fn lexical_blocking(
 
 pub(crate) fn remove_blocking(
     db: &Db,
-    analyzer: &rrf_core::text::Analyzer,
+    analyzer: &rro_core::text::Analyzer,
     id: &str,
     lexical_stats: bool,
 ) -> Result<()> {
@@ -1141,7 +1141,7 @@ pub(crate) fn remove_blocking(
 
 impl ConnXRecall {
     /// Merge keys into a document's metadata (existing keys overwrite).
-    pub async fn set_payload(&self, id: &str, patch: rrf_core::Metadata) -> Result<()> {
+    pub async fn set_payload(&self, id: &str, patch: rro_core::Metadata) -> Result<()> {
         self.mutate_payload(id, move |m| {
             for (k, v) in patch {
                 m.insert(k, v);
@@ -1151,7 +1151,7 @@ impl ConnXRecall {
     }
 
     /// Replace a document's metadata entirely.
-    pub async fn overwrite_payload(&self, id: &str, meta: rrf_core::Metadata) -> Result<()> {
+    pub async fn overwrite_payload(&self, id: &str, meta: rro_core::Metadata) -> Result<()> {
         self.mutate_payload(id, move |m| *m = meta).await
     }
 
@@ -1176,14 +1176,14 @@ impl ConnXRecall {
     async fn mutate_payload(
         &self,
         id: &str,
-        f: impl FnOnce(&mut rrf_core::Metadata) + Send + 'static,
+        f: impl FnOnce(&mut rro_core::Metadata) + Send + 'static,
     ) -> Result<()> {
         let _guard = self.writer.lock().await;
         let db = self.db.clone();
         let id = id.to_string();
         tokio::task::spawn_blocking(move || {
             let Some(mut doc) = db.get_json::<StoredDoc>(CF_DOCS, id.as_bytes())? else {
-                return Err(RrfError::Recall(format!("no such document: {id}")));
+                return Err(RroError::Recall(format!("no such document: {id}")));
             };
             let mut batch = rocksdb::WriteBatch::default();
             let pidx_cf = db.cf(CF_PIDX)?;
@@ -1233,7 +1233,7 @@ impl ConnXRecall {
             db.write(batch)
         })
         .await
-        .map_err(|e| RrfError::Recall(format!("join: {e}")))??;
+        .map_err(|e| RroError::Recall(format!("join: {e}")))??;
         self.feed_notify.notify_waiters();
         Ok(())
     }
@@ -1246,7 +1246,7 @@ impl ConnXRecall {
     }
 
     /// The estate's analyzer (highlighting, diagnostics).
-    pub(crate) fn analyzer_ref(&self) -> &rrf_core::text::Analyzer {
+    pub(crate) fn analyzer_ref(&self) -> &rro_core::text::Analyzer {
         &self.analyzer
     }
 }

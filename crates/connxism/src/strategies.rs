@@ -6,7 +6,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use rrf_core::{Candidate, Embedding, EstateQuery, Recall as _, Result, RrfError};
+use rro_core::{Candidate, Embedding, EstateQuery, Recall as _, Result, RroError};
 
 use crate::estate::{rocks_err, Db};
 use crate::keys::{self, CF_VECS};
@@ -129,7 +129,7 @@ impl ConnXRecall {
                 }
             }
             if found_pos == 0 {
-                return Err(RrfError::Recall(
+                return Err(RroError::Recall(
                     "recommend: no positive example vectors found".into(),
                 ));
             }
@@ -144,7 +144,7 @@ impl ConnXRecall {
             Ok(Embedding(acc).normalized())
         })
         .await
-        .map_err(|e| RrfError::Recall(format!("join: {e}")))??;
+        .map_err(|e| RroError::Recall(format!("join: {e}")))??;
 
         let exclude: HashSet<&str> = positive
             .iter()
@@ -203,7 +203,7 @@ impl ConnXRecall {
             Ok(out)
         })
         .await
-        .map_err(|e| RrfError::Recall(format!("join: {e}")))??;
+        .map_err(|e| RroError::Recall(format!("join: {e}")))??;
 
         hits.sort_by(|a, b| {
             let aa = agreement.get(a.id.as_str()).copied().unwrap_or(i64::MIN);

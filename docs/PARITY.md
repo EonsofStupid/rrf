@@ -40,7 +40,7 @@ Method: enumerated from the reference trees (`openapi.json` paths, gRPC
 | Capability | rrf home | Status |
 |---|---|---|
 | Search / SearchBatch (dense KNN + filter + params) | ANN graph + pending overlay + filters | ✅ |
-| Universal Query / QueryBatch / prefetch pipelines | `EstateQuery` (typed contract in `rrf-core`, executed by the estate **and over the a2a wire / MCP**) + `query_batch` + recursive `Prefetch` stages (union → exact outer rescore by any signal, depth-capped, gated vs hand-built) | ✅ |
+| Universal Query / QueryBatch / prefetch pipelines | `EstateQuery` (typed contract in `rro-core`, executed by the estate **and over the a2a wire / MCP**) + `query_batch` + recursive `Prefetch` stages (union → exact outer rescore by any signal, depth-capped, gated vs hand-built) | ✅ |
 | Hybrid (dense + sparse/lexical fusion, RRF) | `hybrid_search` (BM25+dense, RRF-fused) | ✅ |
 | SearchGroups / QueryGroups (group by payload field) | `query_grouped` (n groups × m per group, best-first) | ✅ |
 | Recommend / RecommendBatch / RecommendGroups (pos/neg examples) | `recommend` (avg-positive − avg-negative steering, examples excluded; a2a verb + client) | ✅ core |
@@ -53,7 +53,7 @@ Method: enumerated from the reference trees (`openapi.json` paths, gRPC
 ### A4. Index & storage internals
 | Capability | rrf home | Status |
 |---|---|---|
-| Distance metrics: Cosine ✅, Dot, Euclid, Manhattan | `rrf-core::Embedding` (cosine/dot SIMD kernels; euclidean/manhattan) | ✅ |
+| Distance metrics: Cosine ✅, Dot, Euclid, Manhattan | `rro-core::Embedding` (cosine/dot SIMD kernels; euclidean/manhattan) | ✅ |
 | HNSW-class ANN graph (m, ef_construct, ef) | `recall::AnnIndex` (recall@10 ≥ 0.95 gated; out-of-band build) | ✅ |
 | Plain (exact) index fallback | `FlatRecall` / estate scan | ✅ |
 | Quantization: scalar u8 / PQ / binary / 1.5-bit+2-bit (TQ) | `recall::quant` SQ8 + exact rescore from durable vectors (recall@10 0.976 measured, 3.4× smaller) | ✅ scalar; PQ/binary 🔨 P2.5 |
@@ -74,11 +74,11 @@ Method: enumerated from the reference trees (`openapi.json` paths, gRPC
 |---|---|---|
 | Snapshots: create/list/download/upload/recover (full + per-collection + per-shard) | `Estate::snapshot_to` (checkpoint; opens as a working estate) | ✅ core |
 | Distributed: raft consensus, shards, replicas, transfers, recovery (`/cluster/*`) | warp-mesh scale-out | ⬜ P8 |
-| `/metrics` (prometheus), `/healthz` `/livez` `/readyz` | zero-dep ops HTTP listener (`serve_ops`, daemon: `RRF_OPS_ADDR`) — prometheus 0.0.4 gauges incl. per-collection; probes 200 (gated over a real socket) + `health` a2a verb / `Client::health` | ✅ |
-| `/issues` (self-reported problems) | `Estate::issues(threshold)` — applier backlog, dim unset, feed/doc divergence — surfaced in the `health` verb and `rrf_issues_total` (gated: fires on backlog, clean when drained) | ✅ |
+| `/metrics` (prometheus), `/healthz` `/livez` `/readyz` | zero-dep ops HTTP listener (`serve_ops`, daemon: `RRO_OPS_ADDR`) — prometheus 0.0.4 gauges incl. per-collection; probes 200 (gated over a real socket) + `health` a2a verb / `Client::health` | ✅ |
+| `/issues` (self-reported problems) | `Estate::issues(threshold)` — applier backlog, dim unset, feed/doc divergence — surfaced in the `health` verb and `rro_issues_total` (gated: fires on backlog, clean when drained) | ✅ |
 | Telemetry endpoint | events/trends ✅ (DuckDB-native) | ✅ different-and-better |
 | API keys / RBAC / JWT | capability tokens on a2a ✅ (L3 v1); RBAC/JWT 🔨 | ✅ v1 |
-| Strict mode / resource limits | `Quotas` (max_docs, max_payload_bytes, max_top_k, max_batch) — typed `RrfError::Quota` at the write/query boundaries, reported in health, clean wire refusals; daemon `RRF_STRICT=1` | ✅ |
+| Strict mode / resource limits | `Quotas` (max_docs, max_payload_bytes, max_top_k, max_batch) — typed `RroError::Quota` at the write/query boundaries, reported in health, clean wire refusals; daemon `RRO_STRICT=1` | ✅ |
 
 ---
 
@@ -91,7 +91,7 @@ SHOW, SLEEP, UPDATE, UPSERT, USE`
 
 | Capability | rrf home | Status |
 |---|---|---|
-| CRUD: CREATE/INSERT/SELECT/UPDATE/UPSERT/DELETE | typed query builder (`rrf-flow`) | 🔨 P3 |
+| CRUD: CREATE/INSERT/SELECT/UPDATE/UPSERT/DELETE | typed query builder (`rro-engine`) | 🔨 P3 |
 | **RELATE** (graph edges) + graph traversal in SELECT (`->edge->node`) | `Estate::relate/traverse` + routed `scoped_search` (gate 1.000 vs 0.025) | ✅ |
 | DEFINE ×17: access, analyzer, api, bucket, config, database, event, field, function, index, model, module, namespace, param, sequence, table, user | estate catalog (subset; see per-row mapping in C) | 🔨 P3–P6 |
 | LIVE / KILL (live queries) | poll (`changes`) ✅ + push-stream `watch` over a2a: event-driven frames (estate feed signal, zero polling), seq-resume, token-gated, `Client::watch` (KILL = drop the connection) | ✅ |
@@ -111,7 +111,7 @@ operate`
 | Capability | rrf home | Status |
 |---|---|---|
 | Core value fns (array/object/string/math/time/type/parse/…) | builder expression layer | 🔨 P3 (as needed by builder) |
-| `vector::*` (similarity/distance math) | `rrf-core::Embedding` ✅ + SIMD P2 | ✅ partial |
+| `vector::*` (similarity/distance math) | `rro-core::Embedding` ✅ + SIMD P2 | ✅ partial |
 | `search::*` (score/highlight/offsets) | scores ✅ + `Candidate.highlights` byte-offset spans (analyzer-aware) ✅ | ✅ |
 | `crypto::*` (argon2/bcrypt/pbkdf2/blake3/md5…) | auth layer deps | 🔨 P5 |
 | `http::*` (outbound calls from queries) | connector drivers instead (deliberate) | ⬜ different-by-design |
@@ -136,7 +136,7 @@ operate`
 | HTTP REST (`/sql`, `/key/*` CRUD, import/export, health, version, sync) | HTTP read surface | 🔨 P5 |
 | WebSocket RPC (bidirectional, live query delivery) | a2a TCP ✅ + WS binding | 🔨 P4/P5 |
 | **GraphQL** | after typed builder | ⬜ P6 |
-| **MCP endpoint (the reference serves MCP natively!)** | `rrf-mcp` stdio server ✅ (tools: ask/query/index/changes/**collections**/**payload**, end-to-end tested); HTTP-SSE transport ⬜ | ✅ core |
+| **MCP endpoint (the reference serves MCP natively!)** | `rro-mcp` stdio server ✅ (tools: ask/query/index/changes/**collections**/**payload**, end-to-end tested); HTTP-SSE transport ⬜ | ✅ core |
 | ML endpoints (model upload/exec: surrealml-class) | DevPULSE model registry | 🔨 P7 |
 | Auth: signin/signup, JWT, root/ns/db/record users, IAM roles | capability tokens | 🔨 P5 |
 | Import/export (SQL dump) | estate export/import | 🔨 P5 |

@@ -2,7 +2,7 @@
 //! durable vectors) keeps recall against the full-precision ground truth.
 
 use connxism::{Estate, EstateConfig};
-use rrf_core::{Embedding, Recall, VectorRecord};
+use rro_core::{Embedding, Recall, VectorRecord};
 
 fn pseudo_vec(seed: u64, dim: usize) -> Vec<f32> {
     let mut x = seed.wrapping_add(0x9E3779B97F4A7C15);

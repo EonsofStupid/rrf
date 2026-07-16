@@ -1,7 +1,7 @@
 //! # reranker
 //!
 //! True-relevance ordering over recall candidates, behind the
-//! [`rrf_core::Reranker`] trait.
+//! [`rro_core::Reranker`] trait.
 //!
 //! - [`LexicalReranker`] — weightless Okapi BM25 default. Runs today.
 //! - [`DevPulseReranker`] — the tuned cross-encoder (Nemotron backbone), wired
@@ -17,4 +17,4 @@ pub use bm25::LexicalReranker;
 pub use devpulse::{DevPulseReranker, RerankSpec};
 
 /// Re-export so downstream crates can name the trait without a second dep.
-pub use rrf_core::Reranker;
+pub use rro_core::Reranker;

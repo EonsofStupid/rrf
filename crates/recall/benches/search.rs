@@ -2,7 +2,7 @@
 
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use recall::FlatRecall;
-use rrf_core::{Embedding, Recall, VectorRecord};
+use rro_core::{Embedding, Recall, VectorRecord};
 
 fn pseudo_vec(seed: u64, dim: usize) -> Vec<f32> {
     // Cheap deterministic pseudo-random vector (xorshift), no rand dep.

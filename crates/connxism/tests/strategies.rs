@@ -2,7 +2,7 @@
 //! discovery, and batched queries.
 
 use connxism::{Estate, EstateQuery};
-use rrf_core::{Embedding, Metadata, Recall, VectorRecord};
+use rro_core::{Embedding, Metadata, Recall, VectorRecord};
 
 fn noise(seed: u64, dim: usize, scale: f32) -> Vec<f32> {
     let mut x = seed.wrapping_add(0x9E3779B97F4A7C15);

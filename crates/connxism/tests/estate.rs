@@ -3,7 +3,7 @@
 use connxism::{
     ConnectorInfo, ConnectorKind, Estate, NodeInfo, SyncState, SyncStatus, Transport, WarpPoint,
 };
-use rrf_core::{Embedding, Recall, VectorRecord};
+use rro_core::{Embedding, Recall, VectorRecord};
 
 fn rec(id: &str, v: &[f32], text: &str) -> VectorRecord {
     VectorRecord::new(id, Embedding(v.to_vec()), text)

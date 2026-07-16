@@ -6,7 +6,7 @@
 //! extra forward pass: at ingest the document embedding already exists, so
 //! routing costs `K` dot products per document.
 //!
-//! The embedder behind the space is whatever implements `rrf_core::Embedder`
+//! The embedder behind the space is whatever implements `rro_core::Embedder`
 //! — the deterministic default today, the DevPULSE (Qwen) sentence encoder
 //! when weights land. Routes are data, not code: add exemplars, the router
 //! gets smarter. Zero-shot / NLI classification deliberately does **not**
@@ -15,7 +15,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use rrf_core::Embedding;
+use rro_core::Embedding;
 
 /// A tag's location in embedding space.
 #[derive(Debug, Clone, Serialize, Deserialize)]

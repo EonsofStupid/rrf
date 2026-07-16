@@ -1,7 +1,0 @@
-# Reason Ready — Podman Quadlet named volume for the durable estate.
-# Referenced by rrf.container as `rrf-estate.volume`. Install alongside it:
-#   install -m644 deploy/rrf-estate.volume ~/.config/containers/systemd/rrf-estate.volume
-
-[Volume]
-# Local driver; the RocksDB estate + events stream live here across updates.
-Driver=local

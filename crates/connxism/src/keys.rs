@@ -262,13 +262,13 @@ pub fn encode_pidx_value(value: &serde_json::Value) -> Vec<u8> {
             // compact encodings. Symmetric on write and query, so equality
             // lookups agree; estates indexed before these tags existed can
             // re-type their rows with `Estate::rebuild_payload_index`.
-            if let Some(ms) = rrf_core::time::rfc3339_to_epoch_ms(s) {
+            if let Some(ms) = rro_core::time::rfc3339_to_epoch_ms(s) {
                 let mut out = Vec::with_capacity(9);
                 out.push(PIDX_DT);
                 out.extend_from_slice(&encode_i64_sortable(ms));
                 return out;
             }
-            if let Some(bytes) = rrf_core::time::parse_uuid_bytes(s) {
+            if let Some(bytes) = rro_core::time::parse_uuid_bytes(s) {
                 let mut out = Vec::with_capacity(17);
                 out.push(PIDX_UUID);
                 out.extend_from_slice(&bytes);
@@ -282,10 +282,10 @@ pub fn encode_pidx_value(value: &serde_json::Value) -> Vec<u8> {
         serde_json::Value::Bool(b) => vec![PIDX_BOOL, u8::from(*b)],
         other => {
             // Geo points get Z-order keys; everything else canonical JSON.
-            if let Some((lat, lon)) = rrf_core::geo::point_of(other) {
+            if let Some((lat, lon)) = rro_core::geo::point_of(other) {
                 let mut out = Vec::with_capacity(9);
                 out.push(PIDX_GEO);
-                out.extend_from_slice(&rrf_core::geo::morton(lat, lon).to_be_bytes());
+                out.extend_from_slice(&rro_core::geo::morton(lat, lon).to_be_bytes());
                 return out;
             }
             let text = other.to_string();

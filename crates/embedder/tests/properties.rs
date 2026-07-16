@@ -2,7 +2,7 @@
 
 use embedder::DeterministicEmbedder;
 use proptest::prelude::*;
-use rrf_core::Embedder;
+use rro_core::Embedder;
 
 fn block_on<F: std::future::Future>(f: F) -> F::Output {
     tokio::runtime::Builder::new_current_thread()

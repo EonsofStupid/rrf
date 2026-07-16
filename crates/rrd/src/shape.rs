@@ -6,7 +6,7 @@
 
 use std::collections::BTreeMap;
 
-use rrf_core::Metadata;
+use rro_core::Metadata;
 
 /// A schema fingerprint: field name → JSON type name.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Default)]

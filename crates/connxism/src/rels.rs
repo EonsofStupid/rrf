@@ -14,7 +14,7 @@ use std::collections::{HashSet, VecDeque};
 
 use serde::{Deserialize, Serialize};
 
-use rrf_core::Result;
+use rro_core::Result;
 
 use crate::estate::{rocks_err, Estate};
 use crate::keys::{self, CF_RELS, REL_IN, REL_OUT};

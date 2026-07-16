@@ -10,7 +10,7 @@ use std::sync::{Arc, RwLock as StdRwLock};
 
 use recall::{AnnConfig, AnnIndex};
 use rocksdb::{ColumnFamily, Options, DB};
-use rrf_core::{Embedding, Id, Result, RrfError};
+use rro_core::{Embedding, Id, Result, RroError};
 
 use crate::keys::{
     self, CF_CONNS, CF_META, CF_NODES, CF_TAGS, CF_TRENDS, CF_VECS, COLUMN_FAMILIES,
@@ -25,7 +25,7 @@ impl Db {
     pub(crate) fn cf(&self, name: &str) -> Result<&ColumnFamily> {
         self.0
             .cf_handle(name)
-            .ok_or_else(|| RrfError::Recall(format!("missing column family `{name}`")))
+            .ok_or_else(|| RroError::Recall(format!("missing column family `{name}`")))
     }
 
     pub(crate) fn get_json<T: serde::de::DeserializeOwned>(
@@ -97,8 +97,8 @@ fn merge_i64_add(
 }
 
 /// Map RocksDB errors into the engine error type.
-pub(crate) fn rocks_err(e: rocksdb::Error) -> RrfError {
-    RrfError::Recall(format!("kvs: {e}"))
+pub(crate) fn rocks_err(e: rocksdb::Error) -> RroError {
+    RroError::Recall(format!("kvs: {e}"))
 }
 
 /// Resource limits enforced at the write and query boundaries. `None`
@@ -121,7 +121,7 @@ pub struct Quotas {
 }
 
 impl Quotas {
-    /// Sane strict-mode defaults (the daemon's `RRF_STRICT=1`).
+    /// Sane strict-mode defaults (the daemon's `RRO_STRICT=1`).
     pub fn strict() -> Self {
         Quotas {
             max_docs: None,
@@ -144,7 +144,7 @@ pub struct EstateConfig {
     /// creation** — it is part of the index's identity (postings and
     /// queries must agree on what a token is); reopening ignores this
     /// field in favour of the persisted one.
-    pub analyzer: rrf_core::text::Analyzer,
+    pub analyzer: rro_core::text::Analyzer,
     /// Sync every write batch to disk (fsync) before acknowledging.
     /// Durability over throughput; the WAL already survives process
     /// crashes either way — this survives power loss.
@@ -164,7 +164,7 @@ impl Default for EstateConfig {
     fn default() -> Self {
         EstateConfig {
             quantized: false,
-            analyzer: rrf_core::text::Analyzer::default(),
+            analyzer: rro_core::text::Analyzer::default(),
             fsync_writes: false,
             quotas: Quotas::default(),
             lexical_stats: true,
@@ -315,7 +315,7 @@ impl Estate {
         let mut node: NodeInfo = self
             .db
             .get_json(CF_NODES, node_id.as_bytes())?
-            .ok_or_else(|| RrfError::msg(format!("no such node: {node_id}")))?;
+            .ok_or_else(|| RroError::msg(format!("no such node: {node_id}")))?;
         node.warp_points.push(warp);
         self.register_node(node)
     }
@@ -352,7 +352,7 @@ impl Estate {
         let mut conn: ConnectorInfo = self
             .db
             .get_json(CF_CONNS, connector_id.as_bytes())?
-            .ok_or_else(|| RrfError::msg(format!("no such connector: {connector_id}")))?;
+            .ok_or_else(|| RroError::msg(format!("no such connector: {connector_id}")))?;
         conn.sync = sync;
         self.register_connector(conn)
     }
@@ -447,7 +447,7 @@ impl Estate {
             }
         }
         self.db.write(batch)?;
-        rrf_core::events::emit(
+        rro_core::events::emit(
             "estate.payload_index",
             serde_json::json!({ "field": field, "rows": rows }),
         );
@@ -468,7 +468,7 @@ impl Estate {
             .iter()
             .any(|f| f == field)
         {
-            return Err(rrf_core::RrfError::Recall(format!(
+            return Err(rro_core::RroError::Recall(format!(
                 "`{field}` has no payload index to rebuild"
             )));
         }
@@ -496,7 +496,7 @@ impl Estate {
             }
         }
         self.db.write(batch)?;
-        rrf_core::events::emit(
+        rro_core::events::emit(
             "estate.payload_index.rebuilt",
             serde_json::json!({ "field": field, "rows": rows }),
         );
@@ -615,7 +615,7 @@ impl Estate {
         checkpoint
             .create_checkpoint(path.as_ref())
             .map_err(rocks_err)?;
-        rrf_core::events::emit(
+        rro_core::events::emit(
             "estate.snapshot",
             serde_json::json!({ "path": path.as_ref().display().to_string() }),
         );
@@ -724,7 +724,7 @@ impl Estate {
         let analyzer = self.info.analyzer.clone();
         for id in &members {
             crate::store::remove_blocking(&self.db, &analyzer, id, self.lexical_stats)?;
-            self.pending.push_remove(rrf_core::Id::new(id.clone()));
+            self.pending.push_remove(rro_core::Id::new(id.clone()));
         }
         let mut registry: Vec<String> = self
             .db
@@ -733,7 +733,7 @@ impl Estate {
         registry.retain(|n| n != name);
         self.db
             .put_json(CF_META, keys::META_COLLECTIONS, &registry)?;
-        rrf_core::events::emit(
+        rro_core::events::emit(
             "estate.collection.dropped",
             serde_json::json!({ "name": name, "members": members.len() }),
         );
@@ -786,7 +786,7 @@ impl Estate {
             .unwrap_or_default();
         aliases.insert(alias.to_string(), collection.to_string());
         self.db.put_json(CF_META, keys::META_ALIASES, &aliases)?;
-        rrf_core::events::emit(
+        rro_core::events::emit(
             "estate.alias",
             serde_json::json!({ "alias": alias, "collection": collection }),
         );
@@ -930,7 +930,7 @@ impl Estate {
             self.db.0.flush_cf(self.db.cf(name)?).map_err(rocks_err)?;
         }
         self.db.0.flush_wal(true).map_err(rocks_err)?;
-        rrf_core::events::emit("estate.flush", serde_json::json!({}));
+        rro_core::events::emit("estate.flush", serde_json::json!({}));
         Ok(())
     }
 
@@ -943,7 +943,7 @@ impl Estate {
                 .0
                 .compact_range_cf(self.db.cf(name)?, None::<&[u8]>, None::<&[u8]>);
         }
-        rrf_core::events::emit("estate.compact", serde_json::json!({}));
+        rro_core::events::emit("estate.compact", serde_json::json!({}));
         Ok(())
     }
 

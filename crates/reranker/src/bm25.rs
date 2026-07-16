@@ -8,8 +8,8 @@
 use std::collections::HashMap;
 
 use async_trait::async_trait;
-use rrf_core::text::content_tokens;
-use rrf_core::{Candidate, Reranker, Result};
+use rro_core::text::content_tokens;
+use rro_core::{Candidate, Reranker, Result};
 
 /// Okapi BM25 reranker.
 #[derive(Debug, Clone)]

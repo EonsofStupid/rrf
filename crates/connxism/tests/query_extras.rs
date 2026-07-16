@@ -2,7 +2,7 @@
 //! random sampling, and the pairwise similarity matrix.
 
 use connxism::{Estate, EstateQuery};
-use rrf_core::{Embedding, Recall, VectorRecord};
+use rro_core::{Embedding, Recall, VectorRecord};
 
 fn lcg(seed: &mut u64) -> f32 {
     *seed ^= *seed << 13;
@@ -102,7 +102,7 @@ async fn with_vectors_returns_stored_vectors() {
     // Candidate serde: vector rides when present, absent field parses.
     let json = serde_json::to_string(&hits[0]).unwrap();
     assert!(json.contains("\"vector\""));
-    let old: rrf_core::Candidate =
+    let old: rro_core::Candidate =
         serde_json::from_str(r#"{"id":"x","text":"t","score":0.5}"#).unwrap();
     assert!(old.vector.is_none());
 }

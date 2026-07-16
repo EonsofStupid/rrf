@@ -3,7 +3,7 @@
 //! (asserted via index-resolved id-sets) and lands one changefeed row.
 
 use connxism::{Estate, EstateQuery};
-use rrf_core::{Condition, Embedding, Filter, Recall, VectorRecord};
+use rro_core::{Condition, Embedding, Filter, Recall, VectorRecord};
 
 fn rec(id: &str, coll: Option<&str>, team: &str) -> VectorRecord {
     let mut r = VectorRecord::new(
@@ -87,7 +87,7 @@ async fn payload_ops_keep_indexes_exactly_consistent() {
     let feed0 = estate.changes(0, 10_000).unwrap().len();
 
     // set_payload merges: d1 moves team red→green, gains priority.
-    let mut patch = rrf_core::Metadata::new();
+    let mut patch = rro_core::Metadata::new();
     patch.insert("team".into(), serde_json::json!("green"));
     patch.insert("priority".into(), serde_json::json!(7));
     recall.set_payload("d1", patch).await.unwrap();
@@ -118,7 +118,7 @@ async fn payload_ops_keep_indexes_exactly_consistent() {
     assert_eq!(estate.changes(0, 10_000).unwrap().len(), feed0 + 2);
 
     // overwrite_payload replaces wholesale.
-    let mut fresh = rrf_core::Metadata::new();
+    let mut fresh = rro_core::Metadata::new();
     fresh.insert("team".into(), serde_json::json!("gold"));
     recall.overwrite_payload("d1", fresh).await.unwrap();
     assert!(ids_for("green").is_empty());

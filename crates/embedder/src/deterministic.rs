@@ -7,8 +7,8 @@
 //! exist. Swap it for [`crate::DevPulseEmbedder`] when the tuned model lands.
 
 use async_trait::async_trait;
-use rrf_core::text::content_tokens;
-use rrf_core::{Embedder, Embedding, Result};
+use rro_core::text::content_tokens;
+use rro_core::{Embedder, Embedding, Result};
 
 use crate::tokenize::bucket;
 

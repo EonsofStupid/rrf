@@ -1,6 +1,6 @@
 //! Filter execution against the estate's payload secondary indexes.
 //!
-//! The DSL itself ([`rrf_core::Filter`], [`rrf_core::Condition`]) is pure
+//! The DSL itself ([`rro_core::Filter`], [`rro_core::Condition`]) is pure
 //! data in the core contract — clients build filters without a storage
 //! dependency. This module is the estate side: resolving a filter to its
 //! exact matching id-set from sorted `pidx` scans.
@@ -13,7 +13,7 @@
 
 use std::collections::HashSet;
 
-use rrf_core::{Condition, Filter, Result};
+use rro_core::{Condition, Filter, Result};
 
 use crate::estate::{rocks_err, Db};
 use crate::keys::{self, CF_META, CF_PIDX, META_PIDX, SEP};
@@ -96,7 +96,7 @@ fn ids_for_condition(db: &Db, c: &Condition) -> Result<HashSet<String>> {
             lte,
         } => {
             let ms =
-                |o: &Option<String>| o.as_deref().and_then(rrf_core::time::rfc3339_to_epoch_ms);
+                |o: &Option<String>| o.as_deref().and_then(rro_core::time::rfc3339_to_epoch_ms);
             scan_dt_range(db, key, ms(gt), ms(gte), ms(lt), ms(lte))
         }
         Condition::GeoRadius {
@@ -106,7 +106,7 @@ fn ids_for_condition(db: &Db, c: &Condition) -> Result<HashSet<String>> {
             radius_m,
         } => {
             let ((lat_min, lon_min), (lat_max, lon_max)) =
-                rrf_core::geo::radius_bbox(*lat, *lon, *radius_m);
+                rro_core::geo::radius_bbox(*lat, *lon, *radius_m);
             scan_geo(db, key, lat_min, lon_min, lat_max, lon_max, c)
         }
         Condition::GeoBox {
@@ -252,8 +252,8 @@ fn scan_geo(
 ) -> Result<HashSet<String>> {
     let handle = db.cf(CF_PIDX)?;
     let geo_prefix = keys::pidx_geo_prefix(field);
-    let z_lo = rrf_core::geo::morton(lat_min, lon_min);
-    let z_hi = rrf_core::geo::morton(lat_max, lon_max);
+    let z_lo = rro_core::geo::morton(lat_min, lon_min);
+    let z_hi = rro_core::geo::morton(lat_max, lon_max);
     let mut start = geo_prefix.clone();
     start.extend_from_slice(&z_lo.to_be_bytes());
 

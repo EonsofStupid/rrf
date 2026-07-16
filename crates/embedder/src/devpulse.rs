@@ -7,7 +7,7 @@
 //! reports honestly at call time.
 
 use async_trait::async_trait;
-use rrf_core::{Embedder, Embedding, Result, RrfError};
+use rro_core::{Embedder, Embedding, Result, RroError};
 
 /// Which backbone a DevPULSE embedder wraps.
 #[derive(Debug, Clone)]
@@ -63,7 +63,7 @@ impl DevPulseEmbedder {
         #[cfg(not(feature = "candle"))]
         {
             let _ = &mut self;
-            Err(RrfError::Embed(
+            Err(RroError::Embed(
                 "DevPULSE embedder requires the `candle` feature and tuned weights; \
                  use DeterministicEmbedder until they are wired"
                     .into(),
@@ -82,13 +82,13 @@ impl Embedder for DevPulseEmbedder {
         #[cfg(feature = "candle")]
         {
             // TODO(devpulse): tokenize + forward + mean/pool + normalize.
-            Err(RrfError::Embed(
+            Err(RroError::Embed(
                 "DevPULSE candle forward pass not yet wired".into(),
             ))
         }
         #[cfg(not(feature = "candle"))]
         {
-            Err(RrfError::Embed(format!(
+            Err(RroError::Embed(format!(
                 "DevPULSE embedder `{}` has no weights loaded (build with --features candle)",
                 self.spec.name
             )))

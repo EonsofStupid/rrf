@@ -10,7 +10,7 @@
 
 use connxism::{Estate, TraversalSpec};
 use embedder::DeterministicEmbedder;
-use rrf_core::{Embedder, Recall, VectorRecord};
+use rro_core::{Embedder, Recall, VectorRecord};
 
 const QUERIES: usize = 40;
 const NOISE: usize = 1500; // past the ANN threshold — realistic dense path

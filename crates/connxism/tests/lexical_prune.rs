@@ -4,8 +4,8 @@
 //! blind df counters track upsert/overwrite/remove precisely.
 
 use connxism::Estate;
-use rrf_core::text::Analyzer;
-use rrf_core::{Embedding, Recall, VectorRecord};
+use rro_core::text::Analyzer;
+use rro_core::{Embedding, Recall, VectorRecord};
 use std::collections::HashMap;
 
 fn lcg(s: &mut u64) -> u64 {

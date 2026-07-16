@@ -7,7 +7,7 @@
 
 use async_trait::async_trait;
 
-use rrf_core::{Document, Result, RrfError};
+use rro_core::{Document, Result, RroError};
 
 use crate::{Batch, Driver};
 
@@ -31,8 +31,8 @@ impl FsDriver {
         let mut files = Vec::new();
         let mut stack = vec![self.root.clone()];
         while let Some(dir) = stack.pop() {
-            for entry in std::fs::read_dir(&dir).map_err(RrfError::Io)? {
-                let path = entry.map_err(RrfError::Io)?.path();
+            for entry in std::fs::read_dir(&dir).map_err(RroError::Io)? {
+                let path = entry.map_err(RroError::Io)?.path();
                 if path.is_dir() {
                     stack.push(path);
                 } else {
@@ -65,7 +65,7 @@ impl Driver for FsDriver {
             let Ok(text) = std::fs::read_to_string(&path) else {
                 continue; // non-utf8/binary: skipped (media driver later)
             };
-            let meta = std::fs::metadata(&path).map_err(RrfError::Io)?;
+            let meta = std::fs::metadata(&path).map_err(RroError::Io)?;
             let modified = meta
                 .modified()
                 .ok()
