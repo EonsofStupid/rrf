@@ -44,6 +44,25 @@ pub enum Condition {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         lte: Option<f64>,
     },
+    /// The field is an RFC3339 timestamp inside the given (half-)open
+    /// interval (bounds are RFC3339 strings; comparison is by instant, so
+    /// mixed offsets compare correctly).
+    DateRange {
+        /// Metadata field name.
+        key: String,
+        /// Exclusive lower bound (RFC3339).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        gt: Option<String>,
+        /// Inclusive lower bound (RFC3339).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        gte: Option<String>,
+        /// Exclusive upper bound (RFC3339).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        lt: Option<String>,
+        /// Inclusive upper bound (RFC3339).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        lte: Option<String>,
+    },
     /// The field is present (any value).
     Exists {
         /// Metadata field name.
@@ -79,6 +98,22 @@ impl Condition {
         }
     }
 
+    /// Inclusive datetime range `[gte, lte]` in RFC3339 (pass `None` to
+    /// leave a side open).
+    pub fn date_range(
+        key: impl Into<String>,
+        gte: Option<impl Into<String>>,
+        lte: Option<impl Into<String>>,
+    ) -> Self {
+        Condition::DateRange {
+            key: key.into(),
+            gt: None,
+            gte: gte.map(Into::into),
+            lt: None,
+            lte: lte.map(Into::into),
+        }
+    }
+
     /// Existence condition.
     pub fn exists(key: impl Into<String>) -> Self {
         Condition::Exists { key: key.into() }
@@ -90,6 +125,7 @@ impl Condition {
             Condition::Eq { key, .. }
             | Condition::Any { key, .. }
             | Condition::Range { key, .. }
+            | Condition::DateRange { key, .. }
             | Condition::Exists { key } => key,
         }
     }
@@ -117,6 +153,28 @@ impl Condition {
                 }
                 None => false,
             },
+            Condition::DateRange {
+                key,
+                gt,
+                gte,
+                lt,
+                lte,
+            } => {
+                let parse = |s: &String| crate::time::rfc3339_to_epoch_ms(s);
+                match metadata
+                    .get(key)
+                    .and_then(|v| v.as_str())
+                    .and_then(crate::time::rfc3339_to_epoch_ms)
+                {
+                    Some(x) => {
+                        gt.as_ref().and_then(parse).map(|b| x > b).unwrap_or(true)
+                            && gte.as_ref().and_then(parse).map(|b| x >= b).unwrap_or(true)
+                            && lt.as_ref().and_then(parse).map(|b| x < b).unwrap_or(true)
+                            && lte.as_ref().and_then(parse).map(|b| x <= b).unwrap_or(true)
+                    }
+                    None => false,
+                }
+            }
             Condition::Exists { key } => metadata.contains_key(key),
         }
     }

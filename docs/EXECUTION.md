@@ -152,6 +152,16 @@ paths); geo/datetime/uuid/full-text payload index types; nested filters.
 | 6 | `query_batch` + Euclid/Manhattan metrics on `Embedding` | ✅ batch ≡ sequential (asserted) | ✅ |
 | 7 | Green close + docs + push | fmt/clippy/test: 0 warnings, 41 suites green | ✅ |
 
+## Sprint 15 — Datetime/UUID payload indexes + highlighter + REBUILD
+
+| # | Step | Verification gate | Status |
+|---|---|---|---|
+| 1 | `rrf-core::time`: zero-dep RFC3339 → epoch-ms (offsets, fractional seconds, leap days); `Condition::DateRange` (gt/gte/lt/lte as RFC3339 strings) with post-filter `matches` | unit gates: known timestamps, offset math, ordering | ✅ |
+| 2 | Typed pidx keys: datetime-parsing strings → `PIDX_DT` (order-preserving epoch), UUID-format strings → `PIDX_UUID` (16 raw bytes); symmetric encode on write & query so Eq/Any/Exists just work | key-order unit gates | ✅ |
+| 3 | `DateRange` index-first: ordered scan under the DT tag with early stop; `Estate::rebuild_payload_index` (drop + backfill — REBUILD INDEX parity + the migration path for re-typed rows) | filter unit test: exact id-set from the index equals brute force; rebuild keeps queries working | ✅ |
+| 4 | `Analyzer::highlight`: byte-offset spans of tokens whose analyzed form matches the analyzed query (stemmed query highlights the inflected surface form; prefix analyzer highlights by prefix) | spans slice the original text to the expected surface forms | ✅ |
+| 5 | Green close: fmt/clippy/test, PARITY rows (pidx types, highlighter, REBUILD), BENCHMARKS note, push | full workspace green | ✅ |
+
 ## Sprint 14 — Text analyzers (tokenizers, stemmer, stopwords)
 
 | # | Step | Verification gate | Status |

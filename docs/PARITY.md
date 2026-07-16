@@ -59,8 +59,8 @@ Method: enumerated from the reference trees (`openapi.json` paths, gRPC
 | Quantization: scalar u8 / PQ / binary / 1.5-bit+2-bit (TQ) | `recall::quant` SQ8 + exact rescore from durable vectors (recall@10 0.976 measured, 3.4× smaller) | ✅ scalar; PQ/binary 🔨 P2.5 |
 | Sparse vectors + sparse index (inverted, on-disk variants) | `SparseVector` contract + weighted postings CF (one row per (dim, doc), exact accumulated dot, RRF-fused with dense+lexical) | ✅ |
 | Multi-vector per point (named vectors, late-interaction/ColBERT-style) | named spaces (`nvecs` CF, per-name dims, exact cosine) + token vectors (`mvecs` CF) with MaxSim rescore in the query plane (`using` / `multi`, over the wire) | ✅ exact; per-space ANN 🔨 |
-| Payload field indexes ×8: keyword, integer, float, bool, geo, text (full-text), datetime, uuid | `pidx` CF, order-preserving typed keys (keyword/int/float/bool ✅, 9.8× vs scan measured) | ✅ core; geo/datetime/uuid/full-text 🔨 |
-| Filtering DSL (must/should/must_not, match/range/geo/nested, filtered KNN) | `Filter` (must/should/must_not × eq/any/range/exists), filter-first via `pidx` or post-filter | ✅; geo/nested 🔨 |
+| Payload field indexes ×8: keyword, integer, float, bool, geo, text (full-text), datetime, uuid | `pidx` CF, order-preserving typed keys (keyword/int/float/bool/**datetime** (RFC3339→epoch keys, chronological range scans)/**uuid** (16-byte keys) ✅, 9.8× vs scan measured) | ✅ core; geo/full-text 🔨 |
+| Filtering DSL (must/should/must_not, match/range/geo/nested, filtered KNN) | `Filter` (must/should/must_not × eq/any/range/**date_range**/exists), filter-first via `pidx` or post-filter | ✅; geo/nested 🔨 |
 | Text index w/ tokenizers (word/whitespace/prefix/multilingual, stemmer, stopwords) | `Analyzer` pipeline (word/whitespace/prefix-edge-gram × lowercase × stopwords × Porter stemmer, authored from the published algorithm), persisted per estate — postings and queries always agree | ✅ core; multilingual ⬜ |
 | Geo index (radius/box/polygon) | estate geo CF | ⬜ P3 |
 | WAL + flush/ack semantics | RocksDB WAL (✅ via estate) + explicit ack | ✅ base → 🔨 P5 semantics |
@@ -98,7 +98,7 @@ SHOW, SLEEP, UPDATE, UPSERT, USE`
 | SHOW CHANGES (changefeeds) | durable feed CF, atomic with writes | ✅ |
 | Transactions (BEGIN/COMMIT/CANCEL) | RocksDB TransactionDB | 🔨 P3 |
 | INFO (ns/db/table/index introspection) | estate info + `INFO`-verb on a2a | ✅ partial |
-| REBUILD INDEX | estate reindex task | 🔨 P5 |
+| REBUILD INDEX | `Estate::rebuild_payload_index` (drop + backfill; the typed-key migration path, gated) | ✅ payload; postings 🔨 |
 | Permissions-per-field/table, record-level auth | auth layer | 🔨 P5 |
 | Full DSL parser (`RRQL`) | only after the builder proves the semantics | ⬜ P6 |
 
@@ -123,7 +123,7 @@ operate`
 | Capability | rrf home | Status |
 |---|---|---|
 | KV abstraction with backends: mem, rocksdb, surrealkv-class, tikv-class, indxdb (browser), FDB-class | `connxism::Db` seam (rocksdb ✅, mem 🔨 P3; distributed backends ⬜ P8) | ✅/🔨 |
-| Full-text index: analyzers (tokenizers/filters/stemmers), BM25 scoring, highlighter, offsets | postings ✅ BM25 + `Analyzer` (tokenizers/stopwords/stemmer) ✅; highlighter/offsets 🔨 | ✅ core |
+| Full-text index: analyzers (tokenizers/filters/stemmers), BM25 scoring, highlighter, offsets | postings ✅ BM25 + `Analyzer` (tokenizers/stopwords/stemmer) ✅ + `Analyzer::highlight` (byte-offset spans, stem/prefix-aware) ✅ | ✅ |
 | HNSW + DiskANN vector trees | **excised in the reference by the author's own design — replaced by Recall** | ✅ by architecture |
 | Index planner / query optimizer (streaming + legacy) | query planning in builder | 🔨 P3/P5 |
 | Sequences | estate sequence CF | 🔨 P3 |

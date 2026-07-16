@@ -400,6 +400,56 @@ pub fn porter_stem(token: &str) -> String {
     String::from_utf8(w).unwrap_or_else(|_| token.to_string())
 }
 
+impl Analyzer {
+    /// Byte-offset spans in `text` of tokens whose analyzed form matches
+    /// any analyzed token of `query` — so a stemmed query highlights the
+    /// inflected surface form, and a prefix analyzer highlights by prefix.
+    /// Spans slice the ORIGINAL text (`&text[start..end]` is the surface
+    /// token) and come back in document order.
+    pub fn highlight(&self, text: &str, query: &str) -> Vec<(usize, usize)> {
+        let wanted: std::collections::HashSet<String> = self.analyze(query).into_iter().collect();
+        if wanted.is_empty() {
+            return Vec::new();
+        }
+        let mut spans = Vec::new();
+        for (start, end) in surface_tokens(text, &self.tokenizer) {
+            // Analyze the surface token alone; if ANY of its analyzed forms
+            // is wanted, the whole surface token highlights.
+            let forms = self.analyze(&text[start..end]);
+            if forms.iter().any(|f| wanted.contains(f)) {
+                spans.push((start, end));
+            }
+        }
+        spans
+    }
+}
+
+/// Byte spans of raw tokens under a tokenizer (before any filtering).
+fn surface_tokens(text: &str, tokenizer: &Tokenizer) -> Vec<(usize, usize)> {
+    let by_alnum = matches!(tokenizer, Tokenizer::Word | Tokenizer::Prefix { .. });
+    let mut spans = Vec::new();
+    let mut start: Option<usize> = None;
+    for (i, c) in text.char_indices() {
+        let is_sep = if by_alnum {
+            !c.is_alphanumeric()
+        } else {
+            c.is_whitespace()
+        };
+        match (is_sep, start) {
+            (false, None) => start = Some(i),
+            (true, Some(s)) => {
+                spans.push((s, i));
+                start = None;
+            }
+            _ => {}
+        }
+    }
+    if let Some(s) = start {
+        spans.push((s, text.len()));
+    }
+    spans
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -457,6 +507,36 @@ mod tests {
         ] {
             assert_eq!(porter_stem(from), to, "{from} should stem to {to}");
         }
+    }
+
+    #[test]
+    fn highlight_spans() {
+        // Stemming: the query "run" highlights the inflected surface form,
+        // at exact byte offsets into the ORIGINAL text.
+        let a = Analyzer::stemming();
+        let text = "The runner was running quickly";
+        let spans = a.highlight(text, "run");
+        let words: Vec<&str> = spans.iter().map(|&(s, e)| &text[s..e]).collect();
+        assert_eq!(words, vec!["running"], "spans: {spans:?}");
+
+        // Multi-token query highlights every matching surface token.
+        let spans = a.highlight("Estates connect; connections connected.", "connection");
+        let t = "Estates connect; connections connected.";
+        let words: Vec<&str> = spans.iter().map(|&(s, e)| &t[s..e]).collect();
+        assert_eq!(words, vec!["connect", "connections", "connected"]);
+
+        // Stopwords never highlight.
+        assert!(a.highlight("the and of", "the").is_empty());
+
+        // Prefix analyzer: highlight by prefix (autocomplete UX).
+        let auto = Analyzer::autocomplete(2, 6);
+        let t2 = "Connectome estates";
+        let spans = auto.highlight(t2, "con");
+        let words: Vec<&str> = spans.iter().map(|&(s, e)| &t2[s..e]).collect();
+        assert_eq!(words, vec!["Connectome"]);
+
+        // Nothing matches → no spans.
+        assert!(a.highlight("unrelated words here", "zebra").is_empty());
     }
 
     #[test]

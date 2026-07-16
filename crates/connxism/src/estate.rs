@@ -342,6 +342,50 @@ impl Estate {
         crate::filter::indexed_fields(&self.db)
     }
 
+    /// REBUILD INDEX: drop every row of `field`'s payload index and
+    /// re-backfill from the durable documents. This is also the migration
+    /// path when value typing changes (e.g. datetime/UUID strings gaining
+    /// typed keys): old rows are swept, new rows carry the current encoding.
+    pub fn rebuild_payload_index(&self, field: &str) -> Result<()> {
+        if !crate::filter::indexed_fields(&self.db)?
+            .iter()
+            .any(|f| f == field)
+        {
+            return Err(rrf_core::RrfError::Recall(format!(
+                "`{field}` has no payload index to rebuild"
+            )));
+        }
+        let pidx_cf = self.db.cf(crate::keys::CF_PIDX)?;
+        let prefix = keys::pidx_field_prefix(field);
+        let mut batch = rocksdb::WriteBatch::default();
+        for item in self.db.0.iterator_cf(
+            pidx_cf,
+            rocksdb::IteratorMode::From(&prefix, rocksdb::Direction::Forward),
+        ) {
+            let (k, _) = item.map_err(rocks_err)?;
+            if !k.starts_with(&prefix) {
+                break;
+            }
+            batch.delete_cf(pidx_cf, k);
+        }
+        let docs_cf = self.db.cf(crate::keys::CF_DOCS)?;
+        let mut rows = 0u64;
+        for item in self.db.0.iterator_cf(docs_cf, rocksdb::IteratorMode::Start) {
+            let (_, v) = item.map_err(rocks_err)?;
+            let doc: crate::model::StoredDoc = serde_json::from_slice(&v)?;
+            if let Some(value) = doc.metadata.get(field) {
+                batch.put_cf(pidx_cf, keys::pidx_key(field, value, &doc.id), []);
+                rows += 1;
+            }
+        }
+        self.db.0.write(batch).map_err(rocks_err)?;
+        rrf_core::events::emit(
+            "estate.payload_index.rebuilt",
+            serde_json::json!({ "field": field, "rows": rows }),
+        );
+        Ok(())
+    }
+
     /// The exact id-set matching `filter`, resolved from payload indexes.
     /// `None` when the filter references an unindexed field (callers fall
     /// back to post-filtering).

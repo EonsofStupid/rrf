@@ -197,6 +197,17 @@ pub const PIDX_STR: u8 = b's';
 pub const PIDX_BOOL: u8 = b'b';
 /// Type tag: anything else (canonical JSON text follows).
 pub const PIDX_OTHER: u8 = b'o';
+/// Type tag: RFC3339 datetime string (order-preserving epoch-ms follows —
+/// range scans walk time in order regardless of the string's offset).
+pub const PIDX_DT: u8 = b'd';
+/// Type tag: UUID string (16 raw bytes follow — 2.25× smaller keys).
+pub const PIDX_UUID: u8 = b'u';
+
+/// Order-preserving byte encoding of an `i64` (sign bit flipped —
+/// lexicographic byte order equals numeric order).
+pub fn encode_i64_sortable(x: i64) -> [u8; 8] {
+    ((x as u64) ^ (1 << 63)).to_be_bytes()
+}
 
 /// Order-preserving byte encoding of an `f64`: negative values invert all
 /// bits, non-negative values flip the sign bit — lexicographic byte order
@@ -232,6 +243,22 @@ pub fn encode_pidx_value(value: &serde_json::Value) -> Vec<u8> {
             out
         }
         serde_json::Value::String(s) => {
+            // Typed strings first: datetimes and UUIDs get order-preserving
+            // compact encodings. Symmetric on write and query, so equality
+            // lookups agree; estates indexed before these tags existed can
+            // re-type their rows with `Estate::rebuild_payload_index`.
+            if let Some(ms) = rrf_core::time::rfc3339_to_epoch_ms(s) {
+                let mut out = Vec::with_capacity(9);
+                out.push(PIDX_DT);
+                out.extend_from_slice(&encode_i64_sortable(ms));
+                return out;
+            }
+            if let Some(bytes) = rrf_core::time::parse_uuid_bytes(s) {
+                let mut out = Vec::with_capacity(17);
+                out.push(PIDX_UUID);
+                out.extend_from_slice(&bytes);
+                return out;
+            }
             let mut out = Vec::with_capacity(1 + s.len());
             out.push(PIDX_STR);
             out.extend_from_slice(s.as_bytes());
@@ -280,6 +307,13 @@ pub fn pidx_value_prefix(field: &str, value: &serde_json::Value) -> Vec<u8> {
 pub fn pidx_num_prefix(field: &str) -> Vec<u8> {
     let mut k = prefix(field);
     k.push(PIDX_NUM);
+    k
+}
+
+/// Prefix under which all *datetime* rows of `field` sort chronologically.
+pub fn pidx_dt_prefix(field: &str) -> Vec<u8> {
+    let mut k = prefix(field);
+    k.push(PIDX_DT);
     k
 }
 

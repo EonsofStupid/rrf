@@ -88,6 +88,17 @@ fn ids_for_condition(db: &Db, c: &Condition) -> Result<HashSet<String>> {
             lt,
             lte,
         } => scan_range(db, key, *gt, *gte, *lt, *lte),
+        Condition::DateRange {
+            key,
+            gt,
+            gte,
+            lt,
+            lte,
+        } => {
+            let ms =
+                |o: &Option<String>| o.as_deref().and_then(rrf_core::time::rfc3339_to_epoch_ms);
+            scan_dt_range(db, key, ms(gt), ms(gte), ms(lt), ms(lte))
+        }
         Condition::Exists { key } => scan_field(db, key),
     }
 }
@@ -147,6 +158,55 @@ fn scan_range(
             continue; // at the boundary of an exclusive lower bound
         }
         // key layout: prefix + 8 value bytes + SEP + doc_id
+        let Some(&sep) = k.get(val_start + 8) else {
+            continue;
+        };
+        if sep != SEP {
+            continue;
+        }
+        out.insert(String::from_utf8_lossy(&k[val_start + 9..]).into_owned());
+    }
+    Ok(out)
+}
+
+/// Ordered scan of `field`'s datetime rows between the bounds (epoch ms) —
+/// starts at the lower bound, stops at the upper. Same shape as
+/// [`scan_range`], over the `PIDX_DT` tag's chronology.
+fn scan_dt_range(
+    db: &Db,
+    field: &str,
+    gt: Option<i64>,
+    gte: Option<i64>,
+    lt: Option<i64>,
+    lte: Option<i64>,
+) -> Result<HashSet<String>> {
+    let handle = db.cf(CF_PIDX)?;
+    let dt_prefix = keys::pidx_dt_prefix(field);
+    let lower = gte.or(gt).unwrap_or(i64::MIN);
+    let mut start = dt_prefix.clone();
+    start.extend_from_slice(&keys::encode_i64_sortable(lower));
+
+    let mut out = HashSet::new();
+    for item in db.0.iterator_cf(
+        handle,
+        rocksdb::IteratorMode::From(&start, rocksdb::Direction::Forward),
+    ) {
+        let (k, _) = item.map_err(rocks_err)?;
+        if !k.starts_with(&dt_prefix) {
+            break;
+        }
+        let val_start = dt_prefix.len();
+        let Some(bytes) = k.get(val_start..val_start + 8) else {
+            continue;
+        };
+        let raw = u64::from_be_bytes(bytes.try_into().expect("8-byte slice"));
+        let x = (raw ^ (1 << 63)) as i64;
+        if lt.map(|b| x >= b).unwrap_or(false) || lte.map(|b| x > b).unwrap_or(false) {
+            break; // chronological order: past the upper bound means done
+        }
+        if gt.map(|b| x <= b).unwrap_or(false) || gte.map(|b| x < b).unwrap_or(false) {
+            continue;
+        }
         let Some(&sep) = k.get(val_start + 8) else {
             continue;
         };

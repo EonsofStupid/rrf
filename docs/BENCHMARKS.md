@@ -321,3 +321,22 @@ Gates (`cargo test -p connxism --test analyzer` + rrf-core units):
 - overwrite retracts postings through the same analyzer;
 - reopen with a different config keeps the persisted analyzer (creation
   wins once, forever).
+
+## Sprint 15: datetime/uuid indexes, highlighter, REBUILD (2026-07-16)
+
+Payload indexes learned time and identity: RFC3339 strings index as
+order-preserving epoch keys (`PIDX_DT` — range scans walk chronology with
+early stop, offsets compared by instant), UUID strings as 16 raw bytes
+(`PIDX_UUID`, 2.25× smaller keys). `Condition::DateRange` rides the DSL
+(index-first when the field is indexed, post-filter otherwise — gated
+equal). `Estate::rebuild_payload_index` is REBUILD INDEX for payloads and
+the migration path for re-typed rows. `Analyzer::highlight` returns
+byte-offset spans of the ORIGINAL text, analyzer-aware — a stemmed "run"
+query highlights the surface form "running"; the prefix analyzer
+highlights by prefix. RFC3339 parsing is zero-dep (days-from-civil,
+offsets, fractional seconds — unit-gated on known instants).
+
+Gates: index id-set equals brute-force truth (bounded + half-open +
+offset-spelled bounds); uuid equality resolves from typed rows; rebuild
+idempotent and erroring on unindexed fields; highlight spans slice the
+original text to the expected surface forms.
