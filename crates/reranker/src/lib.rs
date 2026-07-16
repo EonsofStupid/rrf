@@ -10,10 +10,14 @@
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
+#[cfg(feature = "candle")]
+mod candle_qwen;
 mod bm25;
 mod http;
 mod devpulse;
 
+#[cfg(feature = "candle")]
+pub use candle_qwen::{CandleQwenReranker, CandleRerankConfig, DEFAULT_RERANK_TASK};
 pub use bm25::LexicalReranker;
 pub use http::{HttpRerankConfig, HttpRerankKind, HttpReranker};
 pub use devpulse::{DevPulseReranker, RerankSpec};

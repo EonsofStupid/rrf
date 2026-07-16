@@ -361,10 +361,17 @@ pub async fn build_reranker(cfg: &RerankerConfig) -> Result<Arc<dyn Reranker>> {
         RerankerKind::CandleCrossEncoder => {
             #[cfg(feature = "candle")]
             {
-                Err(not_yet_wired(
-                    "candle-cross-encoder",
-                    "docs/MODELS.md §4 (P7.4)",
-                ))
+                let dir = cfg.weights_path.as_deref().ok_or_else(|| {
+                    config_err(
+                        "RRO_RERANKER=candle-cross-encoder needs RRO_RERANKER_WEIGHTS=<dir> \
+                         containing a Qwen3-Reranker checkpoint (model*.safetensors + \
+                         config.json + tokenizer.json)",
+                    )
+                })?;
+                let mut rcfg = reranker::CandleRerankConfig::new(dir);
+                rcfg.device = to_candle_device(cfg.device)?;
+                rcfg.batch = cfg.batch.max(1);
+                Ok(Arc::new(reranker::CandleQwenReranker::load(rcfg)?))
             }
             #[cfg(not(feature = "candle"))]
             {

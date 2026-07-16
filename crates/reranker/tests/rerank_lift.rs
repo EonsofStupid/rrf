@@ -156,3 +156,107 @@ async fn llamacpp_and_vllm_agree_on_order() {
         );
     }
 }
+
+/// The candle cross-encoder: Qwen3-Reranker via yes/no token logits.
+///
+/// This is the third engine for rerank, and the one MODELS.md §4.2 would have
+/// led astray — see `reranker::candle_qwen` for why the "relevance logit"
+/// recipe does not apply to a causal-LM reranker.
+///
+/// ```sh
+/// RRO_TEST_QWEN_RERANK_WEIGHTS=/path/to/qwen3-reranker-0-6b \
+///   cargo test -p reranker --features candle --test rerank_lift -- --ignored --nocapture
+/// ```
+#[cfg(feature = "candle")]
+#[tokio::test]
+#[ignore]
+async fn candle_reranker_lifts_over_bm25() {
+    let Ok(dir) = std::env::var("RRO_TEST_QWEN_RERANK_WEIGHTS") else {
+        eprintln!("SKIP: set RRO_TEST_QWEN_RERANK_WEIGHTS");
+        return;
+    };
+    let r = reranker::CandleQwenReranker::load(reranker::CandleRerankConfig::new(&dir))
+        .expect("load Qwen3-Reranker weights");
+    let bm25 = golden_at_1(&LexicalReranker::new()).await;
+    println!("  candle ({}):", r.model_name());
+    let ce = golden_at_1(&r).await;
+    println!("  => BM25 {bm25:.2} -> candle {ce:.2}");
+
+    // RECORDED FINDING (2026-07-16, qwen3-reranker-0-6b): candle scores 0.50
+    // here — no lift. This is the MODEL, not the backend. Proof:
+    //   * case 1 separates cleanly: 0.9995 / 0.3200 / 0.0727 / 0.0005
+    //   * calibration is near-perfect: relevant 0.9995 vs irrelevant 0.000036
+    //   * on case 2 it SATURATES: gold 0.989082 loses to 0.989714 by 0.0006,
+    //     and a nonsense distractor ("Sunlight is made of photons. Food is
+    //     made in kitchens.") still scores 0.942. Everything topically
+    //     adjacent pins near 0.99 — classic small-cross-encoder behaviour.
+    // llama-nemotron-rerank-1b-v2 lifts the same set 0.50 -> 1.00.
+    //
+    // So this test asserts NO REGRESSION vs BM25, not a lift. A 2-case set
+    // cannot gate lift at all (n=2; 0.50 vs 1.00 is one document moving), and
+    // pretending it can would be theatre. The real lift gate is the BRIGHT/TREC
+    // eval at scale, where the 0.6/4/8B tier ladder gets decided on evidence.
+    assert!(
+        ce >= bm25,
+        "the candle cross-encoder ({ce}) ranked WORSE than BM25 ({bm25}) — that is a real \
+         regression in the backend, not a model-capacity finding: investigate before relaxing"
+    );
+}
+
+/// Scores must be probabilities: the yes/no softmax means P(yes) in [0,1], and
+/// a relevant doc must score far above an irrelevant one. A raw-logit leak or a
+/// stacked-backwards [yes,no] would still "rank" but produce nonsense values.
+#[cfg(feature = "candle")]
+#[tokio::test]
+#[ignore]
+async fn candle_reranker_scores_are_calibrated_probabilities() {
+    let Ok(dir) = std::env::var("RRO_TEST_QWEN_RERANK_WEIGHTS") else {
+        eprintln!("SKIP: set RRO_TEST_QWEN_RERANK_WEIGHTS");
+        return;
+    };
+    let r = reranker::CandleQwenReranker::load(reranker::CandleRerankConfig::new(&dir)).unwrap();
+    let out = r
+        .rerank(
+            "What is the capital of China?",
+            vec![
+                Candidate::new("good", "The capital of China is Beijing.", 0.0),
+                Candidate::new("bad", "Bananas are a tropical fruit rich in potassium.", 0.0),
+            ],
+            2,
+        )
+        .await
+        .unwrap();
+    for c in &out {
+        println!("  {} -> P(yes)={:.6}", c.id.as_str(), c.score);
+        assert!(
+            (0.0..=1.0).contains(&c.score),
+            "score {} is not a probability — is the softmax stacked [no,yes]?",
+            c.score
+        );
+    }
+    assert_eq!(out[0].id.as_str(), "good", "relevant doc must win");
+    assert!(
+        out[0].score > 0.5 && out[1].score < 0.5,
+        "expected a confident split, got {:.4} vs {:.4}",
+        out[0].score,
+        out[1].score
+    );
+}
+
+/// Diagnostic: print P(yes) for every candidate on the case candle gets wrong.
+/// Is the model weak, or is the implementation broken?
+#[cfg(feature = "candle")]
+#[tokio::test]
+#[ignore]
+async fn candle_score_dump() {
+    let Ok(dir) = std::env::var("RRO_TEST_QWEN_RERANK_WEIGHTS") else { return };
+    let r = reranker::CandleQwenReranker::load(reranker::CandleRerankConfig::new(&dir)).unwrap();
+    for c in CASES {
+        println!("\n  QUERY: {:?}   (gold = d{})", c.query, gold_index(c));
+        let out = r.rerank(c.query, candidates(c), 4).await.unwrap();
+        for cand in &out {
+            let mark = if cand.id.as_str() == format!("d{}", gold_index(c)) { " <-- GOLD" } else { "" };
+            println!("    {:>10.6}  {}  {:?}{mark}", cand.score, cand.id.as_str(), &cand.text[..cand.text.len().min(60)]);
+        }
+    }
+}

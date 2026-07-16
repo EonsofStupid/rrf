@@ -16,7 +16,7 @@ default = []
 # model weights, no inference deps. Each arm's constructor lives behind its
 # feature; without it, selecting that kind is a clear config error, never a
 # silent fallback.
-candle = ["embedder/candle", "dep:candle-core"]
+candle = ["embedder/candle", "reranker/candle", "dep:candle-core"]
 onnx = []
 
 [dependencies]

@@ -1450,10 +1450,15 @@ name = "reranker"
 version = "0.0.1"
 dependencies = [
  "async-trait",
+ "candle-core",
+ "candle-nn",
+ "candle-transformers",
  "criterion",
+ "embedder",
  "proptest",
  "rro-core",
  "serde_json",
+ "tokenizers 0.23.1",
  "tokio",
 ]
 

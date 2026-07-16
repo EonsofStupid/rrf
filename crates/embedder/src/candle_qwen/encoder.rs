@@ -388,6 +388,18 @@ impl Qwen3Encoder {
         Tensor::from_vec(data, (b, 1, l, l), &self.device)?.to_dtype(self.dtype)
     }
 
+    /// Rows of the tied LM head for `ids`.
+    ///
+    /// Qwen3-Reranker sets `tie_word_embeddings: true`, so its LM head *is* the
+    /// input embedding matrix and no `lm_head` tensor exists in the checkpoint.
+    /// A reranker only needs the logits of two tokens ("yes"/"no"), so instead
+    /// of projecting the hidden state through all 151669 rows, take just those
+    /// rows and do a 2-wide matmul. Same numbers, ~75000x less work.
+    pub fn tied_head_rows(&self, ids: &[u32]) -> Result<Tensor> {
+        let idx = Tensor::from_vec(ids.to_vec(), (ids.len(),), &self.device)?;
+        self.embed_tokens.embeddings().index_select(&idx, 0)
+    }
+
     /// Last-token pooling for a **left-padded** batch: the final column.
     ///
     /// Left-padding is what makes this a single slice — the last position is
