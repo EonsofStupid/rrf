@@ -91,6 +91,44 @@ pub trait Embedder: Send + Sync {
             .ok_or_else(|| crate::error::RrfError::Embed("empty embedding batch".into()))
     }
 
+    /// Embed texts that are being STORED — documents/passages.
+    ///
+    /// Split from [`Embedder::embed_queries`] because instruction-aware models
+    /// embed the two sides differently: Qwen3-Embedding prefixes a query with
+    /// `Instruct: <task>\nQuery:` and leaves documents bare. Sending a document
+    /// down the query path costs retrieval quality *silently* — nothing errors,
+    /// the vectors are just worse — so the distinction is part of the contract
+    /// rather than a convention call sites are trusted to remember.
+    ///
+    /// Symmetric embedders ignore the split; the default routes to
+    /// [`Embedder::embed`], so existing impls stay correct untouched.
+    async fn embed_documents(&self, texts: &[String]) -> Result<Vec<Embedding>> {
+        self.embed(texts).await
+    }
+
+    /// Embed texts that are being SEARCHED WITH — queries. See
+    /// [`Embedder::embed_documents`] for why this is a separate method.
+    async fn embed_queries(&self, texts: &[String]) -> Result<Vec<Embedding>> {
+        self.embed(texts).await
+    }
+
+    /// Embed a single document. Default routes through
+    /// [`Embedder::embed_documents`].
+    async fn embed_document_one(&self, text: &str) -> Result<Embedding> {
+        let batch = [text.to_string()];
+        let mut out = self.embed_documents(&batch).await?;
+        out.pop()
+            .ok_or_else(|| crate::error::RrfError::Embed("empty embedding batch".into()))
+    }
+
+    /// Embed a single query. Default routes through [`Embedder::embed_queries`].
+    async fn embed_query_one(&self, text: &str) -> Result<Embedding> {
+        let batch = [text.to_string()];
+        let mut out = self.embed_queries(&batch).await?;
+        out.pop()
+            .ok_or_else(|| crate::error::RrfError::Embed("empty embedding batch".into()))
+    }
+
     /// Name of the active model, for telemetry and the connectome.
     fn model_name(&self) -> &str {
         "embedder"

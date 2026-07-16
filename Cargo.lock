@@ -560,6 +560,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "model-registry"
+version = "0.0.1"
+dependencies = [
+ "embedder",
+ "reranker",
+ "rrf-core",
+ "tokio",
+]
+
+[[package]]
 name = "nom"
 version = "7.1.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -822,6 +832,7 @@ dependencies = [
  "connectome",
  "connxism",
  "embedder",
+ "model-registry",
  "recall",
  "reranker",
  "rrd",

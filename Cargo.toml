@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "crates/rrf-core",
     "crates/embedder",
+    "crates/model-registry",
     "crates/recall",
     "crates/reranker",
     "crates/classifier",
@@ -29,6 +30,7 @@ publish = false
 # Internal crates
 rrf-core = { path = "crates/rrf-core" }
 embedder = { path = "crates/embedder" }
+model-registry = { path = "crates/model-registry" }
 recall = { path = "crates/recall" }
 reranker = { path = "crates/reranker" }
 classifier = { path = "crates/classifier" }

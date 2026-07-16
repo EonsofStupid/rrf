@@ -76,7 +76,7 @@ impl ReasonReadyFlow {
             return self.recall.len().await;
         }
         let texts: Vec<String> = docs.iter().map(|d| d.text.clone()).collect();
-        let embeddings = self.embedder.embed(&texts).await?;
+        let embeddings = self.embedder.embed_documents(&texts).await?;
         let records: Vec<VectorRecord> = docs
             .into_iter()
             .zip(embeddings)
@@ -131,7 +131,7 @@ impl ReasonReadyFlow {
         }
 
         let t = Instant::now();
-        let q = self.embedder.embed_one(query).await?;
+        let q = self.embedder.embed_query_one(query).await?;
         stage("embed", t, serde_json::json!({ "dim": q.dim() }));
 
         // Intent: the L2 half of the query's distillation, on the embedding
@@ -200,7 +200,7 @@ impl ReasonReadyFlow {
     /// Embed one query text with the flow's embedder (what the a2a `query`
     /// verb uses when a typed query arrives with text but no vector).
     pub async fn embed_query(&self, text: &str) -> Result<rrf_core::Embedding> {
-        self.embedder.embed_one(text).await
+        self.embedder.embed_query_one(text).await
     }
 
     /// The active configuration.

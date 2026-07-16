@@ -1,0 +1,486 @@
+//! Selection is data, not code.
+//!
+//! This crate is the only place that turns *configuration* into a concrete
+//! [`Embedder`] / [`Reranker`]. Everything downstream — the flow, the estate,
+//! the query plane — depends on the trait and never on candle, ort, or any
+//! model runtime. That is what makes the backends swappable: adding one is a
+//! new enum arm plus a constructor, with zero flow changes.
+//!
+//! Three rules hold this shape (docs/MODELS.md §1):
+//!
+//! 1. **The trait is the only contract.** Real models drop in behind
+//!    [`rrf_core::Embedder`] / [`rrf_core::Reranker`].
+//! 2. **Selection is data.** [`EmbedderConfig`] / [`RerankerConfig`] are parsed
+//!    from env; `RRF_EMBEDDER=candle-qwen` is the entire swap mechanism.
+//! 3. **Performance lives inside the backend.** Batching, device placement,
+//!    pooling, and quantization are the backend's business, behind the trait.
+//!
+//! Heavy backends sit behind the `candle` / `onnx` features so the default
+//! workspace builds weightless. A kind whose feature is off is a **clear config
+//! error**, never a silent fallback to the synthetic embedder — a silent
+//! fallback is how you end up publishing synthetic numbers as if they were real.
+
+#![deny(missing_docs)]
+
+use std::sync::Arc;
+
+use rrf_core::{Embedder, Reranker, Result, RrfError};
+
+/// Where a model runs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Device {
+    /// Host CPU.
+    #[default]
+    Cpu,
+    /// CUDA device by ordinal.
+    Cuda(usize),
+    /// Apple Metal.
+    Metal,
+}
+
+impl std::str::FromStr for Device {
+    type Err = RrfError;
+
+    fn from_str(s: &str) -> Result<Self> {
+        let s = s.trim().to_ascii_lowercase();
+        match s.as_str() {
+            "cpu" => Ok(Device::Cpu),
+            "metal" => Ok(Device::Metal),
+            "cuda" => Ok(Device::Cuda(0)),
+            other => match other.strip_prefix("cuda:") {
+                Some(n) => n
+                    .parse::<usize>()
+                    .map(Device::Cuda)
+                    .map_err(|_| config_err(format!("bad CUDA ordinal in device `{other}`"))),
+                None => Err(config_err(format!(
+                    "unknown device `{other}` (expected: cpu | cuda | cuda:<n> | metal)"
+                ))),
+            },
+        }
+    }
+}
+
+/// Which embedder backend to build.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum EmbedderKind {
+    /// Feature-hashing, weightless, non-semantic. The CI/default backend.
+    #[default]
+    Deterministic,
+    /// Qwen-family embedding backbone via candle. Requires `candle` + weights.
+    CandleQwen,
+    /// ONNX-exported embedder via `ort`. Requires `onnx` + weights.
+    Onnx,
+    /// Delegate to an external embedding endpoint (borrow another node's GPU).
+    Remote,
+}
+
+impl EmbedderKind {
+    /// The wire/env name of this kind.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            EmbedderKind::Deterministic => "deterministic",
+            EmbedderKind::CandleQwen => "candle-qwen",
+            EmbedderKind::Onnx => "onnx",
+            EmbedderKind::Remote => "remote",
+        }
+    }
+
+    /// Every selectable kind, for error messages and `--help` output.
+    pub const ALL: [EmbedderKind; 4] = [
+        EmbedderKind::Deterministic,
+        EmbedderKind::CandleQwen,
+        EmbedderKind::Onnx,
+        EmbedderKind::Remote,
+    ];
+}
+
+impl std::str::FromStr for EmbedderKind {
+    type Err = RrfError;
+
+    fn from_str(s: &str) -> Result<Self> {
+        match normalize(s).as_str() {
+            "deterministic" => Ok(EmbedderKind::Deterministic),
+            "candle-qwen" | "qwen" | "candle" => Ok(EmbedderKind::CandleQwen),
+            "onnx" => Ok(EmbedderKind::Onnx),
+            "remote" => Ok(EmbedderKind::Remote),
+            other => Err(unknown_kind("RRF_EMBEDDER", other, &EmbedderKind::ALL.map(|k| k.as_str()))),
+        }
+    }
+}
+
+/// Which reranker backend to build.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum RerankerKind {
+    /// BM25 lexical scoring. Weightless; the default.
+    #[default]
+    Lexical,
+    /// Cross-encoder (query,doc)->score via candle. Requires `candle` + weights.
+    CandleCrossEncoder,
+    /// ONNX-exported cross-encoder via `ort`. Requires `onnx` + weights.
+    Onnx,
+    /// Delegate to an external rerank endpoint.
+    Remote,
+}
+
+impl RerankerKind {
+    /// The wire/env name of this kind.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            RerankerKind::Lexical => "lexical",
+            RerankerKind::CandleCrossEncoder => "candle-cross-encoder",
+            RerankerKind::Onnx => "onnx",
+            RerankerKind::Remote => "remote",
+        }
+    }
+
+    /// Every selectable kind.
+    pub const ALL: [RerankerKind; 4] = [
+        RerankerKind::Lexical,
+        RerankerKind::CandleCrossEncoder,
+        RerankerKind::Onnx,
+        RerankerKind::Remote,
+    ];
+}
+
+impl std::str::FromStr for RerankerKind {
+    type Err = RrfError;
+
+    fn from_str(s: &str) -> Result<Self> {
+        match normalize(s).as_str() {
+            "lexical" | "bm25" => Ok(RerankerKind::Lexical),
+            "candle-cross-encoder" | "candle-nemotron" | "candle" => {
+                Ok(RerankerKind::CandleCrossEncoder)
+            }
+            "onnx" => Ok(RerankerKind::Onnx),
+            "remote" => Ok(RerankerKind::Remote),
+            other => Err(unknown_kind(
+                "RRF_RERANKER",
+                other,
+                &RerankerKind::ALL.map(|k| k.as_str()),
+            )),
+        }
+    }
+}
+
+/// How to build the embedder. Pure data — parsed from env or set by a caller.
+#[derive(Debug, Clone)]
+pub struct EmbedderConfig {
+    /// Which backend.
+    pub kind: EmbedderKind,
+    /// Filesystem path to weights (a safetensors dir), for local backends.
+    pub weights_path: Option<String>,
+    /// Endpoint URL, for [`EmbedderKind::Remote`].
+    pub endpoint: Option<String>,
+    /// Output dimensionality. `None` = the backend's native dimension.
+    ///
+    /// Set it BELOW native only on a matryoshka-trained model (Qwen3-Embedding
+    /// supports 32..=1024): the backend truncates and re-normalizes. On a model
+    /// without MRL, truncating a vector is just corruption.
+    pub dim: Option<usize>,
+    /// Where the model runs.
+    pub device: Device,
+    /// Max texts per forward pass.
+    pub batch: usize,
+}
+
+impl Default for EmbedderConfig {
+    fn default() -> Self {
+        EmbedderConfig {
+            kind: EmbedderKind::default(),
+            weights_path: None,
+            endpoint: None,
+            dim: None,
+            device: Device::default(),
+            batch: DEFAULT_BATCH,
+        }
+    }
+}
+
+/// How to build the reranker. Pure data.
+#[derive(Debug, Clone)]
+pub struct RerankerConfig {
+    /// Which backend.
+    pub kind: RerankerKind,
+    /// Filesystem path to weights, for local backends.
+    pub weights_path: Option<String>,
+    /// Endpoint URL, for [`RerankerKind::Remote`].
+    pub endpoint: Option<String>,
+    /// Where the model runs.
+    pub device: Device,
+    /// Max (query,doc) pairs per forward pass.
+    pub batch: usize,
+}
+
+impl Default for RerankerConfig {
+    fn default() -> Self {
+        RerankerConfig {
+            kind: RerankerKind::default(),
+            weights_path: None,
+            endpoint: None,
+            device: Device::default(),
+            batch: DEFAULT_BATCH,
+        }
+    }
+}
+
+/// Default forward-pass batch size when `RRF_EMBED_BATCH` is unset.
+pub const DEFAULT_BATCH: usize = 32;
+
+impl EmbedderConfig {
+    /// Read the embedder selection from the environment.
+    ///
+    /// | var | meaning |
+    /// |---|---|
+    /// | `RRF_EMBEDDER` | kind (default `deterministic`) |
+    /// | `RRF_EMBEDDER_WEIGHTS` | weights dir |
+    /// | `RRF_EMBEDDER_ENDPOINT` | URL, for `remote` |
+    /// | `RRF_EMBED_DIM` | output dim (MRL truncation) |
+    /// | `RRF_EMBED_BATCH` | batch size |
+    /// | `RRF_DEVICE` | `cpu` \| `cuda` \| `cuda:<n>` \| `metal` |
+    ///
+    /// A malformed value is an error, not a shrug back to the default: a typo
+    /// in `RRF_EMBEDDER` must not quietly hand back synthetic vectors.
+    pub fn from_env() -> Result<Self> {
+        Ok(EmbedderConfig {
+            kind: parse_env("RRF_EMBEDDER")?.unwrap_or_default(),
+            weights_path: var("RRF_EMBEDDER_WEIGHTS"),
+            endpoint: var("RRF_EMBEDDER_ENDPOINT"),
+            dim: parse_usize_env("RRF_EMBED_DIM")?,
+            device: parse_env("RRF_DEVICE")?.unwrap_or_default(),
+            batch: parse_usize_env("RRF_EMBED_BATCH")?.unwrap_or(DEFAULT_BATCH),
+        })
+    }
+}
+
+impl RerankerConfig {
+    /// Read the reranker selection from the environment (`RRF_RERANKER`,
+    /// `RRF_RERANKER_WEIGHTS`, `RRF_RERANKER_ENDPOINT`, `RRF_DEVICE`,
+    /// `RRF_EMBED_BATCH`).
+    pub fn from_env() -> Result<Self> {
+        Ok(RerankerConfig {
+            kind: parse_env("RRF_RERANKER")?.unwrap_or_default(),
+            weights_path: var("RRF_RERANKER_WEIGHTS"),
+            endpoint: var("RRF_RERANKER_ENDPOINT"),
+            device: parse_env("RRF_DEVICE")?.unwrap_or_default(),
+            batch: parse_usize_env("RRF_EMBED_BATCH")?.unwrap_or(DEFAULT_BATCH),
+        })
+    }
+}
+
+/// Build the configured embedder.
+///
+/// The weightless [`EmbedderKind::Deterministic`] arm always builds. Every
+/// other arm needs its feature and its weights; when one is missing you get an
+/// error naming exactly what to do about it.
+pub fn build_embedder(cfg: &EmbedderConfig) -> Result<Arc<dyn Embedder>> {
+    match cfg.kind {
+        EmbedderKind::Deterministic => Ok(Arc::new(match cfg.dim {
+            Some(d) => embedder::DeterministicEmbedder::with_dim(d),
+            None => embedder::DeterministicEmbedder::new(),
+        })),
+
+        EmbedderKind::CandleQwen => {
+            #[cfg(feature = "candle")]
+            {
+                Err(not_yet_wired("candle-qwen", "docs/MODELS.md §3 (P7.2)"))
+            }
+            #[cfg(not(feature = "candle"))]
+            {
+                Err(feature_off("candle-qwen", "candle", "RRF_EMBEDDER"))
+            }
+        }
+
+        EmbedderKind::Onnx => {
+            #[cfg(feature = "onnx")]
+            {
+                Err(not_yet_wired("onnx", "docs/MODELS.md §5 (P-tail)"))
+            }
+            #[cfg(not(feature = "onnx"))]
+            {
+                Err(feature_off("onnx", "onnx", "RRF_EMBEDDER"))
+            }
+        }
+
+        EmbedderKind::Remote => Err(not_yet_wired(
+            "remote",
+            "docs/MODELS.md §5 — delegates over the a2a client",
+        )),
+    }
+}
+
+/// Build the configured reranker. Same shape as [`build_embedder`].
+pub fn build_reranker(cfg: &RerankerConfig) -> Result<Arc<dyn Reranker>> {
+    match cfg.kind {
+        RerankerKind::Lexical => Ok(Arc::new(reranker::LexicalReranker::new())),
+
+        RerankerKind::CandleCrossEncoder => {
+            #[cfg(feature = "candle")]
+            {
+                Err(not_yet_wired(
+                    "candle-cross-encoder",
+                    "docs/MODELS.md §4 (P7.4)",
+                ))
+            }
+            #[cfg(not(feature = "candle"))]
+            {
+                Err(feature_off("candle-cross-encoder", "candle", "RRF_RERANKER"))
+            }
+        }
+
+        RerankerKind::Onnx => {
+            #[cfg(feature = "onnx")]
+            {
+                Err(not_yet_wired("onnx", "docs/MODELS.md §5 (P-tail)"))
+            }
+            #[cfg(not(feature = "onnx"))]
+            {
+                Err(feature_off("onnx", "onnx", "RRF_RERANKER"))
+            }
+        }
+
+        RerankerKind::Remote => Err(not_yet_wired(
+            "remote",
+            "docs/MODELS.md §5 — delegates over the a2a client",
+        )),
+    }
+}
+
+// ---- error construction: every message says what to DO ----------------------
+
+fn config_err(msg: impl Into<String>) -> RrfError {
+    RrfError::Config(msg.into())
+}
+
+fn unknown_kind(var_name: &str, got: &str, known: &[&str]) -> RrfError {
+    config_err(format!(
+        "unknown {var_name} `{got}` (expected one of: {})",
+        known.join(" | ")
+    ))
+}
+
+fn feature_off(kind: &str, feature: &str, var_name: &str) -> RrfError {
+    config_err(format!(
+        "{var_name}=`{kind}` needs the `{feature}` feature, which this binary was not built with — \
+         rebuild with `--features {feature}`, or select a weightless kind. \
+         Refusing to fall back to the deterministic embedder: it is synthetic, and silently \
+         substituting it would report fake retrieval quality as real."
+    ))
+}
+
+fn not_yet_wired(kind: &str, spec: &str) -> RrfError {
+    config_err(format!(
+        "backend `{kind}` is not implemented yet — see {spec}. \
+         It is selectable so the seam is real, but it has no forward pass; \
+         it errors here rather than pretending to embed."
+    ))
+}
+
+// ---- env helpers ------------------------------------------------------------
+
+fn normalize(s: &str) -> String {
+    s.trim().to_ascii_lowercase().replace('_', "-")
+}
+
+fn var(name: &str) -> Option<String> {
+    match std::env::var(name) {
+        Ok(v) if !v.trim().is_empty() => Some(v),
+        _ => None,
+    }
+}
+
+fn parse_env<T: std::str::FromStr<Err = RrfError>>(name: &str) -> Result<Option<T>> {
+    match var(name) {
+        Some(v) => v.parse::<T>().map(Some),
+        None => Ok(None),
+    }
+}
+
+fn parse_usize_env(name: &str) -> Result<Option<usize>> {
+    match var(name) {
+        Some(v) => v
+            .trim()
+            .parse::<usize>()
+            .map(Some)
+            .map_err(|_| config_err(format!("{name} must be a positive integer, got `{v}`"))),
+        None => Ok(None),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // The P7.1 gate: the weightless default builds with no features, no
+    // weights, and no network.
+    #[tokio::test]
+    async fn deterministic_builds_weightless_and_embeds() {
+        let e = build_embedder(&EmbedderConfig::default()).expect("deterministic must build");
+        let v = e.embed_one("the cat sat on the mat").await.unwrap();
+        assert_eq!(v.dim(), 384);
+        assert_eq!(e.model_name(), "deterministic-hash");
+    }
+
+    #[test]
+    fn deterministic_honors_requested_dim() {
+        let cfg = EmbedderConfig {
+            dim: Some(128),
+            ..Default::default()
+        };
+        assert_eq!(build_embedder(&cfg).unwrap().dim(), 128);
+    }
+
+    #[test]
+    fn lexical_reranker_builds_weightless() {
+        assert!(build_reranker(&RerankerConfig::default()).is_ok());
+    }
+
+    // The other half of the gate: an unknown kind is a clear error.
+    #[test]
+    fn unknown_kind_is_a_clear_error() {
+        let err = "qwen4000".parse::<EmbedderKind>().unwrap_err().to_string();
+        assert!(err.contains("qwen4000"), "names the bad value: {err}");
+        assert!(err.contains("deterministic"), "lists valid kinds: {err}");
+    }
+
+    #[test]
+    fn kind_parsing_is_forgiving_about_shape_not_meaning() {
+        assert_eq!(
+            "  Candle_Qwen ".parse::<EmbedderKind>().unwrap(),
+            EmbedderKind::CandleQwen
+        );
+        assert_eq!("BM25".parse::<RerankerKind>().unwrap(), RerankerKind::Lexical);
+    }
+
+    #[test]
+    fn device_parses_including_ordinal() {
+        assert_eq!("cpu".parse::<Device>().unwrap(), Device::Cpu);
+        assert_eq!("cuda".parse::<Device>().unwrap(), Device::Cuda(0));
+        assert_eq!("cuda:3".parse::<Device>().unwrap(), Device::Cuda(3));
+        assert!("cuda:x".parse::<Device>().is_err());
+        assert!("tpu".parse::<Device>().is_err());
+    }
+
+    // A backend that cannot run must never resolve to the synthetic embedder:
+    // that is the exact mechanism that produced fake accuracy numbers.
+    #[test]
+    fn unavailable_backend_errors_instead_of_falling_back() {
+        for kind in [
+            EmbedderKind::CandleQwen,
+            EmbedderKind::Onnx,
+            EmbedderKind::Remote,
+        ] {
+            let cfg = EmbedderConfig {
+                kind,
+                ..Default::default()
+            };
+            let err = match build_embedder(&cfg) {
+                Ok(_) => panic!("{} must not build in a weightless workspace", kind.as_str()),
+                Err(e) => e.to_string(),
+            };
+            assert!(
+                !err.is_empty() && err.contains(kind.as_str()),
+                "error names the kind: {err}"
+            );
+        }
+    }
+}

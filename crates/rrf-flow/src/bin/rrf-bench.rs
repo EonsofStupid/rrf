@@ -231,14 +231,14 @@ async fn main() -> anyhow::Result<()> {
         use std::io::Write;
         let mut f = std::io::BufWriter::new(std::fs::File::create(&path)?);
         for d in &corpus {
-            let v = embedder.embed_one(&d.text).await?;
+            let v = embedder.embed_document_one(&d.text).await?;
             let line = serde_json::json!({
                 "kind": "doc", "id": d.id.as_str(), "text": d.text, "vector": v.0,
             });
             writeln!(f, "{line}")?;
         }
         for pq in &planted {
-            let v = embedder.embed_one(&pq.query).await?;
+            let v = embedder.embed_query_one(&pq.query).await?;
             let line = serde_json::json!({
                 "kind": "query", "query": pq.query, "gold_id": pq.gold_id, "vector": v.0,
             });
@@ -377,7 +377,7 @@ async fn main() -> anyhow::Result<()> {
                 }
             } else {
                 for pq in &planted {
-                    let emb = embedder.embed_one(&pq.query).await?;
+                    let emb = embedder.embed_query_one(&pq.query).await?;
                     let t = Instant::now();
                     let results = store.hybrid_search(&pq.query, &emb, top_k).await?;
                     lat.push(t.elapsed().as_micros());

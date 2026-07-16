@@ -274,7 +274,7 @@ async fn index_batch(
     docs: Vec<Document>,
 ) -> Result<()> {
     let texts: Vec<String> = docs.iter().map(|d| d.text.clone()).collect();
-    let embeddings = embedder.embed(&texts).await?;
+    let embeddings = embedder.embed_documents(&texts).await?;
     let records: Vec<VectorRecord> = docs
         .into_iter()
         .zip(embeddings)

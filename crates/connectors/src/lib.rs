@@ -143,7 +143,7 @@ pub async fn sync(
         // Embed only the survivors; the same vectors serve recall AND the
         // L2 tag routing (post-embed half of the split distill).
         let texts: Vec<String> = kept.iter().map(|(d, _)| d.text.clone()).collect();
-        let embeddings = embedder.embed(&texts).await?;
+        let embeddings = embedder.embed_documents(&texts).await?;
 
         let mut records = Vec::with_capacity(kept.len());
         let mut post = Vec::with_capacity(kept.len()); // (doc_id, tags)

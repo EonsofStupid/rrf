@@ -6,9 +6,12 @@
 //! - `RRF_ESTATE` — path to the persistent estate; unset = in-memory.
 //! - `RRF_EVENTS` — JSONL event-stream path (DuckDB-ready); unset = disabled.
 //! - `RUST_LOG`   — tracing filter (default `info`).
+//! - `RRF_EMBEDDER` / `RRF_RERANKER` — model selection; see [`model_registry`].
+//!   Unset = the weightless deterministic/lexical defaults.
 
 use std::sync::Arc;
 
+use model_registry::{build_embedder, build_reranker, EmbedderConfig, RerankerConfig};
 use rrf_flow::{estate_map, init_tracing, sample_corpus, serve, ReasonReadyFlow, ServeOptions};
 
 #[tokio::main]
@@ -29,6 +32,24 @@ async fn main() -> anyhow::Result<()> {
     // RRD is the engine's front door: attached to every flow, baseline
     // restored from the estate so predictions are warm from the first query.
     let rrd = Arc::new(rrd::Rrd::new());
+
+    // Model selection is data, not code (docs/MODELS.md §2): config -> boxed
+    // trait. Resolving it HERE means a bad kind or a missing feature fails at
+    // startup with an actionable message, instead of the daemon coming up and
+    // quietly serving synthetic vectors under a real model's name.
+    let embed_cfg = EmbedderConfig::from_env()?;
+    let rerank_cfg = RerankerConfig::from_env()?;
+    let embedder = build_embedder(&embed_cfg)?;
+    let reranker = build_reranker(&rerank_cfg)?;
+    tracing::info!(
+        embedder = embed_cfg.kind.as_str(),
+        model = embedder.model_name(),
+        dim = embedder.dim(),
+        reranker = rerank_cfg.kind.as_str(),
+        device = ?embed_cfg.device,
+        batch = embed_cfg.batch,
+        "models selected"
+    );
 
     // The estate must outlive the daemon: it owns the out-of-band ANN
     // applier thread (dropping it stops graph maintenance).
@@ -61,11 +82,17 @@ async fn main() -> anyhow::Result<()> {
             let flow = ReasonReadyFlow::builder()
                 .rrd(rrd.clone())
                 .recall(Arc::new(estate.recall()))
+                .embedder(embedder.clone())
+                .reranker(reranker.clone())
                 .build();
             estate_handle = Some(estate);
             flow
         }
-        None => ReasonReadyFlow::builder().rrd(rrd.clone()).build(),
+        None => ReasonReadyFlow::builder()
+            .rrd(rrd.clone())
+            .embedder(embedder.clone())
+            .reranker(reranker.clone())
+            .build(),
     };
     let n = flow.index(sample_corpus()).await?;
     tracing::info!(indexed = n, "seeded sample corpus");

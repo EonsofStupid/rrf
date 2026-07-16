@@ -15,6 +15,7 @@ path = "src/bin/rrf.rs"
 
 [dependencies]
 rrf-core = { workspace = true }
+model-registry = { workspace = true }
 embedder = { workspace = true }
 recall = { workspace = true }
 reranker = { workspace = true }
