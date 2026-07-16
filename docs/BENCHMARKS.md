@@ -1,5 +1,16 @@
 # Reason Ready — Measured Results
 
+> ⚠️ **SUPERSEDED — the accuracy numbers below are SYNTHETIC.**
+> They were produced by the deterministic hash embedder scoring synthetic
+> vectors against synthetic vectors (a hash function grading itself), not by any
+> real model. They say nothing about real retrieval. The first honest numbers —
+> real models, a public benchmark, third-party judgments, with a BM25 baseline
+> calibrated against published BEIR — are in [docs/BENCHMARKS_REAL.md](BENCHMARKS_REAL.md).
+> Latency/throughput figures are likewise pre-real: measured ingest with a real
+> model is ~1000x slower (10 docs/sec, not 10.9k).
+
+
+
 **Every number here came out of a real run of `rro-bench`.** Nothing is
 asserted that a run did not produce. Reproduce with:
 

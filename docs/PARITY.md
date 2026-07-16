@@ -1,5 +1,16 @@
 # PARITY — the full union inventory
 
+> ⚠️ **SUPERSEDED — the accuracy numbers below are SYNTHETIC.**
+> They were produced by the deterministic hash embedder scoring synthetic
+> vectors against synthetic vectors (a hash function grading itself), not by any
+> real model. They say nothing about real retrieval. The first honest numbers —
+> real models, a public benchmark, third-party judgments, with a BM25 baseline
+> calibrated against published BEIR — are in [docs/BENCHMARKS_REAL.md](BENCHMARKS_REAL.md).
+> Latency/throughput figures are likewise pre-real: measured ingest with a real
+> model is ~1000x slower (10 docs/sec, not 10.9k).
+
+
+
 **Everything both reference engines expose — every protocol, endpoint,
 statement, function namespace, index type, storage backend, capability —
 extracted from their actual source trees on 2026-07-15, deduplicated, and

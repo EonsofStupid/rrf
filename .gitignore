@@ -19,3 +19,6 @@ Cargo.lock.bak
 /.rro/
 /.rrf/
 *.jsonl.tmp
+
+# real benchmark corpora (downloaded, not authored here)
+/eval-data/

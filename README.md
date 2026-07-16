@@ -22,7 +22,18 @@ embedder ─▶ recall ─▶ reranker ─▶ classifier ─▶ connectome
    tags, shapes, trends, changefeed · a2a warp mesh · DuckDB events
 ```
 
-## Measured (release, shared container; see docs/BENCHMARKS.md)
+## Measured
+
+> ⚠️ **The table below is SYNTHETIC and superseded.** Every accuracy figure in it
+> came from the deterministic hash embedder — synthetic vectors scored against
+> synthetic vectors — and the throughput figures were measured with that same
+> microsecond embedder, so they describe the estate's indexing speed, not an
+> engine running a real model. Real numbers (Qwen3-Embedding-4B on nfcorpus,
+> BM25 baseline calibrated to published BEIR): **[docs/BENCHMARKS_REAL.md](docs/BENCHMARKS_REAL.md)**.
+> Headline deltas there: dense 0.4119 nDCG@10, hybrid fusion −5.3% vs dense,
+> reranker +9.9% at 27x latency, ingest 10 docs/sec (not 10.9k).
+
+### Pre-real (synthetic) figures, kept for history — see docs/BENCHMARKS.md
 
 | | result |
 |---|---|
