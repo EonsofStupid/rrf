@@ -581,6 +581,7 @@ dependencies = [
  "proptest",
  "rro-core",
  "serde",
+ "serde_json",
  "tokenizers 0.23.1",
  "tokio",
 ]
@@ -1093,6 +1094,7 @@ dependencies = [
 name = "model-registry"
 version = "0.0.1"
 dependencies = [
+ "candle-core",
  "embedder",
  "reranker",
  "rro-core",

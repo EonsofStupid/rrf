@@ -10,10 +10,14 @@
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
+#[cfg(feature = "candle")]
+mod candle_qwen;
 mod deterministic;
 mod devpulse;
 mod tokenize;
 
+#[cfg(feature = "candle")]
+pub use candle_qwen::{CandleQwenEmbedder, QwenEmbedConfig, Qwen3Encoder, DEFAULT_QUERY_TASK};
 pub use deterministic::DeterministicEmbedder;
 pub use devpulse::{DevPulseEmbedder, ModelSpec};
 

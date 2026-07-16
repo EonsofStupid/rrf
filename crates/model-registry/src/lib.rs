@@ -282,7 +282,17 @@ pub fn build_embedder(cfg: &EmbedderConfig) -> Result<Arc<dyn Embedder>> {
         EmbedderKind::CandleQwen => {
             #[cfg(feature = "candle")]
             {
-                Err(not_yet_wired("candle-qwen", "docs/MODELS.md §3 (P7.2)"))
+                let dir = cfg.weights_path.as_deref().ok_or_else(|| {
+                    config_err(
+                        "RRO_EMBEDDER=candle-qwen needs RRO_EMBEDDER_WEIGHTS=<dir> containing \
+                         model*.safetensors + config.json + tokenizer.json",
+                    )
+                })?;
+                let mut qcfg = embedder::QwenEmbedConfig::new(dir);
+                qcfg.device = to_candle_device(cfg.device)?;
+                qcfg.batch = cfg.batch.max(1);
+                qcfg.truncate_dim = cfg.dim;
+                Ok(Arc::new(embedder::CandleQwenEmbedder::load(qcfg)?))
             }
             #[cfg(not(feature = "candle"))]
             {
@@ -342,6 +352,22 @@ pub fn build_reranker(cfg: &RerankerConfig) -> Result<Arc<dyn Reranker>> {
             "remote",
             "docs/MODELS.md §5 — delegates over the a2a client",
         )),
+    }
+}
+
+/// Map the registry's device selection onto candle's.
+///
+/// Failing here (no CUDA driver, bad ordinal) is a startup error naming the
+/// device, not a silent fall back to CPU: a "fast" run that quietly used the
+/// CPU is a lie about what was measured.
+#[cfg(feature = "candle")]
+fn to_candle_device(d: Device) -> Result<candle_core::Device> {
+    match d {
+        Device::Cpu => Ok(candle_core::Device::Cpu),
+        Device::Cuda(i) => candle_core::Device::new_cuda(i)
+            .map_err(|e| config_err(format!("CUDA device {i} unavailable: {e}"))),
+        Device::Metal => candle_core::Device::new_metal(0)
+            .map_err(|e| config_err(format!("Metal device unavailable: {e}"))),
     }
 }
 

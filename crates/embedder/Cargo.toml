@@ -13,13 +13,10 @@ publish.workspace = true
 default = []
 # Enables the candle-backed DevPULSE (Qwen) embedder. Off by default so the
 # workspace builds with zero model weights.
-candle = []
-candle-core = ["dep:candle-core"]
-candle-nn = ["dep:candle-nn"]
-candle-transformers = ["dep:candle-transformers"]
-tokenizers = ["dep:tokenizers"]
+candle = ["dep:candle-core", "dep:candle-nn", "dep:candle-transformers", "dep:tokenizers", "dep:serde_json"]
 
 [dependencies]
+serde_json = { workspace = true, optional = true }
 rro-core = { workspace = true }
 async-trait = { workspace = true }
 serde = { workspace = true }
