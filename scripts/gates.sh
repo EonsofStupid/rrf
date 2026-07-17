@@ -99,6 +99,13 @@ run filter_scan_10k cargo test -p connxism --release --test filters p9_gate_inde
 # proves what 10M would without an hours-long build.
 run graph_paged_scale cargo test -p connxism --release --test graph_persist scale_gate_paged_reopen_ram_bounded -- --ignored --nocapture
 
+# Product quantization trains a codebook (k-means over >4k vectors), too slow for
+# CI's debug build — #[ignore]d and run in release here. recall@byte between SQ8
+# and BQ; both the recall-crate gate and the estate gate (PQ codes + exact
+# rescore) assert recall holds.
+run pq_recall cargo test -p recall --release --lib pq_recall_gate_memory_and_rescored_recall -- --ignored --nocapture
+run pq_estate cargo test -p connxism --release --test quantized product_quantized_estate_recall_gate -- --ignored --nocapture
+
 echo
 echo "gates: $pass passed, $skip skipped, $fail failed"
 [ "$fail" -eq 0 ]

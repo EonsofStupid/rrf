@@ -1034,6 +1034,8 @@ fn dense_blocking(
     let (factor, ef_floor) = match quantizer {
         Quantizer::None => (1, 64),
         Quantizer::Sq8 => (2, 64),
+        // PQ sits between SQ8 and BQ in coarseness; BQ is the coarsest.
+        Quantizer::Pq { .. } => (6, 200),
         Quantizer::Bq => (8, 200),
     };
     let fetch = top_k.saturating_mul(factor);

@@ -184,3 +184,37 @@ fn from_paged_rejects_mismatched_sidecar() {
         "an SQ8 sidecar under a full-vector config must be rejected"
     );
 }
+
+/// PQ pages like the others: seal to train the codebook, persist (codebook →
+/// structure, `m`-byte codes → sidecar), reopen paged, and search identically.
+#[test]
+fn paged_pq_round_trips() {
+    let dim = 64;
+    let m = 8; // 8 bytes/vec
+    let config = || AnnConfig {
+        quantizer: Quantizer::Pq { m },
+        ..AnnConfig::default()
+    };
+    let mut idx = build(800, dim, config());
+    idx.seal(); // < PQ_TRAIN_SIZE, so train now
+    assert_eq!(idx.quantizer(), Quantizer::Pq { m });
+
+    let (paged, _dir) = persist_and_page(&idx, config(), 64 * 1024);
+    assert_eq!(paged.quantizer(), Quantizer::Pq { m });
+    assert_eq!(paged.len(), idx.len());
+
+    for qi in 0..30u64 {
+        let q = pseudo_vec(9_000_000 + qi, dim);
+        let a: Vec<_> = idx
+            .search(&q, 10, 128)
+            .into_iter()
+            .map(|(id, _)| id.as_str().to_string())
+            .collect();
+        let b: Vec<_> = paged
+            .search(&q, 10, 128)
+            .into_iter()
+            .map(|(id, _)| id.as_str().to_string())
+            .collect();
+        assert_eq!(a, b, "paged PQ must search identically to in-RAM");
+    }
+}
