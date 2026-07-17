@@ -28,7 +28,7 @@
 **Everything both reference engines expose — every protocol, endpoint,
 statement, function namespace, index type, storage backend, capability —
 extracted from their actual source trees on 2026-07-15, deduplicated, and
-mapped to its rrf home.** This is the definitive build list: the union of
+mapped to its rro home.** This is the definitive build list: the union of
 both engines, plus the RRO-only layer (RRD, readiness, connectome, warp
 mesh, DevPULSE), is what "done" means. Legend: ✅ built · 🔨 phase-assigned ·
 ⬜ inventoried, not yet scheduled.
@@ -43,7 +43,7 @@ Method: enumerated from the reference trees (`openapi.json` paths, gRPC
 ## A. Vector-engine surface (reference: 60 REST endpoints, 5 gRPC services)
 
 ### A1. Collection management
-| Capability | rrf home | Status |
+| Capability | rro home | Status |
 |---|---|---|
 | Create / list / get / update / delete collections | estates ✅ + named collections in one estate (`coll` CF membership, auto-registered, exact counts, leak-proof scoped queries over the wire, drop with full retraction) | ✅ |
 | Collection exists / info | `connxism::Estate::info` | ✅ partial |
@@ -52,7 +52,7 @@ Method: enumerated from the reference trees (`openapi.json` paths, gRPC
 | Cluster info / shard keys / move shard | mesh scale-out | ⬜ P8 |
 
 ### A2. Points (data plane)
-| Capability | rrf home | Status |
+| Capability | rro home | Status |
 |---|---|---|
 | Upsert / get / delete points (REST+gRPC, wait/ordering) | `Recall::upsert/remove` + a2a `index` | ✅ core |
 | Batch update ops (`points/batch`, UpdateBatch) | ingestion machine batches | ✅ |
@@ -62,7 +62,7 @@ Method: enumerated from the reference trees (`openapi.json` paths, gRPC
 | Count (exact/approx w/ filter) | `Estate::count` (filtered + free total) | ✅ |
 
 ### A3. Search & query plane
-| Capability | rrf home | Status |
+| Capability | rro home | Status |
 |---|---|---|
 | Search / SearchBatch (dense KNN + filter + params) | ANN graph + pending overlay + filters | ✅ |
 | Universal Query / QueryBatch / prefetch pipelines | `EstateQuery` (typed contract in `rro-core`, executed by the estate **and over the a2a wire / MCP**) + `query_batch` + recursive `Prefetch` stages (union → exact outer rescore by any signal, depth-capped, gated vs hand-built) | ✅ |
@@ -76,7 +76,7 @@ Method: enumerated from the reference trees (`openapi.json` paths, gRPC
 | Score threshold / offset / with_payload / with_vectors selectors | `EstateQuery::threshold` + `ids_only` + `offset` (exact pagination on every strategy) + `with_vectors` (`Candidate.vector`) | ✅ |
 
 ### A4. Index & storage internals
-| Capability | rrf home | Status |
+| Capability | rro home | Status |
 |---|---|---|
 | Distance metrics: Cosine ✅, Dot, Euclid, Manhattan | `rro-core::Embedding` (cosine/dot SIMD kernels; euclidean/manhattan) | ✅ |
 | HNSW-class ANN graph (m, ef_construct, ef) | `recall::AnnIndex` (recall@10 ≥ 0.95 gated; out-of-band build) | ✅ |
@@ -95,7 +95,7 @@ Method: enumerated from the reference trees (`openapi.json` paths, gRPC
 | gridstore-style blob storage | estate blob CF | ⬜ P8 (files) |
 
 ### A5. Snapshots / cluster / ops
-| Capability | rrf home | Status |
+| Capability | rro home | Status |
 |---|---|---|
 | Snapshots: create/list/download/upload/recover (full + per-collection + per-shard) | `Estate::snapshot_to` (checkpoint; opens as a working estate) | ✅ core |
 | Distributed: raft consensus, shards, replicas, transfers, recovery (`/cluster/*`) | warp-mesh scale-out | ⬜ P8 |
@@ -114,7 +114,7 @@ Method: enumerated from the reference trees (`openapi.json` paths, gRPC
 KILL, LIVE, OPTION, OUTPUT/RETURN, REBUILD, RELATE, REMOVE, SELECT, SET/LET,
 SHOW, SLEEP, UPDATE, UPSERT, USE`
 
-| Capability | rrf home | Status |
+| Capability | rro home | Status |
 |---|---|---|
 | CRUD: CREATE/INSERT/SELECT/UPDATE/UPSERT/DELETE | typed query builder (`rro-engine`) | 🔨 P3 |
 | **RELATE** (graph edges) + graph traversal in SELECT (`->edge->node`) | `Estate::relate/traverse` + routed `scoped_search` (gate 1.000 vs 0.025) | ✅ |
@@ -133,19 +133,19 @@ http, math, object, parse, rand, record, schema, script, search, sequence,
 session, set, sleep, string, time, type, util, value, vector, mod, not,
 operate`
 
-| Capability | rrf home | Status |
+| Capability | rro home | Status |
 |---|---|---|
 | Core value fns (array/object/string/math/time/type/parse/…) | builder expression layer | 🔨 P3 (as needed by builder) |
 | `vector::*` (similarity/distance math) | `rro-core::Embedding` ✅ + SIMD P2 | ✅ partial |
 | `search::*` (score/highlight/offsets) | scores ✅ + `Candidate.highlights` byte-offset spans (analyzer-aware) ✅ | ✅ |
 | `crypto::*` (argon2/bcrypt/pbkdf2/blake3/md5…) | auth layer deps | 🔨 P5 |
 | `http::*` (outbound calls from queries) | connector drivers instead (deliberate) | ⬜ different-by-design |
-| `script::*` (embedded JS) | **WASM plugins instead** (`rrf-plugins`) | 🔨 P6 |
+| `script::*` (embedded JS) | **WASM plugins instead** (`rro-plugins`) | 🔨 P6 |
 | `file::*` + buckets | estate blob/files | ⬜ P8 |
 | `session::*`, `record::*`, `schema::*` | estate context fns | 🔨 P3/P5 |
 
 ### B3. Storage & indexes
-| Capability | rrf home | Status |
+| Capability | rro home | Status |
 |---|---|---|
 | KV abstraction with backends: mem, rocksdb, surrealkv-class, tikv-class, indxdb (browser), FDB-class | ⬜ **no seam exists** — `rocksdb::` is used directly (`store.rs`, `rels.rs`). A `Db` trait was claimed but never authored; a mem backend needs a real refactor, not a plug-in. Phase C2. | ⬜ |
 | Full-text index: analyzers (tokenizers/filters/stemmers), BM25 scoring, highlighter, offsets | postings ✅ BM25 + `Analyzer` ✅ + highlights **on candidates over the wire** (`EstateQuery.highlight` → `Candidate.highlights`, offset-exact, gated over TCP) | ✅ |
@@ -156,7 +156,7 @@ operate`
 | Catalog (ns/db/tables/defs) | estate catalog CF | 🔨 P3 |
 
 ### B4. Protocols & server surface
-| Capability | rrf home | Status |
+| Capability | rro home | Status |
 |---|---|---|
 | HTTP REST (`/sql`, `/key/*` CRUD, import/export, health, version, sync) | HTTP read surface | 🔨 P5 |
 | WebSocket RPC (bidirectional, live query delivery) | a2a TCP ✅ + WS binding | 🔨 P4/P5 |
@@ -168,13 +168,13 @@ operate`
 | Client-ip / headers / CORS hardening | HTTP layer | 🔨 P5 |
 | OS signals (SIGHUP/INT/QUIT/TERM) | ✅ **done, evented** | ✅ |
 | Telemetry: OTLP traces/metrics | events ✅ + OTLP exporter | ⬜ P5 |
-| WASM plugin runtime (surrealism-class: WIT, capability manifests, `.surli`-style packages) | `rrf-plugins` (wasmtime) | 🔨 **P6** |
+| WASM plugin runtime (surrealism-class: WIT, capability manifests, `.surli`-style packages) | `rro-plugins` (wasmtime) | 🔨 **P6** |
 | GUI/browser embedding (indxdb backend) | not a goal for the engine | ⬜ n/a |
 
 ---
 
 ## C. RRO-only (neither reference has these — the moat)
-| Capability | rrf home | Status |
+| Capability | rro home | Status |
 |---|---|---|
 | **RRD — reason-ready object JIT** (modes→slivers lattice, per-shape plans, RROs) | `rrd` crate | 🔨 **in progress now** |
 | RRD session triggers: fire on conversation start / idle-resume; intent detection → mode switch ("we need to be in X mode"); expert state absorbs the task list | `rrd::trigger` | 🔨 now |
@@ -190,7 +190,7 @@ operate`
 
 ## D. Direct dependencies observed (appendix, informational)
 
-Deps are implementation *choices*, not obligations — rrf selects its own and
+Deps are implementation *choices*, not obligations — rro selects its own and
 keeps the tree lean (current: tokio, serde, thiserror, async-trait, tracing,
 uuid, rocksdb, criterion, proptest, tempfile). For the record, the reference
 trees' notable direct deps:
@@ -206,7 +206,7 @@ trees' notable direct deps:
   (plugins), ort (ONNX ML), geo/geo-types, blake3/md5, rayon, mimalloc/
   jemalloc, dashmap, radix_trie, papaya.
 
-rrf equivalents get chosen per phase gate, never imported wholesale.
+rro equivalents get chosen per phase gate, never imported wholesale.
 
 ---
 

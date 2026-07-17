@@ -30,12 +30,12 @@ Query it directly:
 ```sql
 -- ingestion throughput trend across a run
 SELECT at_ms, CAST(fields.docs_per_sec AS DOUBLE) AS dps
-FROM read_json_auto('rrf-events.jsonl')
+FROM read_json_auto('rro-events.jsonl')
 WHERE kind = 'ingest.batch'
 ORDER BY at_ms;
 
 -- why did the daemon stop?
-SELECT fields.signal FROM read_json_auto('rrf-events.jsonl')
+SELECT fields.signal FROM read_json_auto('rro-events.jsonl')
 WHERE kind = 'signal.received';
 ```
 
