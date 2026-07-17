@@ -12,11 +12,10 @@ publish.workspace = true
 [dependencies]
 rro-core = { workspace = true }
 async-trait = { workspace = true }
-# mmap-backed vector storage: cold vectors page from a memory-mapped file via the
-# OS page cache instead of bounding RAM. `bytemuck` reinterprets the mapped bytes
-# as `f32` (page-aligned base, so the cast is sound). Neither is a storage-engine
-# dependency — recall stays a pure compute crate.
-memmap2 = { workspace = true }
+# Paged vector storage: cold vectors page from a node-ordered file through a
+# bounded cache (safe `read_at`, no mmap, no unsafe). `bytemuck` reinterprets the
+# page buffers between `&[u8]` and `&[f32]`/`&[u8]`. Not a storage-engine
+# dependency — recall stays a pure compute crate and keeps `forbid(unsafe_code)`.
 bytemuck = { workspace = true }
 
 [dev-dependencies]
