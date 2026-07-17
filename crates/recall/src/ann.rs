@@ -20,9 +20,10 @@
 
 use std::cmp::Ordering;
 use std::collections::{BinaryHeap, HashMap};
-use std::sync::Arc;
+use std::fs::File;
+use std::os::unix::fs::FileExt;
+use std::sync::{Arc, Mutex};
 
-use memmap2::Mmap;
 use rro_core::{Embedding, Id};
 
 /// Tuning for the graph.
@@ -50,18 +51,154 @@ impl Default for AnnConfig {
     }
 }
 
-/// Node-ordered vector storage split between a read-only mmap **base** (nodes
-/// `0..base_count`, paged from disk by the OS page cache) and an in-RAM **tail**
-/// (nodes appended since the base was mapped). A freshly built graph is all tail;
-/// a graph opened from a persisted sidecar is all base until the next write.
+/// Target size of one cached page, in bytes. Vectors are grouped into pages of
+/// `⌊PAGE_BYTES / vector_bytes⌋` so one disk read amortizes over many vectors and
+/// the cache's per-entry overhead stays negligible.
+const PAGE_BYTES: usize = 64 * 1024;
+
+/// A read-through, bounded page cache over a node-ordered vector file. Reads use
+/// `read_at` (pread) — safe I/O, no `unsafe`, no mmap — so the crate keeps its
+/// `#![forbid(unsafe_code)]` guarantee. Only the working set (bounded by the
+/// cache budget) is resident; the rest lives on disk and pages in on demand.
 ///
-/// This split is the RAM-ceiling lift: 10M vectors map straight from disk and
-/// only the working set stays resident, while writes still land on the heap and
-/// are searchable immediately. Node indices are dense and stable, so a node's
-/// slot is a pure offset — no per-node bookkeeping.
+/// This is the redb-style choice: memory-mapping a file cannot be made sound in
+/// safe Rust (external truncation is UB), so instead of an mmap we page through
+/// an owned buffer cache. Cold-miss cost is a disk read either way; the cache
+/// keeps hits off the syscall path.
+struct PagedBase<T: bytemuck::Pod> {
+    file: File,
+    /// `T` elements per vector (its dimensionality).
+    unit: usize,
+    /// Vectors per page (chosen so a page ≈ [`PAGE_BYTES`]).
+    per_page: usize,
+    /// Total vectors in the base.
+    total: usize,
+    cache: Mutex<PageCache<T>>,
+}
+
+impl<T: bytemuck::Pod> PagedBase<T> {
+    fn new(file: File, unit: usize, total: usize, cache_budget_bytes: usize) -> Self {
+        let vec_bytes = unit * std::mem::size_of::<T>();
+        let per_page = (PAGE_BYTES / vec_bytes.max(1)).max(1);
+        let page_bytes = per_page * vec_bytes;
+        let cap_pages = (cache_budget_bytes / page_bytes.max(1)).max(1);
+        PagedBase {
+            file,
+            unit,
+            per_page,
+            total,
+            cache: Mutex::new(PageCache::new(cap_pages)),
+        }
+    }
+
+    /// Run `f` with node `node`'s vector, holding the page live for the call.
+    #[inline(always)]
+    fn with<R>(&self, node: usize, f: impl FnOnce(&[T]) -> R) -> R {
+        let page_idx = node / self.per_page;
+        let within = node % self.per_page;
+        let page = self.page(page_idx);
+        let off = within * self.unit;
+        f(&page[off..off + self.unit])
+    }
+
+    /// Fetch a page, reading it through the cache. Panics on I/O error: the file
+    /// is owned by the estate and its length is validated on open, so a failing
+    /// read means the backing storage itself is gone — equivalent to an mmap's
+    /// SIGBUS, but with a message instead of a signal.
+    fn page(&self, idx: usize) -> Arc<[T]> {
+        if let Some(p) = self.cache.lock().expect("page cache").get(idx) {
+            return p;
+        }
+        let start_vec = idx * self.per_page;
+        let count_vecs = (self.total - start_vec).min(self.per_page);
+        let count_elems = count_vecs * self.unit;
+        let mut buf: Vec<T> = vec![bytemuck::Zeroable::zeroed(); count_elems];
+        let byte_off = (start_vec * self.unit * std::mem::size_of::<T>()) as u64;
+        self.file
+            .read_exact_at(bytemuck::cast_slice_mut(&mut buf), byte_off)
+            .expect("paged vector read failed");
+        let arc: Arc<[T]> = Arc::from(buf);
+        self.cache.lock().expect("page cache").put(idx, arc.clone());
+        arc
+    }
+
+    /// Bytes currently resident in the page cache (bounded by the budget).
+    fn cache_bytes(&self) -> usize {
+        self.cache.lock().expect("page cache").resident_bytes()
+    }
+
+    /// Append the whole base to `out` as raw bytes, in node order — used when
+    /// re-serializing a paged graph (e.g. writing a fresh sidecar that folds in
+    /// the tail). Reads straight from the file, bypassing the cache.
+    fn append_bytes(&self, out: &mut Vec<u8>) {
+        let total_bytes = self.total * self.unit * std::mem::size_of::<T>();
+        let start = out.len();
+        out.resize(start + total_bytes, 0);
+        self.file
+            .read_exact_at(&mut out[start..], 0)
+            .expect("paged vector read failed");
+    }
+}
+
+/// A bounded, least-recently-used cache of pages. Eviction is an O(cap) scan for
+/// the oldest tick — cap is small (a few thousand pages) so this is cheap, and it
+/// avoids the intrusive-linked-list bookkeeping a strict LRU would need.
+struct PageCache<T> {
+    cap: usize,
+    tick: u64,
+    map: HashMap<usize, (Arc<[T]>, u64)>,
+}
+
+impl<T> PageCache<T> {
+    fn new(cap: usize) -> Self {
+        PageCache {
+            cap,
+            tick: 0,
+            map: HashMap::new(),
+        }
+    }
+
+    fn get(&mut self, idx: usize) -> Option<Arc<[T]>> {
+        self.tick += 1;
+        let tick = self.tick;
+        self.map.get_mut(&idx).map(|e| {
+            e.1 = tick;
+            e.0.clone()
+        })
+    }
+
+    fn put(&mut self, idx: usize, page: Arc<[T]>) {
+        if !self.map.contains_key(&idx) && self.map.len() >= self.cap {
+            if let Some((&victim, _)) = self.map.iter().min_by_key(|(_, (_, t))| *t) {
+                self.map.remove(&victim);
+            }
+        }
+        self.tick += 1;
+        let tick = self.tick;
+        self.map.insert(idx, (page, tick));
+    }
+
+    fn resident_bytes(&self) -> usize {
+        self.map
+            .values()
+            .map(|(p, _)| p.len() * std::mem::size_of::<T>())
+            .sum()
+    }
+}
+
+/// Node-ordered vector storage split between a paged-from-disk **base** (nodes
+/// `0..base_count`, served through [`PagedBase`]'s bounded cache) and an in-RAM
+/// **tail** (nodes appended since the base was opened). A freshly built graph is
+/// all tail; a graph opened from a persisted sidecar is all base until the next
+/// write.
+///
+/// This split is the RAM-ceiling lift: 10M vectors stay on disk and only the
+/// cache's working set is resident, while writes still land on the heap and are
+/// searchable immediately. Node indices are dense and stable, so a node's slot is
+/// a pure offset — no per-node bookkeeping.
 struct MappedVec<T: bytemuck::Pod> {
-    /// The mapped base file, reinterpreted as `[T]`. `None` for an in-RAM graph.
-    base: Option<Arc<Mmap>>,
+    /// The paged-from-disk base. `None` for an in-RAM graph.
+    base: Option<PagedBase<T>>,
     /// Number of `T` elements the base holds (0 when `base` is `None`).
     base_len: usize,
     /// Elements for nodes at or beyond the base — the heap-resident tail.
@@ -77,8 +214,8 @@ impl<T: bytemuck::Pod> MappedVec<T> {
         }
     }
 
-    /// Build over a mapped base of exactly `base_len` elements, with no tail.
-    fn mapped(base: Arc<Mmap>, base_len: usize) -> Self {
+    /// Build over a paged base holding exactly `base_len` elements, no tail.
+    fn paged(base: PagedBase<T>, base_len: usize) -> Self {
         MappedVec {
             base: Some(base),
             base_len,
@@ -86,28 +223,28 @@ impl<T: bytemuck::Pod> MappedVec<T> {
         }
     }
 
-    #[inline]
-    fn base_slice(&self) -> &[T] {
-        match &self.base {
-            // The base file is page-aligned and its length is validated against
-            // `base_len` on load, so this reinterpret is sound; `cast_slice`
-            // still bounds- and align-checks rather than read past the map.
-            Some(m) => &bytemuck::cast_slice::<u8, T>(&m[..])[..self.base_len],
-            None => &[],
-        }
-    }
-
-    /// The `unit`-element slice for `node` (its whole vector or code block).
-    #[inline]
-    fn get(&self, node: u32, unit: usize) -> &[T] {
+    /// Run `f` with node `node`'s `unit`-element vector. For a base node the page
+    /// is held live for the duration of the call (the borrow never escapes the
+    /// cache); for a tail node it borrows the heap directly.
+    ///
+    /// `inline(always)` is load-bearing: this sits under every distance
+    /// computation in the graph, so the wrapper must fold into the caller even at
+    /// `-O0` or debug/test builds pay a call per comp. The `base.is_none()`
+    /// fast path — an in-RAM graph, the overwhelmingly common case — skips the
+    /// base-count division entirely and is exactly the pre-paging access.
+    #[inline(always)]
+    fn with<R>(&self, node: u32, unit: usize, f: impl FnOnce(&[T]) -> R) -> R {
         let node = node as usize;
+        let Some(base) = &self.base else {
+            let s = node * unit;
+            return f(&self.tail[s..s + unit]);
+        };
         let base_count = self.base_len / unit;
         if node < base_count {
-            let s = node * unit;
-            &self.base_slice()[s..s + unit]
+            base.with(node, f)
         } else {
             let s = (node - base_count) * unit;
-            &self.tail[s..s + unit]
+            f(&self.tail[s..s + unit])
         }
     }
 
@@ -122,9 +259,11 @@ impl<T: bytemuck::Pod> MappedVec<T> {
         self.base_len + self.tail.len()
     }
 
-    /// Heap bytes held — the tail only; the base is mmap, not heap.
+    /// Heap bytes held: the tail plus whatever the page cache currently holds
+    /// resident. The base file itself is not counted — that is the point.
     fn heap_bytes(&self) -> usize {
-        self.tail.len() * std::mem::size_of::<T>()
+        let cache = self.base.as_ref().map_or(0, PagedBase::cache_bytes);
+        self.tail.len() * std::mem::size_of::<T>() + cache
     }
 
     /// Total logical bytes (base + tail).
@@ -133,16 +272,18 @@ impl<T: bytemuck::Pod> MappedVec<T> {
     }
 
     /// Append every element in node order (base then tail) as raw bytes — the
-    /// on-disk sidecar layout, and what a later open mmaps back as the base.
+    /// on-disk sidecar layout, and what a later open reads back as the base.
     fn write_all(&self, out: &mut Vec<u8>) {
-        out.extend_from_slice(bytemuck::cast_slice(self.base_slice()));
+        if let Some(base) = &self.base {
+            base.append_bytes(out);
+        }
         out.extend_from_slice(bytemuck::cast_slice(&self.tail));
     }
 }
 
 /// Vector storage: full-precision `f32` or SQ8 codes with per-vector params.
 /// Both keep their raw data in a [`MappedVec`], so either precision can be
-/// mmap-backed; the SQ8 `params` stay in RAM (tiny next to the codes).
+/// paged from disk; the SQ8 `params` stay in RAM (tiny next to the codes).
 enum Store {
     Full(MappedVec<f32>),
     Sq8 {
@@ -165,33 +306,35 @@ impl Store {
     #[inline(always)]
     fn dot_query(&self, node: u32, dim: usize, q: &[f32], qsum: f32) -> f32 {
         match self {
-            Store::Full(vectors) => rro_core::simd::dot(vectors.get(node, dim), q),
-            Store::Sq8 { codes, params } => {
-                crate::quant::dot_query(codes.get(node, dim), &params[node as usize], q, qsum)
-            }
+            Store::Full(vectors) => vectors.with(node, dim, |v| rro_core::simd::dot(v, q)),
+            Store::Sq8 { codes, params } => codes.with(node, dim, |c| {
+                crate::quant::dot_query(c, &params[node as usize], q, qsum)
+            }),
         }
     }
 
     /// Dot between two stored vectors.
     fn dot_nodes(&self, a: u32, b: u32, dim: usize) -> f32 {
         match self {
-            Store::Full(vectors) => rro_core::simd::dot(vectors.get(a, dim), vectors.get(b, dim)),
-            Store::Sq8 { codes, params } => crate::quant::dot_codes(
-                codes.get(a, dim),
-                &params[a as usize],
-                codes.get(b, dim),
-                &params[b as usize],
-            ),
+            // Nested `with` holds both nodes' pages live for the computation.
+            Store::Full(vectors) => vectors.with(a, dim, |va| {
+                vectors.with(b, dim, |vb| rro_core::simd::dot(va, vb))
+            }),
+            Store::Sq8 { codes, params } => codes.with(a, dim, |ca| {
+                codes.with(b, dim, |cb| {
+                    crate::quant::dot_codes(ca, &params[a as usize], cb, &params[b as usize])
+                })
+            }),
         }
     }
 
     /// The (possibly lossy) full-precision vector of `node`.
     fn materialize(&self, node: u32, dim: usize) -> Vec<f32> {
         match self {
-            Store::Full(vectors) => vectors.get(node, dim).to_vec(),
-            Store::Sq8 { codes, params } => {
-                crate::quant::decode(codes.get(node, dim), &params[node as usize])
-            }
+            Store::Full(vectors) => vectors.with(node, dim, <[f32]>::to_vec),
+            Store::Sq8 { codes, params } => codes.with(node, dim, |c| {
+                crate::quant::decode(c, &params[node as usize])
+            }),
         }
     }
 
@@ -205,8 +348,9 @@ impl Store {
         }
     }
 
-    /// Heap bytes held by vector storage — excludes the mmap base. This is the
-    /// number that stays small when a large graph is opened mmap-backed.
+    /// Heap bytes held by vector storage — the tail plus the bounded page cache,
+    /// never the on-disk base. This is the number that stays small when a large
+    /// graph is opened paged.
     fn heap_bytes(&self) -> usize {
         match self {
             Store::Full(vectors) => vectors.heap_bytes(),
@@ -710,17 +854,18 @@ impl AnnIndex {
         Some(head.into_index(config, store))
     }
 
-    // ---- split persistence: structure blob + mmap-able vector sidecar ----------
+    // ---- split persistence: structure blob + paged vector sidecar --------------
     //
     // 6a persists the whole graph — structure *and* vectors — as one blob, which
     // still pulls every vector into RAM on load. 6b splits them: the structure
-    // (small: ids, links, tombstones, SQ8 params) stays a blob, and the vectors
-    // go to a separate node-ordered file that a later open mmaps as the base. That
-    // is what lets RSS track the working set instead of the dataset.
+    // (small: ids, links, tombstones, SQ8 params) stays a blob, and the vectors go
+    // to a separate node-ordered file that a later open pages through a bounded
+    // cache ([`PagedBase`]) rather than reading whole. That is what lets RSS track
+    // the working set instead of the dataset.
 
     /// Serialize everything *except* the raw vectors — ids, links, tombstones,
     /// entry, and (for SQ8) the per-vector params. Pair with
-    /// [`AnnIndex::write_vectors`]; reload with [`AnnIndex::from_mmap`].
+    /// [`AnnIndex::write_vectors`]; reload with [`AnnIndex::from_paged`].
     pub fn to_structure_bytes(&self) -> Vec<u8> {
         let mut w = Vec::with_capacity(4 * 1024);
         w.extend_from_slice(b"RROS"); // magic: structure-only
@@ -736,10 +881,10 @@ impl AnnIndex {
         w
     }
 
-    /// Append the raw vectors in node order — the exact bytes a later open maps
-    /// back as the mmap base. Full: `n·dim` `f32` LE. SQ8: `n·dim` code
-    /// bytes (the params travel in the structure blob). No header, so the file
-    /// starts on a vector boundary and the mmap is naturally aligned.
+    /// Append the raw vectors in node order — the exact bytes a later open reads
+    /// back as the paged base. Full: `n·dim` `f32` LE. SQ8: `n·dim` code bytes
+    /// (the params travel in the structure blob). No header, so the file starts on
+    /// a vector boundary and page offsets are a plain multiple of the vector size.
     pub fn write_vectors(&self, out: &mut Vec<u8>) {
         match &self.store {
             Store::Full(v) => v.write_all(out),
@@ -748,14 +893,21 @@ impl AnnIndex {
     }
 
     /// Reconstruct a graph from a structure blob ([`AnnIndex::to_structure_bytes`])
-    /// plus a memory-mapped vector file ([`AnnIndex::write_vectors`]). The vectors
-    /// are *not* read into RAM — they stay in the mmap and page on demand.
+    /// plus its node-ordered vector file ([`AnnIndex::write_vectors`]). The vectors
+    /// are *not* read into RAM — they are paged through a bounded cache of
+    /// `cache_budget_bytes`, so a graph far larger than RAM opens and searches with
+    /// only its working set resident.
     ///
     /// Returns `None` (→ caller rebuilds) if the blob is not a current-version
     /// structure, the store precision disagrees with `config`, or the vector file
     /// is not exactly `n · dim` elements — a size mismatch means the sidecar does
     /// not match the structure, and trusting it would read the wrong bytes.
-    pub fn from_mmap(structure: &[u8], vectors: Arc<Mmap>, config: AnnConfig) -> Option<AnnIndex> {
+    pub fn from_paged(
+        structure: &[u8],
+        vectors: File,
+        config: AnnConfig,
+        cache_budget_bytes: usize,
+    ) -> Option<AnnIndex> {
         let mut r = ByteReader::new(structure);
         if r.take(4)? != b"RROS" || r.u8()? != 1 {
             return None;
@@ -769,22 +921,40 @@ impl AnnIndex {
         if quantized != config.quantized {
             return None;
         }
+        let n = head.ids.len();
         let dim = head.dim.unwrap_or(0);
-        let elems = head.ids.len().checked_mul(dim)?;
+        let elems = n.checked_mul(dim)?;
+        // An empty graph has no vectors and no file to page — stay in-RAM.
+        if n == 0 {
+            let store = if quantized {
+                Store::Sq8 {
+                    codes: MappedVec::in_ram(),
+                    params: Vec::new(),
+                }
+            } else {
+                Store::Full(MappedVec::in_ram())
+            };
+            return Some(head.into_index(config, store));
+        }
+        let file_bytes = vectors.metadata().ok()?.len() as usize;
         let store = if quantized {
             let params = read_params(&mut r)?;
-            if params.len() != head.ids.len() || vectors.len() != elems {
-                return None; // one code byte per dim; sidecar must match exactly
+            // One code byte per dim; the sidecar must match the structure exactly.
+            if params.len() != n || file_bytes != elems {
+                return None;
             }
             Store::Sq8 {
-                codes: MappedVec::mapped(vectors, elems),
+                codes: MappedVec::paged(PagedBase::new(vectors, dim, n, cache_budget_bytes), elems),
                 params,
             }
         } else {
-            if vectors.len() != elems * std::mem::size_of::<f32>() {
+            if file_bytes != elems * std::mem::size_of::<f32>() {
                 return None;
             }
-            Store::Full(MappedVec::mapped(vectors, elems))
+            Store::Full(MappedVec::paged(
+                PagedBase::new(vectors, dim, n, cache_budget_bytes),
+                elems,
+            ))
         };
         Some(head.into_index(config, store))
     }
@@ -824,9 +994,10 @@ impl AnnIndex {
         }
     }
 
-    /// Heap bytes held by vector storage — the mmap base is excluded, so this is
-    /// what stays small when a large graph is opened mmap-backed. Observability
-    /// behind the "RSS tracks the working set, not the dataset" property.
+    /// Heap bytes held by vector storage — the tail plus the bounded page cache,
+    /// never the on-disk base. Stays small (bounded by the cache budget) when a
+    /// large graph is opened paged. Observability behind the "RSS tracks the
+    /// working set, not the dataset" property.
     pub fn heap_vector_bytes(&self) -> usize {
         self.store.heap_bytes()
     }
@@ -1162,12 +1333,10 @@ mod tests {
         assert!(AnnIndex::from_bytes(&bytes, AnnConfig::default()).is_none());
     }
 
-    /// The structure blob and vector sidecar together reconstruct the exact same
-    /// bytes as the single-blob `to_bytes` would carry — proven here in-crate
-    /// without mmap (the mmap path itself is covered in `tests/mmap.rs`, which can
-    /// use the unsafe `Mmap::map` that this crate forbids). We rebuild an in-RAM
-    /// graph from the split parts by concatenating structure + a Full store tag +
-    /// vectors into the `to_bytes` layout and checking search is unchanged.
+    /// The structure blob omits the vectors and the sidecar carries exactly the
+    /// vector bytes — the split that lets a later open page the vectors instead of
+    /// loading them. The full paged reload + identical-search property is covered
+    /// in `tests/paged.rs` (an integration test, which can open a real file).
     #[test]
     fn structure_plus_vectors_carry_everything_to_bytes_does() {
         let (idx, _) = build(500, 24);
