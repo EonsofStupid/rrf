@@ -7,7 +7,7 @@ body:
       value: |
         **This is the most welcome issue you can file.**
 
-        RRF's whole bet is that a fully-owned engine measured honestly beats a stack of
+        RRO's whole bet is that a fully-owned engine measured honestly beats a stack of
         wrappers measured optimistically. That bet is only worth anything if the measurements
         survive a skeptic. A number that can't be reproduced is a bug, and a benchmark that
         flatters us is a worse bug than a slow query.
