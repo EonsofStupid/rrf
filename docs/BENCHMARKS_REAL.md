@@ -256,3 +256,56 @@ RRO_EVAL_DATA=eval-data/nfcorpus RRO_EMBED_BATCH=64 \
 RRO_EVAL_EXPORT_VECTORS=/tmp/real-vectors.jsonl \
   cargo run --release --bin rro-eval
 ```
+
+---
+
+## Finding 4 — every weightless default is lexical, and they punish the dense half
+
+_2026-07-17. Found by pointing the daemon at a real estate with a real embedder
+(Qwen3-Embedding-4B via llama.cpp) and asking it one question — the first dogfood
+of the recall spine. It failed immediately, three different ways, all the same
+way._
+
+The query was **"why does combining two retrievers make results worse"** against
+a document reading *"RRO fusion finding: on nfcorpus the optimal lexical weight
+is approximately zero…"*. Note there is almost no lexical overlap: no shared
+content word carries the meaning. Retrieving it is exactly what dense embeddings
+are *for*.
+
+| default | what it did to that result |
+|---|---|
+| `LexicalReranker` (the reranker default) | re-scored by BM25: the correct document got **0.0000** and sank to rank 3, beaten by an unrelated doc about a2a protocols that happened to share a word |
+| `HeuristicClassifier` (the classifier default) | verdict **`insufficient @ 0.00`** — it measures query-term *coverage*, so a semantically perfect answer with no shared tokens scores zero |
+| RRF (the fusion) | scores are `1/(60+rank)` — **rank-based, magnitude-free**. A hit at rank 1 scores 0.0164 whether it is perfect or garbage |
+
+These are not three bugs. They are one: **lexical and rank-based logic sitting in
+judgement over semantic retrieval.** Each is defensible in the weightless demo,
+where the embedder is a hash function and there is no semantics to destroy. Each
+becomes actively wrong the moment a real model is wired in — which is the only
+configuration anyone actually ships.
+
+### Consequences
+
+1. **Fixed:** `IdentityReranker` (`RRO_RERANKER=identity`) makes "keep recall's
+   ordering" expressible. It was not, before: the rerank stage cannot be omitted,
+   only filled, and the fallback was BM25. With it, the same query returns the
+   right document at rank 1 in 59 ms.
+2. **Open — no relevance gate exists.** Because RRF discards magnitude and the
+   readiness verdict is lexical, **there is no way for a caller to distinguish
+   "found the answer" from "found the nearest four things, none of which are
+   relevant"**. ANN always returns *k* neighbours, however distant. For a memory
+   product this is the core use case, and the plumbing for it is missing: `ask`
+   embeds server-side but RRF-scores; `query` accepts `score_threshold` but
+   requires the *client* to bring the vector. There is no server-side-embed +
+   score-thresholded recall.
+3. This is the same root cause as Finding 1. RRF throwing away score magnitude is
+   why fusion cannot be weighted usefully **and** why relevance cannot be gated.
+   It is why Qdrant ships DBSF alongside RRF, and it is the argument for the
+   per-query fusion strategy work rather than another constant.
+
+### Not fixed here, deliberately
+
+`LexicalReranker` remains the default. Over a *dense-only* store it **adds**
+lexical signal, which is the one case it earns its place. Changing a default that
+every existing caller inherits is a measured decision, not a drive-by — it needs
+the train/dev/test split, not this page.
