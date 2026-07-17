@@ -11,17 +11,21 @@ _Reconciled 2026-07-17. Phases 0–4 + shape-as-early-intent done and merged to 
 
 ## The goal, stated exactly
 
-**One engine: everything SurrealDB and Qdrant have, combined, plus RRD + embedder
-+ reranker + classifier, over RocksDB (`connxism`) — and turnkey, meaning fully
-built and fully tested, not packaged.** Then pulled into clyffy as one config
-line. Proof last, on real data.
+**One engine — RRO — with the vector, graph (connectome), and query capabilities
+a memory engine needs, plus RRD + embedder + reranker + classifier, over RocksDB
+(`connxism`), and turnkey: fully built and fully tested.** SurrealDB and Qdrant
+were **guidance absorbed, not authorities to match** — there is no SurrealDB in
+this code; the map layer is `connectome` and the engine is RRO. Then pulled into
+clyffy as one config line. Proof last, on real data.
 
 ## Where it actually stands
 
-RRO today is **a strong Qdrant-class vector engine + a graph layer + its own query
-language + the RRD/model spine**. That is genuinely more than Qdrant ships. It is
-**not** yet SurrealDB's data model, it is missing Qdrant's headline retrieval
-feature, and it has none of either product's serving surface.
+RRO today is **a strong vector engine + the connectome graph layer + its own
+query language (RRQL) + GraphQL + the RRD/model spine**. What's still open: the
+full data model (transactions ✅, but namespaces and schemafull enforcement are
+not built), the RAM-scale story (mmap/segments), and the broader serving surface.
+Those are capabilities the engine is still growing into — not a gap against any
+other product.
 
 The three things most often asked about:
 
@@ -69,9 +73,13 @@ Verified by reading code *and call sites*, not `README`/`ASSESSMENT` (both stale
 
 ---
 
-## THE PARITY MATRIX — every remaining gap, mapped to a phase
+## THE CAPABILITY MATRIX — every remaining gap, mapped to a phase
 
-### From SurrealDB
+The columns are capabilities a memory engine wants, grouped by which reference
+tool the *idea* is associated with — **not** a scoreboard against them. RRO
+implements the ones it has its own way. There is no SurrealDB or Qdrant in the code.
+
+### Map / document capabilities (the connectome side)
 
 | capability | status | where | phase |
 |---|---|---|---|
@@ -93,7 +101,7 @@ Verified by reading code *and call sites*, not `README`/`ASSESSMENT` (both stale
 | Graph traversal | ✅ | `rels.rs` | — |
 | Change feeds | ✅ | `model.rs`, `keys.rs` | — |
 
-### From Qdrant
+### Vector capabilities
 
 | capability | status | where | phase |
 |---|---|---|---|
