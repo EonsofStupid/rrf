@@ -9,6 +9,7 @@
 //! - `rro_query`   — the typed query plane: filter DSL (must/should/
 //!   must_not over eq/any/range/exists), score threshold, lean payload.
 //! - `rro_index`   — ingest documents.
+//! - `rro_tx`      — a sequence of upserts/removes applied as one atomic transaction.
 //! - `rro_changes` — page the durable changefeed.
 //!
 //! MCP client config (e.g. Claude-family desktop/CLI):
@@ -86,6 +87,15 @@ fn tool_list() -> serde_json::Value {
                     "required": ["id", "text"]
                 } } },
                 "required": ["docs"]
+            }
+        },
+        {
+            "name": "rro_tx",
+            "description": "Apply a sequence of writes as ONE atomic transaction: all commit or none. Body: {\"ops\": [{\"upsert\": [<doc>...]}, {\"remove\": \"<id>\"}]}. Upserts are embedded server-side; a failure anywhere rolls the whole batch back.",
+            "inputSchema": {
+                "type": "object",
+                "properties": { "ops": { "type": "array", "items": { "type": "object" } } },
+                "required": ["ops"]
             }
         },
         {
@@ -186,6 +196,14 @@ async fn call_tool(client: &Client, name: &str, args: &serde_json::Value) -> ser
                     .map_err(|e| e.to_string()),
                 Err(e) => Err(format!("bad docs: {e}")),
             }
+        }
+        "rro_tx" => {
+            let ops = args.get("ops").cloned().unwrap_or(serde_json::json!([]));
+            client
+                .transaction(ops)
+                .await
+                .map(|n| serde_json::json!({ "committed": n }))
+                .map_err(|e| e.to_string())
         }
         "rro_changes" => {
             let since = args.get("since_seq").and_then(|v| v.as_u64()).unwrap_or(0);

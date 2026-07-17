@@ -65,9 +65,22 @@ impl ReasonReadyObject {
         if docs.is_empty() {
             return self.recall.len().await;
         }
+        let records = self.embed_documents(docs).await?;
+        self.recall.upsert(records).await?;
+        self.recall.len().await
+    }
+
+    /// Embed documents into upsert-ready records **without** writing them.
+    ///
+    /// This is the embed half of [`index`](Self::index), split out because a
+    /// transaction needs the records built before it opens: embedding is a model
+    /// call that can fail, and it must fail *before* any durable write, not
+    /// half-way through a batch. The `tx` verb embeds every upsert here first,
+    /// then commits the resulting records and any removes as one atomic unit.
+    pub async fn embed_documents(&self, docs: Vec<Document>) -> Result<Vec<VectorRecord>> {
         let texts: Vec<String> = docs.iter().map(|d| d.text.clone()).collect();
         let embeddings = self.embedder.embed_documents(&texts).await?;
-        let records: Vec<VectorRecord> = docs
+        Ok(docs
             .into_iter()
             .zip(embeddings)
             .map(|(d, e)| {
@@ -75,9 +88,7 @@ impl ReasonReadyObject {
                 r.metadata = d.metadata;
                 r
             })
-            .collect();
-        self.recall.upsert(records).await?;
-        self.recall.len().await
+            .collect())
     }
 
     /// Run one full pass for `query`: embed → recall → rerank → classify.
