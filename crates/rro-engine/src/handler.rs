@@ -70,9 +70,23 @@ impl Handler for FlowNode {
             })))),
 
             // `ask` / `recall`: run the flow for `body.query`.
+            // `ask`: the full pass. Body: {"query": "...", "fields": {...}}.
+            //
+            // `fields` is optional and is the shaping input: RRD fingerprints
+            // shape from field names and types, so a caller that sends a
+            // COSTAR-aligned map (context/objective/style/tone/audience/response)
+            // gets a real, distinct sliver. A caller that sends nothing gets
+            // `sliver=0, mode=unshaped` — the same shape as every other bare
+            // query, which is why the baseline learns nothing from them.
             "ask" | "recall" => {
                 let query = msg.body.get("query").and_then(|v| v.as_str()).unwrap_or("");
-                let result = self.flow.ask(query).await?;
+                let fields = msg
+                    .body
+                    .get("fields")
+                    .and_then(|v| v.as_object())
+                    .map(|o| o.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
+                    .unwrap_or_default();
+                let result = self.flow.ask_with(query, &fields).await?;
                 Ok(Some(msg.reply(serde_json::to_value(&result)?)))
             }
 
