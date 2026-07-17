@@ -16,6 +16,7 @@ pub mod semconv;
 pub mod simd;
 pub mod text;
 pub mod time;
+pub mod toon;
 pub mod traits;
 mod turn;
 pub mod types;

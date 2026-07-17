@@ -87,7 +87,24 @@ impl Handler for FlowNode {
                     .map(|o| o.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
                     .unwrap_or_default();
                 let result = self.flow.ask_with(query, &fields).await?;
-                Ok(Some(msg.reply(serde_json::to_value(&result)?)))
+                // Negotiate the LLM-ready context encoding: serve TOON if the
+                // client accepts it, else JSON plus a recommendation to enable it.
+                let accepts_toon = msg
+                    .body
+                    .get("accepts_toon")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or_else(|| {
+                        matches!(
+                            msg.body.get("format").and_then(|v| v.as_str()),
+                            Some("toon")
+                        )
+                    });
+                let context = rro_core::toon::render_candidates(&result.candidates, accepts_toon);
+                let mut reply = serde_json::to_value(&result)?;
+                if let Some(obj) = reply.as_object_mut() {
+                    obj.insert("context".into(), serde_json::to_value(&context)?);
+                }
+                Ok(Some(msg.reply(reply)))
             }
 
             // `map`: run the flow and return the connectome graph.
