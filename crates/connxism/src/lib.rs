@@ -40,7 +40,7 @@ pub use model::{
 };
 pub use rels::{Relation, TraversalSpec};
 /// Re-exported from the core contract so estate consumers keep one import.
-pub use rro_core::{Condition, EstateQuery, Filter, HybridWeights};
+pub use rro_core::{Condition, EstateQuery, Filter, FusionMode, HybridWeights};
 pub use store::{ConnXRecall, WriteOp};
 pub use strategies::Group;
 

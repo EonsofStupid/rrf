@@ -17,10 +17,7 @@ use rro_core::{Candidate, Embedding, Id, Recall, Result, RroError, VectorRecord}
 use tokio::sync::Mutex;
 
 use crate::estate::{rocks_err, Db, Estate};
-use crate::index::{
-    bm25_scores, reciprocal_rank_fusion, reciprocal_rank_fusion_weighted, Bm25Params, Posting,
-    Postings,
-};
+use crate::index::{bm25_scores, reciprocal_rank_fusion, Bm25Params, Posting, Postings};
 use crate::keys::{
     self, CF_DOCS, CF_FEED, CF_META, CF_PIDX, CF_TERMS, CF_VECS, META_DOC_COUNT, META_ESTATE,
     META_FEED_SEQ, META_SHAPES, META_TOTAL_TOKENS,
@@ -83,6 +80,14 @@ impl Estate {
     }
 }
 
+/// Map candidates to `(id, score)` for the fusion functions.
+fn scored_ids(cands: &[Candidate]) -> Vec<(String, f32)> {
+    cands
+        .iter()
+        .map(|c| (c.id.as_str().to_string(), c.score))
+        .collect()
+}
+
 impl ConnXRecall {
     /// Hybrid dense+lexical recall, fusing with explicit per-arm `weights`.
     ///
@@ -96,6 +101,7 @@ impl ConnXRecall {
         query: &Embedding,
         top_k: usize,
         weights: rro_core::HybridWeights,
+        mode: rro_core::FusionMode,
     ) -> Result<Vec<Candidate>> {
         if top_k == 0 {
             return Ok(Vec::new());
@@ -119,18 +125,10 @@ impl ConnXRecall {
                 lexical_topk_blocking(&db, params, &terms, depth)?
             };
 
-            // …fused by reciprocal rank fusion.
-            let lists = [
-                dense
-                    .iter()
-                    .map(|c| c.id.as_str().to_string())
-                    .collect::<Vec<_>>(),
-                lexical
-                    .iter()
-                    .map(|c| c.id.as_str().to_string())
-                    .collect::<Vec<_>>(),
-            ];
-            let fused = reciprocal_rank_fusion_weighted(&lists, &weights, RRF_K);
+            // …fused by the chosen strategy. Scored lists carry `(id, score)` so
+            // DBSF can use the magnitudes; RRF ignores them and keeps the order.
+            let scored = [scored_ids(&dense), scored_ids(&lexical)];
+            let fused = crate::index::fuse(mode, &scored, &weights, RRF_K);
 
             let mut out = Vec::with_capacity(top_k);
             for (doc_id, score) in fused.into_iter().take(top_k) {
@@ -419,6 +417,7 @@ impl ConnXRecall {
         top_k: usize,
         allow: &std::collections::HashSet<String>,
         weights: rro_core::HybridWeights,
+        mode: rro_core::FusionMode,
     ) -> Result<Vec<Candidate>> {
         if top_k == 0 || allow.is_empty() {
             return Ok(Vec::new());
@@ -442,30 +441,32 @@ impl ConnXRecall {
         let weights = weights.as_slice();
 
         tokio::task::spawn_blocking(move || {
-            // Filter-aware dense ranking off the graph.
-            let dense: Vec<String> = {
+            // Filter-aware dense ranking off the graph — keep the scores for DBSF.
+            let dense: Vec<(String, f32)> = {
                 let graph = ann.read().expect("ann lock");
                 graph
                     .search_filtered(&q, top_k, top_k.max(64), &allow_ids)
                     .into_iter()
-                    .map(|(id, _)| id.as_str().to_string())
+                    .map(|(id, s)| (id.as_str().to_string(), s))
                     .collect()
             };
 
             // Lexical ranking, restricted to the allowed set.
-            let lexical: Vec<String> = if terms.is_empty() {
+            let lexical: Vec<(String, f32)> = if terms.is_empty() {
                 Vec::new()
             } else {
                 let mut lex = lexical_blocking(&db, params, &terms, top_k * 4)?;
                 lex.retain(|c| allow_str.contains(c.id.as_str()));
-                lex.into_iter().map(|c| c.id.as_str().to_string()).collect()
+                lex.into_iter()
+                    .map(|c| (c.id.as_str().to_string(), c.score))
+                    .collect()
             };
 
-            let fused = if lexical.is_empty() {
-                dense
+            let fused: Vec<String> = if lexical.is_empty() {
+                dense.into_iter().map(|(id, _)| id).collect()
             } else {
-                let lists = [dense, lexical];
-                reciprocal_rank_fusion_weighted(&lists, &weights, RRF_K)
+                let scored = [dense, lexical];
+                crate::index::fuse(mode, &scored, &weights, RRF_K)
                     .into_iter()
                     .map(|(id, _)| id)
                     .collect()
@@ -657,8 +658,14 @@ impl Recall for ConnXRecall {
         // The port carries no query, so it fuses 1:1 (plain RRF). Callers that
         // have an EstateQuery go through `hybrid_weighted` and honour its
         // `fusion` weights.
-        self.hybrid_weighted(query_text, query, top_k, rro_core::HybridWeights::default())
-            .await
+        self.hybrid_weighted(
+            query_text,
+            query,
+            top_k,
+            rro_core::HybridWeights::default(),
+            rro_core::FusionMode::Rrf,
+        )
+        .await
     }
 
     async fn len(&self) -> Result<usize> {
