@@ -25,13 +25,13 @@ fn tool_list() -> serde_json::Value {
         {
             "name": "rro_sql",
             "description": "Run one RRQL statement — the Reason Ready Query Language. \
-Reads: SELECT * [FROM collection] [WHERE ...] [LIMIT n]; conditions are \
-`k = v`, `k IN (..)`, `k >= n`, `EXISTS(k)`, `k INSIDE RADIUS(lat,lon,m)`, \
-`k INSIDE BOX(...)`, combined with AND / OR / NOT. Graph: RELATE a -> verb -> b; \
-TRAVERSE a -> verb -> DEPTH n; INFO. Writes: DEFINE INDEX ON f | DEFINE ALIAS a FOR c | \
-REMOVE ALIAS a | REMOVE COLLECTION c | UPDATE id SET k = v (merges) | \
-UPDATE id CONTENT SET k = v (replaces) | DELETE id | DELETE PAYLOAD id [(k,..)]. \
-Set read_only:true to refuse writes. SELECT is embedded server-side.",
+    Reads: SELECT * [FROM collection] [WHERE ...] [LIMIT n]; conditions are \
+    `k = v`, `k IN (..)`, `k >= n`, `EXISTS(k)`, `k INSIDE RADIUS(lat,lon,m)`, \
+    `k INSIDE BOX(...)`, combined with AND / OR / NOT. Graph: RELATE a -> verb -> b; \
+    TRAVERSE a -> verb -> DEPTH n; INFO. Writes: DEFINE INDEX ON f | DEFINE ALIAS a FOR c | \
+    REMOVE ALIAS a | REMOVE COLLECTION c | UPDATE id SET k = v (merges) | \
+    UPDATE id CONTENT SET k = v (replaces) | DELETE id | DELETE PAYLOAD id [(k,..)]. \
+    Set read_only:true to refuse writes. SELECT is embedded server-side.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -138,10 +138,7 @@ async fn call_tool(client: &Client, name: &str, args: &serde_json::Value) -> ser
                 .get("read_only")
                 .and_then(|b| b.as_bool())
                 .unwrap_or(false);
-            client
-                .sql(stmt, read_only)
-                .await
-                .map_err(|e| e.to_string())
+            client.sql(stmt, read_only).await.map_err(|e| e.to_string())
         }
         "rro_ask" => {
             let query = args.get("query").and_then(|q| q.as_str()).unwrap_or("");

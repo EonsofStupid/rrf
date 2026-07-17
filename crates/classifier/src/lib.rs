@@ -17,6 +17,6 @@ mod heuristic;
 pub use daemon::{DaemonHandle, ReasonReadyDaemon};
 pub use heuristic::HeuristicClassifier;
 
+pub use constrained::{ConstrainedClassifier, ConstrainedConfig, ReadyLabel};
 /// Re-export so downstream crates can name the trait without a second dep.
 pub use rro_core::Classifier;
-pub use constrained::{ConstrainedClassifier, ConstrainedConfig, ReadyLabel};

@@ -87,11 +87,17 @@ async fn the_query_weight_reaches_the_fusion() {
     let recall = disagreeing_corpus(&estate).await;
 
     let dense_heavy = recall
-        .query(query_with(HybridWeights { dense: 20.0, lexical: 1.0 }))
+        .query(query_with(HybridWeights {
+            dense: 20.0,
+            lexical: 1.0,
+        }))
         .await
         .unwrap();
     let lexical_heavy = recall
-        .query(query_with(HybridWeights { dense: 1.0, lexical: 20.0 }))
+        .query(query_with(HybridWeights {
+            dense: 1.0,
+            lexical: 20.0,
+        }))
         .await
         .unwrap();
 
@@ -116,9 +122,15 @@ async fn the_default_is_still_plain_rrf() {
     let estate = Estate::open(dir.path(), "fusion").unwrap();
     let recall = disagreeing_corpus(&estate).await;
 
-    let defaulted = recall.query(query_with(HybridWeights::default())).await.unwrap();
+    let defaulted = recall
+        .query(query_with(HybridWeights::default()))
+        .await
+        .unwrap();
     let explicit_1_1 = recall
-        .query(query_with(HybridWeights { dense: 1.0, lexical: 1.0 }))
+        .query(query_with(HybridWeights {
+            dense: 1.0,
+            lexical: 1.0,
+        }))
         .await
         .unwrap();
 
@@ -142,7 +154,10 @@ async fn zero_weight_ablates_an_arm() {
     let recall = disagreeing_corpus(&estate).await;
 
     let dense_only = recall
-        .query(query_with(HybridWeights { dense: 1.0, lexical: 0.0 }))
+        .query(query_with(HybridWeights {
+            dense: 1.0,
+            lexical: 0.0,
+        }))
         .await
         .unwrap();
 

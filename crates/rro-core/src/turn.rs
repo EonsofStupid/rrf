@@ -1,8 +1,8 @@
 //! The turn: one pass through the engine, and the id that ties its signals
 //! together.
 //!
-//! The engine already emitted `flow.stage` for every stage — but nothing carried
-//! a correlation id, so two concurrent queries interleaved their events in the
+//! The engine emitted a signal for every stage — but nothing carried a
+//! correlation id, so two concurrent queries interleaved their events in the
 //! stream with no way to tell them apart. Aggregates were visible; **one query's
 //! journey was not**. That is the difference between telemetry you can average
 //! and telemetry you can *read*.
@@ -11,18 +11,22 @@
 //! the stream can be replayed into exactly one turn —
 //!
 //! ```text
-//! turn 7f3a…  rrd       gate=pass mode=unshaped        0.006 ms
-//! turn 7f3a…  embed     dim=2560                      42.979 ms
-//! turn 7f3a…  intent    tags=[code, retrieval]         0.011 ms
-//! turn 7f3a…  recall    candidates=100                 3.724 ms
-//! turn 7f3a…  rerank    kept=10                     1081.122 ms
-//! turn 7f3a…  classify  ready=true conf=0.82           0.192 ms
-//! turn 7f3a…  turn      total=1128.0 ms  ready=true
+//! turn 41  shape    gate=pass mode=unshaped        0.006 ms
+//! turn 41  embed    dim=2560                      42.979 ms
+//! turn 41  intent   tags=[code, retrieval]         0.011 ms
+//! turn 41  recall   candidates=100                 3.724 ms
+//! turn 41  rerank   kept=10                     1081.122 ms
+//! turn 41  reason   ready=true conf=0.82           0.192 ms
+//! turn 41  turn     total=1128.0 ms  ready=true
 //! ```
 //!
 //! That is the "full turn" — and it is what makes a benchmark number
 //! interrogable instead of merely reported: when an arm scores badly you can
 //! open the turn and see which stage did it.
+//!
+//! The id is not only for the log reader. [`crate::RecallResult::turn`] carries
+//! it back to the caller, because a result you cannot join to its own events is
+//! a result you cannot explain.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -33,7 +37,17 @@ use std::sync::atomic::{AtomicU64, Ordering};
 /// nothing — and it only has to be unique within a node's event stream, which is
 /// the scope anyone reassembles a turn from.
 #[derive(
-    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default, serde::Serialize, serde::Deserialize,
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+    Default,
+    serde::Serialize,
+    serde::Deserialize,
 )]
 pub struct TurnId(u64);
 
@@ -73,16 +87,15 @@ impl From<u64> for TurnId {
 
 /// Emit one stage signal, correlated to `turn`.
 ///
-/// Every stage of every pass goes through here, so the shape is uniform:
-/// `{turn, stage, ms, …}`. A stage that invented its own field names would be a
-/// stage nobody can query for.
-/// The field names come from [`crate::semconv`], which mirrors clyffy's
-/// `clyffy-telemetry` vocabulary verbatim — `devpulse.stage`,
-/// `devpulse.latency_ms`. This module first shipped its own `stage`/`ms`/`turn`
-/// keys, which meant RRO's stream and clyffy's stream described the same five
-/// stages in two different languages and could not be read together. RRO is
-/// pulled INTO clyffy; conforming is the whole point.
-pub fn emit_stage(turn: TurnId, stage: &str, since: std::time::Instant, mut fields: serde_json::Value) {
+/// Every stage of every pass goes through here, so the shape is uniform. The
+/// field names come from [`crate::semconv`] rather than being written inline: a
+/// stage that invents its own field names is a stage nobody can query for.
+pub fn emit_stage(
+    turn: TurnId,
+    stage: &str,
+    since: std::time::Instant,
+    mut fields: serde_json::Value,
+) {
     use crate::semconv::attr;
     if let Some(obj) = fields.as_object_mut() {
         obj.insert(attr::TURN.to_string(), serde_json::json!(turn.get()));
@@ -114,7 +127,10 @@ mod tests {
     fn ids_are_unique_and_monotonic() {
         let a = TurnId::next();
         let b = TurnId::next();
-        assert!(b.get() > a.get(), "a later turn must sort after an earlier one");
+        assert!(
+            b.get() > a.get(),
+            "a later turn must sort after an earlier one"
+        );
         assert_ne!(a, b);
     }
 
@@ -125,9 +141,14 @@ mod tests {
         // type exists to prevent.
         let n = 64;
         let handles: Vec<_> = (0..n)
-            .map(|_| std::thread::spawn(|| (0..100).map(|_| TurnId::next().get()).collect::<Vec<_>>()))
+            .map(|_| {
+                std::thread::spawn(|| (0..100).map(|_| TurnId::next().get()).collect::<Vec<_>>())
+            })
             .collect();
-        let mut all: Vec<u64> = handles.into_iter().flat_map(|h| h.join().unwrap()).collect();
+        let mut all: Vec<u64> = handles
+            .into_iter()
+            .flat_map(|h| h.join().unwrap())
+            .collect();
         let total = all.len();
         all.sort_unstable();
         all.dedup();
@@ -143,7 +164,10 @@ mod tests {
         let mut v = serde_json::json!({ "gate": "pass" });
         if let Some(o) = v.as_object_mut() {
             o.insert(attr::TURN.into(), serde_json::json!(turn.get()));
-            o.insert(attr::STAGE.into(), serde_json::json!(crate::semconv::stage::SHAPE));
+            o.insert(
+                attr::STAGE.into(),
+                serde_json::json!(crate::semconv::stage::SHAPE),
+            );
             o.insert(attr::LATENCY_MS.into(), serde_json::json!(0.006));
         }
         assert_eq!(v[attr::TURN], serde_json::json!(turn.get()));

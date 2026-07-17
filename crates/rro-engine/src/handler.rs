@@ -296,7 +296,10 @@ impl Handler for FlowNode {
                         a.iter()
                             .filter_map(|p| {
                                 let p = p.as_array()?;
-                                Some((p.first()?.as_str()?.to_string(), p.get(1)?.as_str()?.to_string()))
+                                Some((
+                                    p.first()?.as_str()?.to_string(),
+                                    p.get(1)?.as_str()?.to_string(),
+                                ))
                             })
                             .collect()
                     })

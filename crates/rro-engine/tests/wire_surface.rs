@@ -244,7 +244,10 @@ async fn graph_and_discover_verbs_match_local_calls() {
     assert!(!local_d.is_empty(), "local discover returned nothing");
 
     // --- bad input errors across the wire rather than panicking ----------
-    assert!(client.traverse(vec![], vec![], true, false, 1, 10).await.is_err());
+    assert!(client
+        .traverse(vec![], vec![], true, false, 1, 10)
+        .await
+        .is_err());
 }
 
 /// B4's gate: RRQL over the wire must equal RRQL applied locally. If they
@@ -273,7 +276,10 @@ async fn rrql_over_the_wire_matches_local_rrql() {
     // --- a write over the wire actually lands ------------------------------
     client.sql("DEFINE INDEX ON team", false).await.unwrap();
     assert!(
-        estate.payload_indexes().unwrap().contains(&"team".to_string()),
+        estate
+            .payload_indexes()
+            .unwrap()
+            .contains(&"team".to_string()),
         "the index must exist after the wire call — not just be reported"
     );
 
@@ -290,9 +296,11 @@ async fn rrql_over_the_wire_matches_local_rrql() {
 
     // --- graph over the wire ----------------------------------------------
     client.sql("RELATE d0 -> cites -> d1", false).await.unwrap();
-    let walked = client.sql("TRAVERSE d0 -> cites -> DEPTH 1", false).await.unwrap();
-    let ids: Vec<String> =
-        serde_json::from_value(walked.get("ids").cloned().unwrap()).unwrap();
+    let walked = client
+        .sql("TRAVERSE d0 -> cites -> DEPTH 1", false)
+        .await
+        .unwrap();
+    let ids: Vec<String> = serde_json::from_value(walked.get("ids").cloned().unwrap()).unwrap();
     let spec = connxism::TraversalSpec {
         verbs: vec!["cites".into()],
         outbound: true,
@@ -307,7 +315,10 @@ async fn rrql_over_the_wire_matches_local_rrql() {
     );
 
     // --- SELECT is embedded server-side: a thin client needs no weights ----
-    let hits = client.sql("SELECT * WHERE team = 'red' LIMIT 5", true).await.unwrap();
+    let hits = client
+        .sql("SELECT * WHERE team = 'red' LIMIT 5", true)
+        .await
+        .unwrap();
     let cands = hits.get("candidates").and_then(|c| c.as_array()).unwrap();
     assert!(!cands.is_empty(), "SELECT over the wire returned nothing");
     assert!(cands.len() <= 5, "LIMIT is honored over the wire");
@@ -326,5 +337,8 @@ async fn rrql_over_the_wire_matches_local_rrql() {
 
     // --- a syntax error comes back as an error, with the span --------------
     let bad = client.sql("SELECT * WHERE year >= AND x = 1", true).await;
-    assert!(bad.is_err(), "a syntax error must surface, not return empty results");
+    assert!(
+        bad.is_err(),
+        "a syntax error must surface, not return empty results"
+    );
 }

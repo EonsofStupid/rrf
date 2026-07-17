@@ -45,7 +45,11 @@ fn load_vectors(path: &str) -> Vec<(String, Embedding)> {
         let Some(arr) = v.get("vector").and_then(|x| x.as_array()) else {
             continue;
         };
-        let vec: Vec<f32> = arr.iter().filter_map(|x| x.as_f64()).map(|x| x as f32).collect();
+        let vec: Vec<f32> = arr
+            .iter()
+            .filter_map(|x| x.as_f64())
+            .map(|x| x as f32)
+            .collect();
         let id = v
             .get("id")
             .and_then(|i| i.as_str())
@@ -65,11 +69,17 @@ fn exact_top_k(corpus: &[(String, Embedding)], q: &Embedding, k: usize) -> Vec<S
         .map(|(id, v)| (q.cosine(v), id.as_str()))
         .collect();
     scored.sort_by(|a, b| b.0.total_cmp(&a.0));
-    scored.into_iter().take(k).map(|(_, id)| id.to_string()).collect()
+    scored
+        .into_iter()
+        .take(k)
+        .map(|(_, id)| id.to_string())
+        .collect()
 }
 
 fn vectors() -> Option<Vec<(String, Embedding)>> {
-    let p = std::env::var("RRO_TEST_VECTORS").ok().filter(|s| !s.trim().is_empty())?;
+    let p = std::env::var("RRO_TEST_VECTORS")
+        .ok()
+        .filter(|s| !s.trim().is_empty())?;
     let v = load_vectors(&p);
     assert!(
         v.len() >= 500,
@@ -118,14 +128,21 @@ fn recall_at_10_on_real_vectors_across_ef() {
     // Queries: real vectors held out of nothing — a doc is its own best probe,
     // and the interesting question is whether the graph finds its true
     // neighbours, so probing WITH corpus vectors is the honest hard case.
-    let probes: Vec<&(String, Embedding)> = corpus.iter().step_by(corpus.len() / 100).take(100).collect();
+    let probes: Vec<&(String, Embedding)> = corpus
+        .iter()
+        .step_by(corpus.len() / 100)
+        .take(100)
+        .collect();
 
     // Compute the oracle ONCE, outside the timed region. The first version of
     // this timed exact_top_k inside the ef loop, so `us/query` was ~4.2ms and
     // barely moved with ef — because it was measuring the brute-force oracle
     // (1200 x 2560-d dot products), not the beam. A latency column that does not
     // respond to the parameter being swept is measuring the wrong thing.
-    let truths: Vec<Vec<String>> = probes.iter().map(|(_, q)| exact_top_k(&corpus, q, 10)).collect();
+    let truths: Vec<Vec<String>> = probes
+        .iter()
+        .map(|(_, q)| exact_top_k(&corpus, q, 10))
+        .collect();
 
     println!("\n{:>6}  {:>10}  {:>12}", "ef", "recall@10", "us/query");
     let mut best_passing: Option<usize> = None;
@@ -155,7 +172,11 @@ fn recall_at_10_on_real_vectors_across_ef() {
             }
         }
         let recall = found as f64 / total as f64;
-        let mark = if recall >= 0.95 { " <- passes the 0.95 gate" } else { "" };
+        let mark = if recall >= 0.95 {
+            " <- passes the 0.95 gate"
+        } else {
+            ""
+        };
         println!("{ef:>6}  {recall:>10.4}  {us:>12.1}{mark}");
         if recall >= 0.95 && best_passing.is_none() {
             best_passing = Some(ef);
@@ -206,8 +227,11 @@ fn the_default_ef_holds_the_gate_on_real_vectors() {
     for (id, v) in &corpus {
         idx.insert(Id::from(id.clone()), v);
     }
-    let probes: Vec<&(String, Embedding)> =
-        corpus.iter().step_by((corpus.len() / 100).max(1)).take(100).collect();
+    let probes: Vec<&(String, Embedding)> = corpus
+        .iter()
+        .step_by((corpus.len() / 100).max(1))
+        .take(100)
+        .collect();
 
     let mut found = 0usize;
     let mut total = 0usize;

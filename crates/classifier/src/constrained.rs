@@ -30,7 +30,12 @@ use rro_core::{Candidate, Classifier, Readiness, Result, RroError};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 
-/// The verdict vocabulary. The schema is generated from this — see [`schema`].
+/// The verdict vocabulary.
+///
+/// The JSON schema handed to the constrained decoder is **generated from this
+/// enum**, so the grammar the model is held to and the type the code matches on
+/// cannot drift apart. Adding a variant here adds it to the grammar; there is no
+/// second list to forget to update.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ReadyLabel {
     /// The context answers the query.
@@ -167,7 +172,10 @@ impl ConstrainedClassifier {
         let mut ctx = String::new();
         for (i, c) in context.iter().take(self.cfg.context_k).enumerate() {
             let t = &c.text;
-            let cut = t.char_indices().nth(self.cfg.snippet_bytes).map_or(t.len(), |(i, _)| i);
+            let cut = t
+                .char_indices()
+                .nth(self.cfg.snippet_bytes)
+                .map_or(t.len(), |(i, _)| i);
             ctx.push_str(&format!("[{}] {}\n", i + 1, &t[..cut]));
         }
         if ctx.is_empty() {
@@ -298,7 +306,8 @@ fn confidence_from_logprobs(choice: &serde_json::Value) -> f32 {
 }
 
 async fn discover_model(host: &str, port: u16, timeout: Duration) -> Result<String> {
-    let req = format!("GET /v1/models HTTP/1.1\r\nHost: {host}:{port}\r\nConnection: close\r\n\r\n");
+    let req =
+        format!("GET /v1/models HTTP/1.1\r\nHost: {host}:{port}\r\nConnection: close\r\n\r\n");
     let raw = roundtrip(host, port, &req, timeout).await?;
     let text = String::from_utf8_lossy(&raw);
     let json = text
@@ -320,7 +329,11 @@ async fn discover_model(host: &str, port: u16, timeout: Duration) -> Result<Stri
                 .and_then(|s| s.as_str())
         })
         .map(str::to_string)
-        .ok_or_else(|| err(format!("could not discover a model from {host}:{port}/v1/models")))
+        .ok_or_else(|| {
+            err(format!(
+                "could not discover a model from {host}:{port}/v1/models"
+            ))
+        })
 }
 
 async fn roundtrip(host: &str, port: u16, req: &str, timeout: Duration) -> Result<Vec<u8>> {

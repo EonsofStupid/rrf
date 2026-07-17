@@ -360,7 +360,9 @@ pub fn lex(src: &str) -> Result<Vec<Token>, LexError> {
         }
 
         // number: -?digits(.digits)?(e[+-]?digits)?
-        if c.is_ascii_digit() || (c == '-' && i + 1 < b.len() && (b[i + 1] as char).is_ascii_digit()) {
+        if c.is_ascii_digit()
+            || (c == '-' && i + 1 < b.len() && (b[i + 1] as char).is_ascii_digit())
+        {
             i += 1;
             while i < b.len() && ((b[i] as char).is_ascii_digit() || b[i] == b'.') {
                 i += 1;
@@ -388,7 +390,9 @@ pub fn lex(src: &str) -> Result<Vec<Token>, LexError> {
 
         // bare identifier / keyword
         if c.is_ascii_alphabetic() || c == '_' {
-            while i < b.len() && ((b[i] as char).is_ascii_alphanumeric() || b[i] == b'_' || b[i] == b'.') {
+            while i < b.len()
+                && ((b[i] as char).is_ascii_alphanumeric() || b[i] == b'_' || b[i] == b'.')
+            {
                 i += 1;
             }
             let word = &src[start..i];
@@ -471,7 +475,10 @@ mod tests {
         assert_eq!(kinds("<="), vec![TokenKind::Lte, TokenKind::Eof]);
         assert_eq!(kinds(">="), vec![TokenKind::Gte, TokenKind::Eof]);
         assert_eq!(kinds("!="), vec![TokenKind::Neq, TokenKind::Eof]);
-        assert_eq!(kinds("< ="), vec![TokenKind::Lt, TokenKind::Eq, TokenKind::Eof]);
+        assert_eq!(
+            kinds("< ="),
+            vec![TokenKind::Lt, TokenKind::Eq, TokenKind::Eof]
+        );
     }
 
     #[test]
@@ -481,13 +488,19 @@ mod tests {
         assert_eq!(kinds(r"'it\'s'")[0], TokenKind::Str("it's".into()));
         assert_eq!(kinds(r"'a\\b'")[0], TokenKind::Str(r"a\b".into()));
         // a quote of the OTHER kind is just a character
-        assert_eq!(kinds("'say \"hi\"'")[0], TokenKind::Str("say \"hi\"".into()));
+        assert_eq!(
+            kinds("'say \"hi\"'")[0],
+            TokenKind::Str("say \"hi\"".into())
+        );
     }
 
     #[test]
     fn unterminated_string_points_at_the_opening_quote() {
         let e = lex("'oops").unwrap_err();
-        assert_eq!(e.span.0, 0, "the span must start at the quote that opened it");
+        assert_eq!(
+            e.span.0, 0,
+            "the span must start at the quote that opened it"
+        );
         assert!(e.message.contains("unterminated"));
     }
 
@@ -504,19 +517,28 @@ mod tests {
     fn minus_before_a_non_digit_is_not_a_number() {
         // `--` is a comment, and a bare `-` is not part of the v1 grammar; the
         // point is that neither silently lexes as a number.
-        assert_eq!(kinds("-- a comment\n42"), vec![TokenKind::Num(42.0), TokenKind::Eof]);
+        assert_eq!(
+            kinds("-- a comment\n42"),
+            vec![TokenKind::Num(42.0), TokenKind::Eof]
+        );
     }
 
     #[test]
     fn dotted_and_backticked_identifiers() {
-        assert_eq!(kinds("meta.author")[0], TokenKind::Ident("meta.author".into()));
+        assert_eq!(
+            kinds("meta.author")[0],
+            TokenKind::Ident("meta.author".into())
+        );
         assert_eq!(kinds("`odd name`")[0], TokenKind::Ident("odd name".into()));
     }
 
     #[test]
     fn unicode_in_strings_does_not_split_a_char() {
         // Byte-indexed lexers love to panic here.
-        assert_eq!(kinds("'héllo → 世界'")[0], TokenKind::Str("héllo → 世界".into()));
+        assert_eq!(
+            kinds("'héllo → 世界'")[0],
+            TokenKind::Str("héllo → 世界".into())
+        );
     }
 
     #[test]
@@ -534,7 +556,10 @@ mod tests {
     fn a_bare_multibyte_char_errors_instead_of_panicking() {
         for src in ["Ѩ", "a Ѩ b", "SELECT * WHERE Ѩ = 1", "→", "世界"] {
             let r = lex(src);
-            assert!(r.is_err(), "{src:?} should be a lex error, not a panic or a token");
+            assert!(
+                r.is_err(),
+                "{src:?} should be a lex error, not a panic or a token"
+            );
         }
     }
 
@@ -548,6 +573,10 @@ mod tests {
     #[test]
     fn unexpected_character_is_an_error_not_a_silent_skip() {
         let e = lex("a # b").unwrap_err();
-        assert!(e.message.contains('#'), "the error must name the character: {}", e.message);
+        assert!(
+            e.message.contains('#'),
+            "the error must name the character: {}",
+            e.message
+        );
     }
 }

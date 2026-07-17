@@ -10,8 +10,8 @@
 //! These are all pure-CPU. No weights, no servers, no network — RRD is the tier
 //! that exists precisely so those never get paid.
 
-use rro_core::{Embedding, Metadata};
 use rrd::{GateVerdict, Mode, Rrd, SourceStamp};
+use rro_core::{Embedding, Metadata};
 
 fn meta(pairs: &[(&str, &str)]) -> Metadata {
     let mut m = Metadata::new();
@@ -34,8 +34,15 @@ fn oversized_payload_is_blocked_and_never_distilled() {
 
     assert_eq!(rro.gate, GateVerdict::Block, "L0 must block an 8MB payload");
     // The short-circuit is the point: a blocked payload is returned UN-distilled.
-    assert_eq!(rro.mode, Mode::Unshaped, "blocked payload must not be shaped");
-    assert!(rro.tags.is_empty(), "blocked payload must not be tag-routed");
+    assert_eq!(
+        rro.mode,
+        Mode::Unshaped,
+        "blocked payload must not be shaped"
+    );
+    assert!(
+        rro.tags.is_empty(),
+        "blocked payload must not be tag-routed"
+    );
     assert!(
         rro.fields.is_empty(),
         "blocked payload must not have distilled fields"
@@ -63,7 +70,11 @@ fn ordinary_payload_passes_l0_and_gets_shaped() {
         &meta(&[("kind", "note")]),
         None,
     );
-    assert_ne!(rro.gate, GateVerdict::Block, "an ordinary note must not block");
+    assert_ne!(
+        rro.gate,
+        GateVerdict::Block,
+        "an ordinary note must not block"
+    );
     assert_eq!(rro.doc_id, "doc-ok");
 }
 
@@ -104,8 +115,8 @@ fn secret_bearing_text_is_signalled_not_silently_passed() {
     // flags or blocks is L0/L3's call; what must never happen is a secret
     // passing with no trace on the RRO.
     let flagged = rro.gate != GateVerdict::Pass;
-    let has_signal = format!("{:?}", rro.signals).contains("true")
-        || !format!("{:?}", rro.signals).is_empty();
+    let has_signal =
+        format!("{:?}", rro.signals).contains("true") || !format!("{:?}", rro.signals).is_empty();
     assert!(
         flagged || has_signal,
         "secret-bearing text produced no verdict and no signal: gate={:?} signals={:?}",
@@ -190,7 +201,11 @@ fn route_tags_is_deterministic_for_the_same_vector() {
 #[test]
 fn baseline_starts_cold() {
     let rrd = Rrd::new();
-    assert_eq!(rrd.baseline_observations(), 0, "a fresh RRD has seen nothing");
+    assert_eq!(
+        rrd.baseline_observations(),
+        0,
+        "a fresh RRD has seen nothing"
+    );
 }
 
 #[test]
@@ -227,7 +242,12 @@ fn snapshot_roundtrips_through_serde() {
     // the warm boot silently starts cold.
     let rrd = Rrd::new();
     for i in 0..5 {
-        rrd.distill(&format!("d{i}"), "text for the baseline", &Metadata::new(), None);
+        rrd.distill(
+            &format!("d{i}"),
+            "text for the baseline",
+            &Metadata::new(),
+            None,
+        );
     }
     let snap = rrd.baseline_snapshot();
     let json = serde_json::to_string(&snap).expect("snapshot must serialize");
@@ -236,7 +256,10 @@ fn snapshot_roundtrips_through_serde() {
 
     let restored = Rrd::new();
     restored.restore_baseline(back);
-    assert_eq!(restored.baseline_observations(), rrd.baseline_observations());
+    assert_eq!(
+        restored.baseline_observations(),
+        rrd.baseline_observations()
+    );
 }
 
 // ---------------------------------------------------------------------------

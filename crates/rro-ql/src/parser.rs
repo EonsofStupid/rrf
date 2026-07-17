@@ -39,7 +39,9 @@ impl Parser {
     }
 
     fn bump(&mut self) -> TokenKind {
-        let k = self.tokens[self.pos.min(self.tokens.len() - 1)].kind.clone();
+        let k = self.tokens[self.pos.min(self.tokens.len() - 1)]
+            .kind
+            .clone();
         if self.pos < self.tokens.len() - 1 {
             self.pos += 1;
         }
@@ -92,7 +94,10 @@ impl Parser {
         let span = self.span();
         match self.bump() {
             TokenKind::Num(n) => Ok(n),
-            other => Err(QlError::new(format!("expected a number, found {other}"), span)),
+            other => Err(QlError::new(
+                format!("expected a number, found {other}"),
+                span,
+            )),
         }
     }
 
@@ -103,7 +108,10 @@ impl Parser {
             TokenKind::Num(n) => Ok(Value::Num(n)),
             TokenKind::Bool(b) => Ok(Value::Bool(b)),
             TokenKind::Null => Ok(Value::Null),
-            other => Err(QlError::new(format!("expected a value, found {other}"), span)),
+            other => Err(QlError::new(
+                format!("expected a value, found {other}"),
+                span,
+            )),
         }
     }
 
@@ -271,7 +279,10 @@ impl Parser {
             });
         }
         Err(QlError::new(
-            format!("REMOVE supports ALIAS and COLLECTION, found {}", self.peek()),
+            format!(
+                "REMOVE supports ALIAS and COLLECTION, found {}",
+                self.peek()
+            ),
             self.span(),
         ))
     }
@@ -544,7 +555,11 @@ mod tests {
     fn define_table_is_refused_and_says_why() {
         let e = parse("DEFINE TABLE docs").unwrap_err();
         assert!(e.message.contains("INDEX and ALIAS"), "{}", e.message);
-        assert!(e.message.contains("Phase C4"), "names when it lands: {}", e.message);
+        assert!(
+            e.message.contains("Phase C4"),
+            "names when it lands: {}",
+            e.message
+        );
     }
 
     #[test]
@@ -557,7 +572,9 @@ mod tests {
         );
         assert_eq!(
             parse("REMOVE COLLECTION beta").unwrap(),
-            Statement::Remove(Remove::Collection { name: "beta".into() })
+            Statement::Remove(Remove::Collection {
+                name: "beta".into()
+            })
         );
     }
 
@@ -697,7 +714,10 @@ mod tests {
 
     #[test]
     fn live_and_info() {
-        assert_eq!(parse("LIVE").unwrap(), Statement::Live(Live { since: None }));
+        assert_eq!(
+            parse("LIVE").unwrap(),
+            Statement::Live(Live { since: None })
+        );
         assert_eq!(
             parse("LIVE SINCE 42").unwrap(),
             Statement::Live(Live { since: Some(42) })
@@ -720,7 +740,11 @@ mod tests {
     fn a_write_sent_to_parse_query_is_refused_with_the_fix() {
         let e = crate::parse_query("DELETE doc1").unwrap_err();
         assert!(e.message.contains("is a write"), "{}", e.message);
-        assert!(e.message.contains("parse()"), "names the right call: {}", e.message);
+        assert!(
+            e.message.contains("parse()"),
+            "names the right call: {}",
+            e.message
+        );
     }
 
     #[test]
@@ -760,7 +784,10 @@ mod tests {
     #[test]
     fn parens_override_precedence() {
         let s = sel("SELECT * WHERE (a = 1 OR b = 2) AND c = 3");
-        assert!(matches!(s.where_.unwrap(), Expr::And(..)), "AND at the root");
+        assert!(
+            matches!(s.where_.unwrap(), Expr::And(..)),
+            "AND at the root"
+        );
     }
 
     #[test]
@@ -824,7 +851,11 @@ mod tests {
         let src = "SELECT * WHERE year >= AND lang = 'en'";
         let e = parse(src).unwrap_err();
         let (s, en) = e.span;
-        assert_eq!(&src[s..en], "AND", "the span must cover the offending token");
+        assert_eq!(
+            &src[s..en],
+            "AND",
+            "the span must cover the offending token"
+        );
     }
 
     #[test]

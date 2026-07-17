@@ -168,8 +168,8 @@ impl ConnXRecall {
                 // Named space: the dense ranking is exact cosine inside that
                 // space; a lexical ranking (if text) fuses in as usual.
                 (Some(space), Some(v)) => {
-                        self.named_hybrid(space, &text, v, fetch, q.fusion).await?
-                    }
+                    self.named_hybrid(space, &text, v, fetch, q.fusion).await?
+                }
                 _ => {
                     self.unscoped(&text, &vector, q.vector.is_some(), fetch, q.fusion)
                         .await?
@@ -378,8 +378,11 @@ impl ConnXRecall {
                 .map(|c| c.id.as_str().to_string())
                 .collect::<Vec<_>>(),
         ];
-        let fused =
-            crate::index::reciprocal_rank_fusion_weighted(&lists, &weights.as_slice(), FUSION_RRF_K);
+        let fused = crate::index::reciprocal_rank_fusion_weighted(
+            &lists,
+            &weights.as_slice(),
+            FUSION_RRF_K,
+        );
         let mut out = Vec::with_capacity(fetch.min(fused.len()));
         for (id, score) in fused.into_iter().take(fetch) {
             if let Some(doc) = self.doc(&id).await? {

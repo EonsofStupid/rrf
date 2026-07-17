@@ -229,7 +229,10 @@ mod tests {
             .unwrap();
         let m = estate.recall().doc("doc1").await.unwrap().unwrap().metadata;
         assert_eq!(m.get("team").unwrap(), &serde_json::json!("red"));
-        assert!(m.get("rank").is_none(), "CONTENT replaces; `rank` must be gone");
+        assert!(
+            !m.contains_key("rank"),
+            "CONTENT replaces; `rank` must be gone"
+        );
     }
 
     #[tokio::test]
@@ -237,8 +240,8 @@ mod tests {
         let (_d, estate) = estate_with_a_doc().await;
         run(&estate, "DELETE PAYLOAD doc1 (rank)").await.unwrap();
         let m = estate.recall().doc("doc1").await.unwrap().unwrap().metadata;
-        assert!(m.get("rank").is_none());
-        assert!(m.get("team").is_some(), "only `rank` was named");
+        assert!(!m.contains_key("rank"));
+        assert!(m.contains_key("team"), "only `rank` was named");
     }
 
     #[tokio::test]
@@ -268,7 +271,10 @@ mod tests {
             }
         );
         assert!(
-            estate.payload_indexes().unwrap().contains(&"team".to_string()),
+            estate
+                .payload_indexes()
+                .unwrap()
+                .contains(&"team".to_string()),
             "the index must actually exist afterwards, not just be reported"
         );
     }
@@ -276,7 +282,9 @@ mod tests {
     #[tokio::test]
     async fn define_and_remove_alias_round_trip() {
         let (_d, estate) = estate_with_a_doc().await;
-        run(&estate, "DEFINE ALIAS current FOR alpha").await.unwrap();
+        run(&estate, "DEFINE ALIAS current FOR alpha")
+            .await
+            .unwrap();
         assert!(estate.aliases().unwrap().contains_key("current"));
         run(&estate, "REMOVE ALIAS current").await.unwrap();
         assert!(!estate.aliases().unwrap().contains_key("current"));
@@ -344,7 +352,9 @@ mod tests {
         run(&estate, "RELATE n1 -> cites -> n2").await.unwrap();
         run(&estate, "RELATE n2 -> cites -> n3").await.unwrap();
 
-        let out = run(&estate, "TRAVERSE n0 -> cites -> DEPTH 3").await.unwrap();
+        let out = run(&estate, "TRAVERSE n0 -> cites -> DEPTH 3")
+            .await
+            .unwrap();
         let spec = connxism::TraversalSpec {
             verbs: vec!["cites".into()],
             outbound: true,
@@ -353,7 +363,12 @@ mod tests {
             limit: 10_000,
         };
         let direct = estate.traverse(&["n0"], &spec).unwrap();
-        assert_eq!(out, SqlOutcome::Traversed { ids: direct.clone() });
+        assert_eq!(
+            out,
+            SqlOutcome::Traversed {
+                ids: direct.clone()
+            }
+        );
         assert!(direct.contains(&"n3".to_string()), "3 hops reaches n3");
     }
 
@@ -365,19 +380,31 @@ mod tests {
         run(&estate, "RELATE n0 -> cites -> n1").await.unwrap();
 
         // outbound from n0 reaches n1
-        match run(&estate, "TRAVERSE n0 -> cites -> DEPTH 1").await.unwrap() {
+        match run(&estate, "TRAVERSE n0 -> cites -> DEPTH 1")
+            .await
+            .unwrap()
+        {
             SqlOutcome::Traversed { ids } => assert!(ids.contains(&"n1".to_string())),
             o => panic!("{o:?}"),
         }
         // inbound from n0 reaches nothing (the edge points away)
-        match run(&estate, "TRAVERSE n0 <- cites <- DEPTH 1").await.unwrap() {
+        match run(&estate, "TRAVERSE n0 <- cites <- DEPTH 1")
+            .await
+            .unwrap()
+        {
             SqlOutcome::Traversed { ids } => {
-                assert!(!ids.contains(&"n1".to_string()), "`<-` must not walk outbound edges");
+                assert!(
+                    !ids.contains(&"n1".to_string()),
+                    "`<-` must not walk outbound edges"
+                );
             }
             o => panic!("{o:?}"),
         }
         // inbound from n1 reaches n0
-        match run(&estate, "TRAVERSE n1 <- cites <- DEPTH 1").await.unwrap() {
+        match run(&estate, "TRAVERSE n1 <- cites <- DEPTH 1")
+            .await
+            .unwrap()
+        {
             SqlOutcome::Traversed { ids } => assert!(ids.contains(&"n0".to_string())),
             o => panic!("{o:?}"),
         }
@@ -389,9 +416,15 @@ mod tests {
         run(&estate, "RELATE n0 -> cites -> n1").await.unwrap();
         run(&estate, "RELATE n1 -> cites -> n2").await.unwrap();
         run(&estate, "RELATE n2 -> cites -> n3").await.unwrap();
-        match run(&estate, "TRAVERSE n0 -> cites -> DEPTH 1").await.unwrap() {
+        match run(&estate, "TRAVERSE n0 -> cites -> DEPTH 1")
+            .await
+            .unwrap()
+        {
             SqlOutcome::Traversed { ids } => {
-                assert!(!ids.contains(&"n3".to_string()), "DEPTH 1 must not reach a 3-hop node");
+                assert!(
+                    !ids.contains(&"n3".to_string()),
+                    "DEPTH 1 must not reach a 3-hop node"
+                );
             }
             o => panic!("{o:?}"),
         }
@@ -405,9 +438,11 @@ mod tests {
         run(&estate, "RELATE n0 -> cites -> n1").await.unwrap();
         // depth 9999 -> clamped to 64; limit 999999 -> clamped to 10k. The point
         // is that it answers instead of walking forever.
-        assert!(run(&estate, "TRAVERSE n0 -> cites -> DEPTH 9999 LIMIT 999999")
-            .await
-            .is_ok());
+        assert!(
+            run(&estate, "TRAVERSE n0 -> cites -> DEPTH 9999 LIMIT 999999")
+                .await
+                .is_ok()
+        );
     }
 
     #[tokio::test]

@@ -142,14 +142,26 @@ async fn one_query_emits_one_readable_turn() {
     );
 
     // Every event is timed and attributable.
-    for e in events.iter().filter(|e| e.kind == rro_core::semconv::EVENT_STAGE) {
-        assert!(e.fields.get(attr::LATENCY_MS).is_some(), "every stage carries its own latency");
-        assert!(e.fields.get(attr::TURN).is_some(), "every stage carries its turn");
+    for e in events
+        .iter()
+        .filter(|e| e.kind == rro_core::semconv::EVENT_STAGE)
+    {
+        assert!(
+            e.fields.contains_key(attr::LATENCY_MS),
+            "every stage carries its own latency"
+        );
+        assert!(
+            e.fields.contains_key(attr::TURN),
+            "every stage carries its turn"
+        );
     }
 
     let close = events.last().unwrap();
-    assert!(close.fields.get("total_ms").is_some());
-    assert_eq!(close.fields.get("gated").unwrap(), &serde_json::json!(false));
+    assert!(close.fields.contains_key("total_ms"));
+    assert_eq!(
+        close.fields.get("gated").unwrap(),
+        &serde_json::json!(false)
+    );
 }
 
 /// The point of the id. Concurrent queries interleave in the stream; each must

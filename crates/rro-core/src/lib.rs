@@ -8,7 +8,6 @@
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
-mod turn;
 pub mod error;
 pub mod events;
 pub mod geo;
@@ -18,13 +17,14 @@ pub mod simd;
 pub mod text;
 pub mod time;
 pub mod traits;
+mod turn;
 pub mod types;
 
 pub use error::{Result, RroError};
-pub use query::{HybridWeights, Condition, EstateQuery, Filter, Prefetch};
+pub use query::{Condition, EstateQuery, Filter, HybridWeights, Prefetch};
 pub use traits::{Classifier, Embedder, Recall, Reranker, VectorRecord};
+pub use turn::{emit_stage, emit_turn, TurnId};
 pub use types::{
     maxsim, Candidate, Chunk, Document, Embedding, Id, Metadata, Query, Readiness, RecallResult,
     SparseVector,
 };
-pub use turn::{emit_stage, emit_turn, TurnId};

@@ -67,7 +67,11 @@ mod tests {
         // The caret line must sit under `AND`.
         let caret_line = rendered.lines().nth(2).unwrap();
         assert_eq!(caret_line.trim_start_matches(' '), "^^^");
-        assert_eq!(caret_line.len() - 2, 23 + 3, "caret is under the right column");
+        assert_eq!(
+            caret_line.len() - 2,
+            23 + 3,
+            "caret is under the right column"
+        );
         assert!(rendered.contains("expected a value"));
     }
 

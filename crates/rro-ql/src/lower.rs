@@ -165,7 +165,9 @@ fn leaf_condition(e: &Expr) -> Result<Condition, QlError> {
             lon_max: *lon_max,
         },
         Expr::And(..) | Expr::Or(..) | Expr::Not(..) => {
-            return Err(unsupported("a compound expression where a condition was expected"))
+            return Err(unsupported(
+                "a compound expression where a condition was expected",
+            ))
         }
     })
 }
@@ -207,7 +209,10 @@ mod tests {
 
     #[test]
     fn not_lowers_to_must_not() {
-        let f = parse_query("SELECT * WHERE NOT lang = 'en'").unwrap().dsl.unwrap();
+        let f = parse_query("SELECT * WHERE NOT lang = 'en'")
+            .unwrap()
+            .dsl
+            .unwrap();
         assert_eq!(f.must_not.len(), 1);
         assert!(f.must.is_empty());
     }
@@ -245,9 +250,7 @@ mod tests {
             .unwrap()
             .dsl
             .unwrap();
-        assert!(
-            matches!(f.must[0], Condition::GeoRadius { radius_m, .. } if radius_m == 5000.0)
-        );
+        assert!(matches!(f.must[0], Condition::GeoRadius { radius_m, .. } if radius_m == 5000.0));
     }
 
     // --- the refusals: each of these could be "nearly" lowered, and must not be

@@ -77,8 +77,14 @@ impl EventSink for StageCollector {
             return;
         }
         let (Some(name), Some(ms)) = (
-            event.fields.get(rro_core::semconv::attr::STAGE).and_then(|v| v.as_str()),
-            event.fields.get(rro_core::semconv::attr::LATENCY_MS).and_then(|v| v.as_f64()),
+            event
+                .fields
+                .get(rro_core::semconv::attr::STAGE)
+                .and_then(|v| v.as_str()),
+            event
+                .fields
+                .get(rro_core::semconv::attr::LATENCY_MS)
+                .and_then(|v| v.as_f64()),
         ) else {
             return;
         };
@@ -127,7 +133,9 @@ impl EventSink for SinkHandle {
 }
 
 async fn run() -> anyhow::Result<()> {
-    let collector = STAGES.get_or_init(|| Arc::new(StageCollector::default())).clone();
+    let collector = STAGES
+        .get_or_init(|| Arc::new(StageCollector::default()))
+        .clone();
     rro_core::events::set_sink(Box::new(SinkHandle(collector.clone())));
 
     let dir: PathBuf = std::env::var("RRO_EVAL_DATA")
@@ -185,7 +193,11 @@ async fn run() -> anyhow::Result<()> {
     };
     println!(
         "analyzer: {} (RRO_EVAL_ANALYZER=legacy|stemming)",
-        if analyzer.stem { "stemming" } else { "legacy/unstemmed" }
+        if analyzer.stem {
+            "stemming"
+        } else {
+            "legacy/unstemmed"
+        }
     );
     let estate = Arc::new(connxism::Estate::open_with(
         estate_dir.path().to_str().unwrap(),
@@ -316,7 +328,10 @@ async fn run() -> anyhow::Result<()> {
                             text: Some(q.text.clone()),
                             vector: Some(qv.clone()),
                             top_k: recall_k,
-                            fusion: connxism::HybridWeights { dense: d, lexical: 1.0 },
+                            fusion: connxism::HybridWeights {
+                                dense: d,
+                                lexical: 1.0,
+                            },
                             ..Default::default()
                         })
                         .await?

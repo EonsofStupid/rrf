@@ -358,7 +358,10 @@ impl Default for HybridWeights {
     /// until they ask it to. Deliberately **not** a value tuned on a benchmark:
     /// baking in one corpus's answer is overfitting shipped as a default.
     fn default() -> Self {
-        HybridWeights { dense: 1.0, lexical: 1.0 }
+        HybridWeights {
+            dense: 1.0,
+            lexical: 1.0,
+        }
     }
 }
 

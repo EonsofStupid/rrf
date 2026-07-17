@@ -25,8 +25,8 @@ mod handler;
 mod ingest;
 pub mod ops;
 mod sample;
-mod sql;
 mod serve;
+mod sql;
 
 pub use estate_map::estate_map;
 pub use flow::{ObjectBuilder, ObjectConfig, ReasonReadyObject};
