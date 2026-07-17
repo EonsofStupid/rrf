@@ -81,10 +81,10 @@ Est. 6–10 sprints. AFTER P7, ideally after P6.
 ## P9 — DEPLOY (Podman Quadlets — Docker removed; finish on the box)
 In-tree now: `deploy/Containerfile`, `rro.container`, `rro-estate.volume`,
 `rro-mesh.pod`, updated `config.env.example`. On a Podman box:
-1. `podman build -f deploy/Containerfile -t localhost/rrf:latest .`.
+1. `podman build -f deploy/Containerfile -t localhost/rro:latest .`.
 2. Install Quadlets; `systemctl --user daemon-reload`; verify with
    `podman-system-generator --dryrun`.
-3. `systemctl --user start rrf`; `/healthz` on :9090 + `ping` on :7878. Gate:
+3. `systemctl --user start rro`; `/healthz` on :9090 + `ping` on :7878. Gate:
    green health + pong. Then a candle-image variant with weights mounted.
 4. Point `scripts/quickstart.sh` / `mesh.sh` at podman. Gate: quickstart smokes.
 

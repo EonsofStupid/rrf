@@ -78,28 +78,28 @@ queries; accuracy@10 = the planted golden doc retrieved.
 
 | system | path | ingest (docs/sec) | accuracy@10 | query p50 |
 |---|---|---|---|---|
-| **rrf estate** (hybrid, durable) | local | **6,624** | **1.000** | 188.5 ms |
-| **rrf estate, full pipeline** (embed→hybrid→rerank→classify per query) | **a2a layer-2 TCP** | **6,480** | **1.000** | 191.0 ms |
-| rrf mem (dense-only fallback) | local | 85,358 | 0.936 | 98.1 ms |
+| **rro estate** (hybrid, durable) | local | **6,624** | **1.000** | 188.5 ms |
+| **rro estate, full pipeline** (embed→hybrid→rerank→classify per query) | **a2a layer-2 TCP** | **6,480** | **1.000** | 191.0 ms |
+| rro mem (dense-only fallback) | local | 85,358 | 0.936 | 98.1 ms |
 | ChromaDB (vector ANN) | embedded | 566 | 0.572 | 3.2 ms |
 | ChromaDB (vector ANN) | HTTP | 586 | 0.606 | 4.9 ms |
 
 What the run demonstrated:
 
-- **Ingestion: 11.7× durable-to-durable** (6,624 vs 566), and rrf's number
+- **Ingestion: 11.7× durable-to-durable** (6,624 vs 566), and rro's number
   *includes* server-side embedding while the baseline received precomputed
   vectors. Over the network: **11.1×** (a2a 6,480 vs HTTP 586). The
   in-memory engine is ~150× on this protocol.
 - **Retrieval correctness: 1.000 vs 0.572/0.606.** The hybrid (dense + BM25,
   reciprocal-rank fused) retrieved every planted target; pure-vector ANN
-  missed ~40%. rrf's own dense-only path (0.936) shows the split: exact
+  missed ~40%. rro's own dense-only path (0.936) shows the split: exact
   scan recovers most of the gap, **hybrid closes it to zero** — the design
   thesis, measured.
 - **The a2a layer-2 wire is ~free**: full pipeline remotely at 191 ms vs
   188.5 ms locally (+3 ms), identical accuracy — the "treat remote nodes as
   local" property, demonstrated over TCP.
 - **Query latency is the honest loss**: the baseline's ANN answers in 3–5 ms;
-  rrf's exact O(N) scan takes ~190 ms at 50k docs — while also running
+  rro's exact O(N) scan takes ~190 ms at 50k docs — while also running
   rerank + readiness per query. This is precisely P2 (ANN) — the gap is
   quantified, not hidden.
 

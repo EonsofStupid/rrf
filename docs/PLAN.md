@@ -5,7 +5,7 @@ map) · Reason Ready Objects (the readiness-gated pipeline). Clean-authored,
 zero external lineage, every claim measured.**
 
 This is the governing document. Reference systems were studied as *capability
-inventories only* — every line in this tree is authored for rrf. No code is
+inventories only* — every line in this tree is authored for rro. No code is
 ported, no wrappers exist, no upstream is tracked.
 
 ## Laws (unchanged, non-negotiable)
@@ -48,7 +48,7 @@ Legend: ✅ done · 🔨 phase assigned · ⏸ deliberately later · ❓ needs y
 
 ### Vector engine capabilities → Recall
 
-| Capability (reference example) | rrf representation | Phase |
+| Capability (reference example) | rro representation | Phase |
 |---|---|---|
 | Exact dense search | `recall::FlatRecall`, `connxism` dense scan | ✅ |
 | **ANN graph index (HNSW-class)** | `recall::AnnIndex` — authored clean, trait-swapped | **P2** 🔨 |
@@ -68,7 +68,7 @@ Legend: ✅ done · 🔨 phase assigned · ⏸ deliberately later · ❓ needs y
 
 ### Relational/graph capabilities → Connectome + connXism
 
-| Capability (reference example) | rrf representation | Phase |
+| Capability (reference example) | rro representation | Phase |
 |---|---|---|
 | KV abstraction w/ backends (mem/rocksdb/…) | `connxism::Db` — second backend proves the seam | P3 🔨 |
 | **Records & relations (graph edges, RELATE-style)** | `connxism` `rel` CF: `(from, verb, to)` rows, both directions | **P3** 🔨 |
@@ -80,13 +80,13 @@ Legend: ✅ done · 🔨 phase assigned · ⏸ deliberately later · ❓ needs y
 | Auth / IAM | token-scoped capabilities on a2a + gRPC surfaces | P5 🔨 |
 | GraphQL/HTTP/RPC APIs | **gRPC (tonic)** first-class; HTTP read surface after | P5 🔨 |
 | Observability/telemetry | events + trends ✅; OTLP export later | ✅ / ⏸ |
-| **WASM plugin runtime (surrealism-class, the JIT)** | `rrf-plugins`: wasmtime host, capability manifest, warp-callable | **P6** 🔨 |
+| **WASM plugin runtime (surrealism-class, the JIT)** | `rro-plugins`: wasmtime host, capability manifest, warp-callable | **P6** 🔨 |
 | ML model storage (surrealml-class) | DevPULSE model registry in estate (`models` CF + weights refs) | P7 🔨 |
 | Files/buckets | connector-fed blobs in estate | ⏸ P8 |
 
 ### Reason Ready Objects (yours alone — no reference has this)
 
-| Capability | rrf representation | Phase |
+| Capability | rro representation | Phase |
 |---|---|---|
 | **RRD — the reason-ready object JIT (shape + tags)** | `rrd` crate: shape registry, per-shape compiled plans (inline-cache semantics), RROs — see **ADR-0002** | **P4** 🔨 |
 | Readiness gate | `classifier` ✅ → judges structured RROs, then learned DevPULSE classifier | P4/P7 🔨 |
@@ -125,7 +125,7 @@ kill-9 crash-recovery proof suite, optimizer, Docker + frictionless deploy.
 *Gate:* recover-from-crash test green 100/100 runs; deploy from zero in one
 command.
 
-**P6 — Plugins (the JIT)** — `rrf-plugins` wasmtime runtime: capability
+**P6 — Plugins (the JIT)** — `rro-plugins` wasmtime runtime: capability
 manifests, scoped host imports (query/kv/events), warp-callable modules.
 *Gate:* a plugin module runs a scoped flow query; capability escape tests.
 

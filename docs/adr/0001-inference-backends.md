@@ -18,7 +18,7 @@ single-language.
 boundary behind a trait, served by the best tool per model. We do not port
 vLLM to Rust.**
 
-- **Rust (RRF):** memory, retrieval, state, routing, a2a, the deployable
+- **Rust (RRO):** memory, retrieval, state, routing, a2a, the deployable
   single binary — Clyffy's runtime spine.
 - **candle (in-process, Rust):** small encoder models — the DevPULSE embedder
   (Qwen backbone), reranker (Nemotron backbone), and classifier. This is where

@@ -37,7 +37,7 @@ connxism ──────────────── the kvs-connectome: pe
                           nodes, warp points, connectors, docs, vectors,
                           BM25 postings, tags, shapes, trends
 rro-net ───────────────── a2a / node surface (in-proc bus + TCP transport)
-rro-engine ──────────────── orchestrator + ingestion machine + `rrf` daemon +
+rro-engine ──────────────── orchestrator + ingestion machine + `rro` daemon +
                           `rro-bench` harness (depends on all)
 ```
 
@@ -113,4 +113,4 @@ a non-technical viewer can *see* what the engine knows and how it is doing.
 A single static (musl) binary; distroless/scratch image; config via env + file;
 health/readiness endpoints; graceful shutdown on SIGTERM/Ctrl-C. Compile only
 the backends you need via features. The artifact drops into a host (Clyffy)
-in-process or runs standalone as the `rrf` daemon.
+in-process or runs standalone as the `rro` daemon.

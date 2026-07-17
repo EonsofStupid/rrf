@@ -1,6 +1,6 @@
 # Code of Conduct
 
-RRF is published so it can be read, evaluated, and argued with. That only works if the
+RRO is published so it can be read, evaluated, and argued with. That only works if the
 arguing is about the engine.
 
 ## The short version
@@ -38,7 +38,7 @@ Issues, discussions, the wiki, and any project space.
 
 Maintainers may edit, close, or remove anything here, and block accounts, at their discretion.
 Report a problem privately to the maintainers via
-[a security advisory](https://github.com/EonsofStupid/rrf/security/advisories/new) if it's
+[a security advisory](https://github.com/EonsofStupid/rrobjects/security/advisories/new) if it's
 sensitive, or open an issue if it isn't.
 
 There's no committee and no appeals process. It's a small project; the standard is

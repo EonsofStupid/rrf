@@ -35,7 +35,7 @@ body:
       label: What it unblocks
       description: |
         The concrete thing you can't do today. Real use beats hypothetical completeness —
-        RRF is deliberately not a feature-parity race.
+        RRO is deliberately not a feature-parity race.
     validations:
       required: true
 
@@ -51,9 +51,9 @@ body:
         - connectome
         - connxism
         - connectors
-        - rrf-net
-        - rrf-flow
-        - rrf-core
+        - rro-net
+        - rro-engine
+        - rro-core
         - not sure
     validations:
       required: true
@@ -63,5 +63,5 @@ body:
     attributes:
       label: How would we know it works
       description: |
-        RRF's rule is that a claim needs evidence. If this capability has a right answer,
+        RRO's rule is that a claim needs evidence. If this capability has a right answer,
         what does the measurement look like — accuracy at k, latency at a config, a gate?
