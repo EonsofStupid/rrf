@@ -13,13 +13,11 @@
 mod bm25;
 #[cfg(feature = "candle")]
 mod candle_qwen;
-mod devpulse;
 mod http;
 
 pub use bm25::LexicalReranker;
 #[cfg(feature = "candle")]
 pub use candle_qwen::{CandleQwenReranker, CandleRerankConfig, DEFAULT_RERANK_TASK};
-pub use devpulse::{DevPulseReranker, RerankSpec};
 pub use http::{HttpRerankConfig, HttpRerankKind, HttpReranker};
 
 /// Re-export so downstream crates can name the trait without a second dep.
