@@ -195,7 +195,56 @@ pub struct Delete {
     pub keys: Vec<String>,
 }
 
-/// A parsed statement. B3 adds RELATE/traversal/LIVE.
+/// `RELATE <from> -> <verb> -> <to>` — assert one graph edge.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Relate {
+    /// Source record id.
+    pub from: String,
+    /// The edge verb.
+    pub verb: String,
+    /// Target record id.
+    pub to: String,
+}
+
+/// Which way a traversal follows edges.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Direction {
+    /// `->verb->` — follow outbound edges.
+    Out,
+    /// `<-verb<-` — follow inbound edges.
+    In,
+    /// `<->verb<->` — follow both.
+    Both,
+}
+
+/// `TRAVERSE <id> ->verb-> [DEPTH n] [LIMIT n]`
+#[derive(Debug, Clone, PartialEq)]
+pub struct Traverse {
+    /// Start ids.
+    pub start: Vec<String>,
+    /// Verbs to follow; empty = all.
+    pub verbs: Vec<String>,
+    /// Direction.
+    pub dir: Direction,
+    /// Max hops.
+    pub depth: Option<usize>,
+    /// Hard cap on visited ids.
+    pub limit: Option<usize>,
+}
+
+/// `LIVE [SINCE n]` — the push changefeed. `LIVE` is SurrealDB's spelling;
+/// this engine calls the same capability `watch`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Live {
+    /// Resume from this feed sequence (`SINCE`), or from now.
+    pub since: Option<u64>,
+}
+
+/// `INFO` — the live catalog.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Info;
+
+/// A parsed statement.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Statement {
     /// A `SELECT`.
@@ -208,6 +257,14 @@ pub enum Statement {
     Update(Update),
     /// A `DELETE`.
     Delete(Delete),
+    /// A `RELATE`.
+    Relate(Relate),
+    /// A `TRAVERSE`.
+    Traverse(Traverse),
+    /// A `LIVE` (the `watch` push feed).
+    Live(Live),
+    /// An `INFO`.
+    Info(Info),
 }
 
 impl Statement {
@@ -219,6 +276,10 @@ impl Statement {
             Statement::Remove(_) => "REMOVE",
             Statement::Update(_) => "UPDATE",
             Statement::Delete(_) => "DELETE",
+            Statement::Relate(_) => "RELATE",
+            Statement::Traverse(_) => "TRAVERSE",
+            Statement::Live(_) => "LIVE",
+            Statement::Info(_) => "INFO",
         }
     }
 
@@ -227,6 +288,15 @@ impl Statement {
     /// The seam a caller needs to gate writes — an MCP tool or a REST endpoint
     /// exposed read-only can refuse on this without re-deriving the taxonomy.
     pub fn is_write(&self) -> bool {
-        !matches!(self, Statement::Select(_))
+        // RELATE mutates. TRAVERSE/LIVE/INFO read, like SELECT — a read-only
+        // surface must be able to expose them.
+        matches!(
+            self,
+            Statement::Define(_)
+                | Statement::Remove(_)
+                | Statement::Update(_)
+                | Statement::Delete(_)
+                | Statement::Relate(_)
+        )
     }
 }

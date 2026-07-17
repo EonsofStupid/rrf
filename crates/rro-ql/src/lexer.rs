@@ -85,6 +85,24 @@ pub enum TokenKind {
     Content,
     /// `PAYLOAD`
     Payload,
+    /// `RELATE`
+    Relate,
+    /// `TRAVERSE`
+    Traverse,
+    /// `DEPTH`
+    Depth,
+    /// `LIVE`
+    Live,
+    /// `SINCE`
+    Since,
+    /// `INFO`
+    Info,
+    /// `->`
+    ArrowOut,
+    /// `<-`
+    ArrowIn,
+    /// `<->`
+    ArrowBoth,
 
     // punctuation / operators
     /// `,`
@@ -145,6 +163,15 @@ impl fmt::Display for TokenKind {
             TokenKind::Set => "SET",
             TokenKind::Content => "CONTENT",
             TokenKind::Payload => "PAYLOAD",
+            TokenKind::Relate => "RELATE",
+            TokenKind::Traverse => "TRAVERSE",
+            TokenKind::Depth => "DEPTH",
+            TokenKind::Live => "LIVE",
+            TokenKind::Since => "SINCE",
+            TokenKind::Info => "INFO",
+            TokenKind::ArrowOut => "`->`",
+            TokenKind::ArrowIn => "`<-`",
+            TokenKind::ArrowBoth => "`<->`",
             TokenKind::Comma => "`,`",
             TokenKind::LParen => "`(`",
             TokenKind::RParen => "`)`",
@@ -197,6 +224,35 @@ pub fn lex(src: &str) -> Result<Vec<Token>, LexError> {
         }
 
         let start = i;
+
+        // Arrows before operators, LONGEST first: `<->` must not lex as `<-`
+        // then `>`, and `<-` must not lex as `<` then `-`. Same discipline as
+        // `<=` vs `<`, one length up.
+        if let Some(three) = src.get(i..i + 3) {
+            if three == "<->" {
+                out.push(Token {
+                    kind: TokenKind::ArrowBoth,
+                    span: (start, i + 3),
+                });
+                i += 3;
+                continue;
+            }
+        }
+        if let Some(two) = src.get(i..i + 2) {
+            let arrow = match two {
+                "->" => Some(TokenKind::ArrowOut),
+                "<-" => Some(TokenKind::ArrowIn),
+                _ => None,
+            };
+            if let Some(k) = arrow {
+                out.push(Token {
+                    kind: k,
+                    span: (start, i + 2),
+                });
+                i += 2;
+                continue;
+            }
+        }
 
         // Two-char operators first, so `<=` never lexes as `<` then `=`.
         //
@@ -362,6 +418,12 @@ pub fn lex(src: &str) -> Result<Vec<Token>, LexError> {
                 "SET" => TokenKind::Set,
                 "CONTENT" => TokenKind::Content,
                 "PAYLOAD" => TokenKind::Payload,
+                "RELATE" => TokenKind::Relate,
+                "TRAVERSE" => TokenKind::Traverse,
+                "DEPTH" => TokenKind::Depth,
+                "LIVE" => TokenKind::Live,
+                "SINCE" => TokenKind::Since,
+                "INFO" => TokenKind::Info,
                 "TRUE" => TokenKind::Bool(true),
                 "FALSE" => TokenKind::Bool(false),
                 "NULL" => TokenKind::Null,

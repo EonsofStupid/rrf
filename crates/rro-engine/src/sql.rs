@@ -11,7 +11,7 @@
 use std::sync::Arc;
 
 use rro_core::{Metadata, Recall, Result, RroError};
-use rro_ql::{Define, Delete, Remove, Statement, Update};
+use rro_ql::{Define, Delete, Direction, Relate, Remove, Statement, Update};
 
 /// What applying a statement produced.
 ///
@@ -51,6 +51,21 @@ pub enum SqlOutcome {
         id: String,
         /// Whether only the payload was touched.
         payload_only: bool,
+    },
+    /// A `RELATE` applied.
+    Related {
+        /// `from -verb-> to`.
+        edge: String,
+    },
+    /// A `TRAVERSE` walked.
+    Traversed {
+        /// Visited ids, in traversal order (breadth-first, nearest hops first).
+        ids: Vec<String>,
+    },
+    /// An `INFO`.
+    Catalog {
+        /// The estate's live catalog.
+        info: serde_json::Value,
     },
 }
 
@@ -129,6 +144,45 @@ pub async fn apply(estate: &Arc<connxism::Estate>, stmt: Statement) -> Result<Sq
             }
             Ok(SqlOutcome::Deleted { id, payload_only })
         }
+
+        Statement::Relate(Relate { from, verb, to }) => {
+            estate.relate(&from, &verb, &to)?;
+            Ok(SqlOutcome::Related {
+                edge: format!("{from} -{verb}-> {to}"),
+            })
+        }
+
+        Statement::Traverse(t) => {
+            let d = connxism::TraversalSpec::default();
+            let spec = connxism::TraversalSpec {
+                verbs: t.verbs,
+                // The arrow IS the direction; a default would silently walk a
+                // way the caller did not ask for.
+                outbound: matches!(t.dir, Direction::Out | Direction::Both),
+                inbound: matches!(t.dir, Direction::In | Direction::Both),
+                // Bounds are clamped, not trusted: this statement can arrive
+                // from a remote peer, and an unbounded walk is a DoS.
+                depth: t.depth.unwrap_or(d.depth).min(64),
+                limit: t.limit.unwrap_or(d.limit).min(10_000),
+            };
+            let refs: Vec<&str> = t.start.iter().map(String::as_str).collect();
+            Ok(SqlOutcome::Traversed {
+                ids: estate.traverse(&refs, &spec)?,
+            })
+        }
+
+        Statement::Info(_) => Ok(SqlOutcome::Catalog {
+            info: serde_json::to_value(estate.info())
+                .map_err(|e| RroError::msg(format!("serialize estate info: {e}")))?,
+        }),
+
+        // LIVE is a STREAM, not a value. It cannot be a SqlOutcome without
+        // pretending a subscription is a reply — the a2a `watch` verb already
+        // serves it, and callers route LIVE there.
+        Statement::Live(_) => Err(RroError::msg(
+            "LIVE opens a push stream, not a one-shot reply — route it to the a2a \
+             `watch` verb (Client::watch), which resumes by feed sequence",
+        )),
     }
 }
 
@@ -261,5 +315,118 @@ mod tests {
             run(&estate, "UPDATE ghost SET a = 1").await.is_err(),
             "updating a missing record must fail loudly"
         );
+    }
+
+    // ---- B3: RELATE / TRAVERSE / LIVE / INFO ----------------------------
+
+    async fn graph() -> (tempfile::TempDir, Arc<connxism::Estate>) {
+        let dir = tempfile::tempdir().unwrap();
+        let estate = Arc::new(connxism::Estate::open(dir.path(), "g").unwrap());
+        let recs: Vec<VectorRecord> = (0..5)
+            .map(|i| {
+                VectorRecord::new(
+                    format!("n{i}"),
+                    rro_core::Embedding(vec![i as f32, 1.0]),
+                    format!("node {i}"),
+                )
+            })
+            .collect();
+        estate.recall().upsert(recs).await.unwrap();
+        (dir, estate)
+    }
+
+    /// RRQL's walk must equal the direct estate walk. If they diverge, the
+    /// language is answering a different question than the engine.
+    #[tokio::test]
+    async fn relate_then_traverse_equals_the_direct_walk() {
+        let (_d, estate) = graph().await;
+        run(&estate, "RELATE n0 -> cites -> n1").await.unwrap();
+        run(&estate, "RELATE n1 -> cites -> n2").await.unwrap();
+        run(&estate, "RELATE n2 -> cites -> n3").await.unwrap();
+
+        let out = run(&estate, "TRAVERSE n0 -> cites -> DEPTH 3").await.unwrap();
+        let spec = connxism::TraversalSpec {
+            verbs: vec!["cites".into()],
+            outbound: true,
+            inbound: false,
+            depth: 3,
+            limit: 10_000,
+        };
+        let direct = estate.traverse(&["n0"], &spec).unwrap();
+        assert_eq!(out, SqlOutcome::Traversed { ids: direct.clone() });
+        assert!(direct.contains(&"n3".to_string()), "3 hops reaches n3");
+    }
+
+    /// The arrow IS the direction. `<-` must walk the edge backwards, and a
+    /// default direction would silently walk a way nobody asked for.
+    #[tokio::test]
+    async fn the_arrow_decides_direction() {
+        let (_d, estate) = graph().await;
+        run(&estate, "RELATE n0 -> cites -> n1").await.unwrap();
+
+        // outbound from n0 reaches n1
+        match run(&estate, "TRAVERSE n0 -> cites -> DEPTH 1").await.unwrap() {
+            SqlOutcome::Traversed { ids } => assert!(ids.contains(&"n1".to_string())),
+            o => panic!("{o:?}"),
+        }
+        // inbound from n0 reaches nothing (the edge points away)
+        match run(&estate, "TRAVERSE n0 <- cites <- DEPTH 1").await.unwrap() {
+            SqlOutcome::Traversed { ids } => {
+                assert!(!ids.contains(&"n1".to_string()), "`<-` must not walk outbound edges");
+            }
+            o => panic!("{o:?}"),
+        }
+        // inbound from n1 reaches n0
+        match run(&estate, "TRAVERSE n1 <- cites <- DEPTH 1").await.unwrap() {
+            SqlOutcome::Traversed { ids } => assert!(ids.contains(&"n0".to_string())),
+            o => panic!("{o:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn depth_is_honored_not_ignored() {
+        let (_d, estate) = graph().await;
+        run(&estate, "RELATE n0 -> cites -> n1").await.unwrap();
+        run(&estate, "RELATE n1 -> cites -> n2").await.unwrap();
+        run(&estate, "RELATE n2 -> cites -> n3").await.unwrap();
+        match run(&estate, "TRAVERSE n0 -> cites -> DEPTH 1").await.unwrap() {
+            SqlOutcome::Traversed { ids } => {
+                assert!(!ids.contains(&"n3".to_string()), "DEPTH 1 must not reach a 3-hop node");
+            }
+            o => panic!("{o:?}"),
+        }
+    }
+
+    /// A statement can arrive from a remote peer. An unbounded walk is a DoS, so
+    /// the bounds are CLAMPED rather than trusted.
+    #[tokio::test]
+    async fn absurd_bounds_are_clamped_not_trusted() {
+        let (_d, estate) = graph().await;
+        run(&estate, "RELATE n0 -> cites -> n1").await.unwrap();
+        // depth 9999 -> clamped to 64; limit 999999 -> clamped to 10k. The point
+        // is that it answers instead of walking forever.
+        assert!(run(&estate, "TRAVERSE n0 -> cites -> DEPTH 9999 LIMIT 999999")
+            .await
+            .is_ok());
+    }
+
+    #[tokio::test]
+    async fn info_returns_the_live_catalog() {
+        let (_d, estate) = graph().await;
+        match run(&estate, "INFO").await.unwrap() {
+            SqlOutcome::Catalog { info } => {
+                assert!(info.is_object(), "INFO must return the estate's catalog");
+            }
+            o => panic!("{o:?}"),
+        }
+    }
+
+    /// LIVE is a subscription. Returning it as a one-shot value would be
+    /// pretending a stream is a reply.
+    #[tokio::test]
+    async fn live_is_refused_here_and_points_at_watch() {
+        let (_d, estate) = graph().await;
+        let e = run(&estate, "LIVE").await.unwrap_err();
+        assert!(e.to_string().contains("watch"), "names the right seam: {e}");
     }
 }

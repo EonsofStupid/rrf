@@ -5,7 +5,10 @@
 //! is what anyone who has written SQL expects, and getting it backwards is a
 //! silent wrong-answer bug rather than a syntax error.
 
-use crate::ast::{CmpOp, Define, Delete, Expr, Remove, Select, Statement, Update, Value};
+use crate::ast::{
+    CmpOp, Define, Delete, Direction, Expr, Info, Live, Relate, Remove, Select, Statement,
+    Traverse, Update, Value,
+};
 use crate::error::QlError;
 use crate::lexer::{lex, Token, TokenKind};
 
@@ -120,13 +123,110 @@ impl Parser {
         if self.eat(&TokenKind::Delete) {
             return Ok(Statement::Delete(self.delete()?));
         }
+        if self.eat(&TokenKind::Relate) {
+            return Ok(Statement::Relate(self.relate()?));
+        }
+        if self.eat(&TokenKind::Traverse) {
+            return Ok(Statement::Traverse(self.traverse()?));
+        }
+        if self.eat(&TokenKind::Live) {
+            let since = if self.eat(&TokenKind::Since) {
+                Some(self.whole_number()? as u64)
+            } else {
+                None
+            };
+            return Ok(Statement::Live(Live { since }));
+        }
+        if self.eat(&TokenKind::Info) {
+            return Ok(Statement::Info(Info));
+        }
         Err(QlError::new(
             format!(
-                "expected SELECT, DEFINE, REMOVE, UPDATE or DELETE, found {}",
+                "expected SELECT, DEFINE, REMOVE, UPDATE, DELETE, RELATE, TRAVERSE, \
+                 LIVE or INFO, found {}",
                 self.peek()
             ),
             self.span(),
         ))
+    }
+
+    /// `RELATE <from> -> <verb> -> <to>`
+    ///
+    /// The arrow spelling is SurrealDB's, because it is the one people know for
+    /// "assert an edge" — and this engine's `relate(from, verb, to)` is exactly
+    /// that shape.
+    fn relate(&mut self) -> Result<Relate, QlError> {
+        let from = self.record_id()?;
+        self.expect(&TokenKind::ArrowOut)?;
+        let verb = self.ident()?;
+        self.expect(&TokenKind::ArrowOut)?;
+        let to = self.record_id()?;
+        Ok(Relate { from, verb, to })
+    }
+
+    /// `TRAVERSE <id>[, <id>] ->verb-> [DEPTH n] [LIMIT n]`
+    ///
+    /// Direction comes from the arrow: `->` out, `<-` in, `<->` both. A bare
+    /// arrow with no verb means "every verb".
+    fn traverse(&mut self) -> Result<Traverse, QlError> {
+        let mut start = vec![self.record_id()?];
+        while self.eat(&TokenKind::Comma) {
+            start.push(self.record_id()?);
+        }
+
+        let span = self.span();
+        let dir = match self.bump() {
+            TokenKind::ArrowOut => Direction::Out,
+            TokenKind::ArrowIn => Direction::In,
+            TokenKind::ArrowBoth => Direction::Both,
+            other => {
+                return Err(QlError::new(
+                    format!("expected `->`, `<-` or `<->` after the start ids, found {other}"),
+                    span,
+                ))
+            }
+        };
+
+        // `-> verb ->` names a verb; `->` alone means every verb.
+        let mut verbs = Vec::new();
+        if let TokenKind::Ident(_) = self.peek() {
+            verbs.push(self.ident()?);
+            // The closing arrow is optional: `TRAVERSE a ->cites->` and
+            // `TRAVERSE a ->cites` mean the same walk, and rejecting the shorter
+            // form would be ceremony.
+            let _ = self.eat(&TokenKind::ArrowOut)
+                || self.eat(&TokenKind::ArrowIn)
+                || self.eat(&TokenKind::ArrowBoth);
+        }
+
+        let mut depth = None;
+        let mut limit = None;
+        if self.eat(&TokenKind::Depth) {
+            depth = Some(self.whole_number()?);
+        }
+        if self.eat(&TokenKind::Limit) {
+            limit = Some(self.whole_number()?);
+        }
+        Ok(Traverse {
+            start,
+            verbs,
+            dir,
+            depth,
+            limit,
+        })
+    }
+
+    /// A non-negative whole number — for LIMIT / DEPTH / SINCE.
+    fn whole_number(&mut self) -> Result<usize, QlError> {
+        let span = self.span();
+        let n = self.number()?;
+        if n < 0.0 || n.fract() != 0.0 {
+            return Err(QlError::new(
+                format!("expected a non-negative whole number, found {n}"),
+                span,
+            ));
+        }
+        Ok(n as usize)
     }
 
     /// `DEFINE INDEX ON <field>` | `DEFINE ALIAS <a> FOR <collection>`
@@ -255,15 +355,7 @@ impl Parser {
             s.where_ = Some(self.expr()?);
         }
         if self.eat(&TokenKind::Limit) {
-            let span = self.span();
-            let n = self.number()?;
-            if n < 0.0 || n.fract() != 0.0 {
-                return Err(QlError::new(
-                    format!("LIMIT must be a non-negative whole number, found {n}"),
-                    span,
-                ));
-            }
-            s.limit = Some(n as usize);
+            s.limit = Some(self.whole_number()?);
         }
         Ok(s)
     }
@@ -533,6 +625,94 @@ mod tests {
             "DELETE d",
         ] {
             assert!(parse(src).unwrap().is_write(), "{src} mutates the estate");
+        }
+    }
+
+    // ---- B3: RELATE / TRAVERSE / LIVE / INFO ----------------------------
+
+    #[test]
+    fn relate_asserts_an_edge() {
+        assert_eq!(
+            parse("RELATE doc1 -> cites -> doc2").unwrap(),
+            Statement::Relate(Relate {
+                from: "doc1".into(),
+                verb: "cites".into(),
+                to: "doc2".into()
+            })
+        );
+        // quoted ids, because real ids are arbitrary strings
+        assert!(parse("RELATE 'MED-10' -> cites -> 'MED-20'").is_ok());
+    }
+
+    /// The arrow decides direction. `<->` must not lex as `<-` then `>` — same
+    /// longest-match discipline as `<=` vs `<`, one length up.
+    #[test]
+    fn traverse_direction_comes_from_the_arrow() {
+        let dir = |src: &str| match parse(src).unwrap() {
+            Statement::Traverse(t) => t.dir,
+            other => panic!("{}", other.keyword()),
+        };
+        assert_eq!(dir("TRAVERSE a -> cites ->"), Direction::Out);
+        assert_eq!(dir("TRAVERSE a <- cites <-"), Direction::In);
+        assert_eq!(dir("TRAVERSE a <-> cites <->"), Direction::Both);
+    }
+
+    #[test]
+    fn traverse_bare_arrow_means_every_verb() {
+        match parse("TRAVERSE a ->").unwrap() {
+            Statement::Traverse(t) => {
+                assert!(t.verbs.is_empty(), "no verb named = follow every verb");
+                assert_eq!(t.dir, Direction::Out);
+            }
+            other => panic!("{}", other.keyword()),
+        }
+    }
+
+    #[test]
+    fn traverse_closing_arrow_is_optional() {
+        // `->cites->` and `->cites` are the same walk; demanding the closing
+        // arrow would be ceremony.
+        let a = parse("TRAVERSE a -> cites ->").unwrap();
+        let b = parse("TRAVERSE a -> cites").unwrap();
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn traverse_takes_multiple_starts_depth_and_limit() {
+        match parse("TRAVERSE a, b, c -> cites -> DEPTH 3 LIMIT 50").unwrap() {
+            Statement::Traverse(t) => {
+                assert_eq!(t.start, vec!["a".to_string(), "b".into(), "c".into()]);
+                assert_eq!(t.depth, Some(3));
+                assert_eq!(t.limit, Some(50));
+            }
+            other => panic!("{}", other.keyword()),
+        }
+    }
+
+    #[test]
+    fn traverse_without_an_arrow_is_rejected() {
+        let e = parse("TRAVERSE a cites").unwrap_err();
+        assert!(e.message.contains("`->`"), "{}", e.message);
+    }
+
+    #[test]
+    fn live_and_info() {
+        assert_eq!(parse("LIVE").unwrap(), Statement::Live(Live { since: None }));
+        assert_eq!(
+            parse("LIVE SINCE 42").unwrap(),
+            Statement::Live(Live { since: Some(42) })
+        );
+        assert_eq!(parse("INFO").unwrap(), Statement::Info(Info));
+    }
+
+    /// RELATE mutates; TRAVERSE/LIVE/INFO read. A read-only surface must be able
+    /// to expose the reads — getting this wrong either blocks safe verbs or
+    /// exposes a write.
+    #[test]
+    fn only_relate_counts_as_a_write_among_the_graph_verbs() {
+        assert!(parse("RELATE a -> v -> b").unwrap().is_write());
+        for src in ["TRAVERSE a ->", "LIVE", "LIVE SINCE 1", "INFO"] {
+            assert!(!parse(src).unwrap().is_write(), "{src} only reads");
         }
     }
 

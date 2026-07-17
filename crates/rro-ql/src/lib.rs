@@ -36,7 +36,10 @@ mod lexer;
 mod lower;
 mod parser;
 
-pub use ast::{CmpOp, Define, Delete, Expr, Remove, Select, Statement, Update, Value};
+pub use ast::{
+    CmpOp, Define, Delete, Direction, Expr, Info, Live, Relate, Remove, Select, Statement,
+    Traverse, Update, Value,
+};
 pub use error::QlError;
 pub use lexer::{lex, LexError, Token, TokenKind};
 pub use lower::lower_select;
