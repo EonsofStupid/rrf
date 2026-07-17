@@ -63,6 +63,7 @@ bytemuck = "1"
 proptest = "1"
 criterion = { version = "0.5", default-features = false, features = ["cargo_bench_support"] }
 tempfile = "3"
+fjall = "3"
 
 [profile.release]
 lto = "thin"

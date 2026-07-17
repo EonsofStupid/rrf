@@ -24,3 +24,6 @@ tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 tempfile = { workspace = true }
 proptest = { workspace = true }
 embedder = { workspace = true }
+# Feasibility spike for the RocksDB→Fjall fork (fork/rocksdb-to-fjall). Dev-only:
+# proves the storage-seam mapping without touching the production build.
+fjall = { workspace = true }
