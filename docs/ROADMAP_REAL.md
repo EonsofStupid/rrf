@@ -75,7 +75,7 @@ Verified by reading code *and call sites*, not `README`/`ASSESSMENT` (both stale
 
 | capability | status | where | phase |
 |---|---|---|---|
-| ACID transactions | ❌ **no rollback exists** — uses `rocksdb::DB` directly | `connxism/src/store.rs` | **5** |
+| ACID transactions | ⚠️ 2026-07-17 — multi-op atomic `transaction()` over upsert/remove with verified rollback; RRQL BEGIN/COMMIT + other ops = 5b-2 | `connxism/src/txn.rs` | **5** |
 | Namespaces / databases above collections | ❌ | `connxism` | **10** |
 | Schemafull `DEFINE` enforcement, `ALTER`, `REMOVE` | ❌ — DEFINE parses; nothing enforces | `rro-ql`, `connxism` | **10** |
 | `LIVE` / `KILL` | ⚠️ **parse-only — refuses at execution**, points at `watch` | `rro-engine/src/sql.rs:182` | **10** |
@@ -205,16 +205,24 @@ reproduced (200k docs, 2.5% filter → 1 result, recall@10=0.10) then fixed to
 recall@10 ≥ 0.9. `AnnIndex::search_filtered` admits only allowed nodes to the beam.
 Scale tests #[ignore]d (~90s debug), ann-unit test carries the mechanism in CI.
 
-### 5 — The storage layer, done once *(NEXT — all of it touches `estate.rs`'s open path)*
-`TransactionDB` — there is no rollback today · the `Db` seam `PARITY.md` claims but
-which was never authored (also makes tests hermetic) · **`prefix_extractor` on
-`CF_TERMS`** — postings are `term \x00 doc_id`, read by prefix scan (the BM25 hot
-path); whole-key blooms there do nothing · **BlobDB on `CF_VECS`** — ~10 KB values
-rewritten by every compaction · **the memtable budget** —
-`set_write_buffer_size` is per-CF inside the descriptor loop: 16 × 64 MiB × 2 =
-up to **2 GiB**, never computed.
-**Gate:** rollback leaves every index consistent; suite passes on both `Db`
-backends; each RocksDB change measured before/after.
+### 5 — The storage layer, done once *(in progress)*
+- **5a RocksDB workload fit** ✅ DONE (2026-07-17, PR #10): memtable ceiling +
+  `CF_TERMS` prefix bloom + `CF_VECS` BlobDB. Correctness verified; perf within
+  noise on a warm synthetic bench (benefit is at-scale, deferred to Phase 15).
+- **5b transactions** ✅ core DONE (2026-07-17): multi-op atomic
+  `ConnXRecall::transaction(Vec<WriteOp>)` over upsert/remove. `txn::Transaction`
+  threads the estate's read-modify-write counters through every statement (the
+  hazard: two upserts each re-reading the pre-commit `doc_count` would net +1,
+  not +2) and defers the out-of-band graph ops to commit, so rollback needs no
+  2PC — a dropped-before-commit transaction leaves the graph untouched because
+  nothing durable landed. Every single write is now an implicit one-statement
+  transaction on the same path. *Gate met:* `a_failed_transaction_changes_nothing`
+  proves rollback leaves count + ids + payload index byte-identical.
+  **Follow-on (5b-2):** RRQL `BEGIN`/`COMMIT`/`CANCEL` syntax and `_into` forms
+  for the remaining write ops (relate, payload-patch, define) so an arbitrary
+  statement sequence is transactional, not just upsert/remove.
+- **5c the `Db` seam** — the rocksdb+mem backend `PARITY.md` claims but which was
+  never authored (also makes tests hermetic). *Gate:* suite passes on both backends.
 
 ### 6 — Scale past RAM
 Immutable segments + background optimizer (mirrors the two-phase design already in
