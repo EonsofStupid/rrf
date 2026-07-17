@@ -1226,6 +1226,11 @@ impl Estate {
     /// durable vectors are the truth.
     pub fn persist_graph(&self) -> Result<()> {
         self.quiesce();
+        // Train the PQ codebook if the graph is still warming up, so it serializes
+        // as codes + codebook rather than raw full vectors. No-op for other
+        // quantizers and for an already-trained PQ graph. Quiescent, so the brief
+        // write lock races nothing.
+        self.ann.write().expect("ann lock poisoned").seal();
         let guard = self.ann.read().expect("ann lock poisoned");
         // A nonzero backlog means committed graph ops the applier has not yet
         // folded in — the graph trails the changefeed and cannot be tagged.

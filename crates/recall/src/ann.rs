@@ -38,6 +38,14 @@ pub enum Quantizer {
     Sq8,
     /// Binary quantization — 1 bit/dim (~32× smaller). Coarse; traversal code.
     Bq,
+    /// Product quantization — `m` bytes/vector via a trained codebook
+    /// (`dim/m`× smaller). Accuracy between SQ8 and BQ, tunable by `m`. Needs
+    /// training, so the graph warms up on full vectors then trains once it has
+    /// enough (or is sealed for persistence).
+    Pq {
+        /// Subspaces = bytes per encoded vector; `dim` must be divisible by it.
+        m: usize,
+    },
 }
 
 impl Quantizer {
@@ -334,11 +342,19 @@ impl<T: bytemuck::Pod> MappedVec<T> {
     }
 }
 
+/// Warm-up size before a PQ codebook is trained: enough sub-vectors for k-means
+/// to fill 256 centroids per subspace. Below this the graph holds full vectors.
+const PQ_TRAIN_SIZE: usize = 4096;
+/// Lloyd iterations when training a PQ codebook.
+const PQ_TRAIN_ITERS: usize = 12;
+
 /// Vector storage: full-precision `f32`, SQ8 codes (1 byte/dim + per-vector
-/// params), or BQ sign bits (1 bit/dim, paramless). All keep their raw data in a
-/// [`MappedVec`], so any precision can be paged from disk; the SQ8 `params` stay
-/// in RAM (tiny next to the codes). The per-vector *unit* differs — `dim` f32 or
-/// bytes for Full/SQ8, `bq_bytes(dim)` bytes for BQ — so each arm passes its own.
+/// params), BQ sign bits (1 bit/dim, paramless), or PQ codes (`m` bytes/vector
+/// against a trained codebook). All keep their raw data in a [`MappedVec`], so any
+/// precision can be paged from disk. The per-vector *unit* differs — `dim` f32 or
+/// bytes for Full/SQ8, `bq_bytes(dim)` for BQ, `m` for PQ — so each arm passes its
+/// own. PQ additionally warms up on full vectors in `warmup` until it has enough
+/// to train, then encodes into `codes` and frees the warmup.
 enum Store {
     Full(MappedVec<f32>),
     Sq8 {
@@ -348,6 +364,22 @@ enum Store {
     Bq {
         bits: MappedVec<u8>,
     },
+    Pq {
+        /// `None` while warming up; `Some` once trained.
+        codebook: Option<Arc<crate::quant::PqCodebook>>,
+        /// Full vectors (flattened, node-ordered) held until training.
+        warmup: Vec<f32>,
+        /// `m` code bytes per vector, valid once `codebook` is set.
+        codes: MappedVec<u8>,
+        /// Subspaces (bytes per encoded vector).
+        m: usize,
+    },
+}
+
+/// Train a PQ codebook from a flattened, node-ordered warm-up buffer.
+fn train_pq(warmup: &[f32], dim: usize, m: usize) -> crate::quant::PqCodebook {
+    let sample: Vec<Vec<f32>> = warmup.chunks_exact(dim).map(<[f32]>::to_vec).collect();
+    crate::quant::pq_train(&sample, dim, m, PQ_TRAIN_ITERS)
 }
 
 impl Store {
@@ -362,6 +394,12 @@ impl Store {
             Quantizer::Bq => Store::Bq {
                 bits: MappedVec::in_ram(),
             },
+            Quantizer::Pq { m } => Store::Pq {
+                codebook: None,
+                warmup: Vec::new(),
+                codes: MappedVec::in_ram(),
+                m,
+            },
         }
     }
 
@@ -371,6 +409,7 @@ impl Store {
             Store::Full(_) => Quantizer::None,
             Store::Sq8 { .. } => Quantizer::Sq8,
             Store::Bq { .. } => Quantizer::Bq,
+            Store::Pq { m, .. } => Quantizer::Pq { m: *m },
         }
     }
 
@@ -381,6 +420,27 @@ impl Store {
                 params.push(crate::quant::quantize_into(v, &mut codes.tail));
             }
             Store::Bq { bits } => crate::quant::bq_encode_into(v, &mut bits.tail),
+            Store::Pq {
+                codebook,
+                warmup,
+                codes,
+                m,
+            } => match codebook {
+                Some(cb) => crate::quant::pq_encode_into(v, cb, &mut codes.tail),
+                None => {
+                    warmup.extend_from_slice(v);
+                    let dim = v.len();
+                    if dim > 0 && warmup.len() / dim >= PQ_TRAIN_SIZE {
+                        let cb = train_pq(warmup, dim, *m);
+                        for chunk in warmup.chunks_exact(dim) {
+                            crate::quant::pq_encode_into(chunk, &cb, &mut codes.tail);
+                        }
+                        warmup.clear();
+                        warmup.shrink_to_fit();
+                        *codebook = Some(Arc::new(cb));
+                    }
+                }
+            },
         }
     }
 
@@ -395,6 +455,18 @@ impl Store {
             Store::Bq { bits } => bits.with(node, crate::quant::bq_bytes(dim), |b| {
                 crate::quant::bq_dot_query(b, q)
             }),
+            Store::Pq {
+                codebook,
+                warmup,
+                codes,
+                m,
+            } => match codebook {
+                None => {
+                    let s = node as usize * dim;
+                    rro_core::simd::dot(&warmup[s..s + dim], q)
+                }
+                Some(cb) => codes.with(node, *m, |c| crate::quant::pq_dot_query(c, cb, q)),
+            },
         }
     }
 
@@ -416,6 +488,20 @@ impl Store {
                     bits.with(b, u, |bb| crate::quant::bq_dot_codes(ba, bb, dim))
                 })
             }
+            Store::Pq {
+                codebook,
+                warmup,
+                codes,
+                m,
+            } => match codebook {
+                None => {
+                    let (sa, sb) = (a as usize * dim, b as usize * dim);
+                    rro_core::simd::dot(&warmup[sa..sa + dim], &warmup[sb..sb + dim])
+                }
+                Some(cb) => codes.with(a, *m, |ca| {
+                    codes.with(b, *m, |cbv| crate::quant::pq_dot_codes(ca, cbv, cb))
+                }),
+            },
         }
     }
 
@@ -429,6 +515,18 @@ impl Store {
             Store::Bq { bits } => bits.with(node, crate::quant::bq_bytes(dim), |b| {
                 crate::quant::bq_decode(b, dim)
             }),
+            Store::Pq {
+                codebook,
+                warmup,
+                codes,
+                m,
+            } => match codebook {
+                None => {
+                    let s = node as usize * dim;
+                    warmup[s..s + dim].to_vec()
+                }
+                Some(cb) => codes.with(node, *m, |c| crate::quant::pq_decode(c, cb)),
+            },
         }
     }
 
@@ -440,6 +538,16 @@ impl Store {
                 codes.logical_bytes() + params.len() * std::mem::size_of::<crate::quant::SqParams>()
             }
             Store::Bq { bits } => bits.logical_bytes(),
+            Store::Pq {
+                warmup,
+                codes,
+                codebook,
+                ..
+            } => {
+                warmup.len() * 4
+                    + codes.logical_bytes()
+                    + codebook.as_ref().map_or(0, |c| c.centroids.len() * 4)
+            }
         }
     }
 
@@ -453,6 +561,39 @@ impl Store {
                 codes.heap_bytes() + params.len() * std::mem::size_of::<crate::quant::SqParams>()
             }
             Store::Bq { bits } => bits.heap_bytes(),
+            Store::Pq {
+                warmup,
+                codes,
+                codebook,
+                ..
+            } => {
+                warmup.len() * 4
+                    + codes.heap_bytes()
+                    + codebook.as_ref().map_or(0, |c| c.centroids.len() * 4)
+            }
+        }
+    }
+
+    /// Train the PQ codebook now if the graph is PQ and still warming up, so a
+    /// small graph can still be serialized. `dim` reshapes the warm-up buffer.
+    /// No-op for other stores or an already-trained / empty PQ graph.
+    fn seal_with_dim(&mut self, dim: usize) {
+        if let Store::Pq {
+            codebook,
+            warmup,
+            codes,
+            m,
+        } = self
+        {
+            if codebook.is_none() && !warmup.is_empty() && dim > 0 {
+                let cb = train_pq(warmup, dim, *m);
+                for chunk in warmup.chunks_exact(dim) {
+                    crate::quant::pq_encode_into(chunk, &cb, &mut codes.tail);
+                }
+                warmup.clear();
+                warmup.shrink_to_fit();
+                *codebook = Some(Arc::new(cb));
+            }
         }
     }
 }
@@ -907,6 +1048,14 @@ impl AnnIndex {
                 w.extend_from_slice(&(bits.len() as u64).to_le_bytes());
                 bits.write_all(&mut w);
             }
+            Store::Pq {
+                codebook, codes, m, ..
+            } => {
+                w.push(3);
+                write_pq(&mut w, *m, codebook);
+                w.extend_from_slice(&(codes.len() as u64).to_le_bytes());
+                codes.write_all(&mut w);
+            }
         }
         w
     }
@@ -949,6 +1098,24 @@ impl AnnIndex {
                 bits.tail = r.take(blen)?.to_vec();
                 Store::Bq { bits }
             }
+            3 => {
+                let (m, codebook) = read_pq(&mut r)?;
+                let clen = r.u64()? as usize;
+                let mut codes = MappedVec::in_ram();
+                codes.tail = r.take(clen)?.to_vec();
+                // A non-empty PQ graph must carry a codebook and one code-block per
+                // node; anything else is unusable → reject so the caller rebuilds.
+                if !head.ids.is_empty() && (codebook.is_none() || codes.len() != head.ids.len() * m)
+                {
+                    return None;
+                }
+                Store::Pq {
+                    codebook: codebook.map(Arc::new),
+                    warmup: Vec::new(),
+                    codes,
+                    m,
+                }
+            }
             _ => return None,
         };
         // The store tag must agree with how this estate is configured, or a graph
@@ -983,6 +1150,10 @@ impl AnnIndex {
                 write_params(&mut w, params);
             }
             Store::Bq { .. } => w.push(2),
+            Store::Pq { codebook, m, .. } => {
+                w.push(3);
+                write_pq(&mut w, *m, codebook);
+            }
         }
         w
     }
@@ -998,6 +1169,7 @@ impl AnnIndex {
             Store::Full(v) => v.stream_to(w),
             Store::Sq8 { codes, .. } => codes.stream_to(w),
             Store::Bq { bits } => bits.stream_to(w),
+            Store::Pq { codes, .. } => codes.stream_to(w),
         }
     }
 
@@ -1011,7 +1183,18 @@ impl AnnIndex {
             Store::Full(v) => v.needs_flush(),
             Store::Sq8 { codes, .. } => codes.needs_flush(),
             Store::Bq { bits } => bits.needs_flush(),
+            // A warming-up PQ graph (codebook not yet trained) has no codes to
+            // write yet — but must flush once sealed/trained.
+            Store::Pq { codes, .. } => codes.needs_flush(),
         }
+    }
+
+    /// Train the PQ codebook now if the graph is still warming up, so it can be
+    /// persisted. Must be called (under a write lock) before serializing a PQ
+    /// graph that may not have reached the training threshold. No-op otherwise.
+    pub fn seal(&mut self) {
+        let dim = self.dim.unwrap_or(0);
+        self.store.seal_with_dim(dim);
     }
 
     /// Reconstruct a graph from a structure blob ([`AnnIndex::to_structure_bytes`])
@@ -1035,22 +1218,21 @@ impl AnnIndex {
             return None;
         }
         let head = Head::read(&mut r)?;
-        let quantizer = match r.u8()? {
-            0 => Quantizer::None,
-            1 => Quantizer::Sq8,
-            2 => Quantizer::Bq,
+        // The store side-data (SQ8 params, PQ codebook) follows the tag in the
+        // structure blob and is read regardless of whether the graph is empty.
+        let (quantizer, params, pq) = match r.u8()? {
+            0 => (Quantizer::None, None, None),
+            1 => (Quantizer::Sq8, Some(read_params(&mut r)?), None),
+            2 => (Quantizer::Bq, None, None),
+            3 => {
+                let (m, codebook) = read_pq(&mut r)?;
+                (Quantizer::Pq { m }, None, Some((m, codebook)))
+            }
             _ => return None,
         };
         if quantizer != config.quantizer {
             return None;
         }
-        // SQ8 params travel in the structure blob and must be read regardless of
-        // whether the graph is empty (they follow the store tag).
-        let params = if quantizer == Quantizer::Sq8 {
-            Some(read_params(&mut r)?)
-        } else {
-            None
-        };
         let n = head.ids.len();
         let dim = head.dim.unwrap_or(0);
         // An empty graph has no vectors and no file to page — stay in-RAM.
@@ -1064,19 +1246,21 @@ impl AnnIndex {
         }
         // Elements per vector in the file's unit type, and the exact file size the
         // structure implies. A sidecar of any other length is a skew → reject.
-        let (unit, expected_bytes) = match quantizer {
-            Quantizer::None => (dim, n * dim * std::mem::size_of::<f32>()),
-            Quantizer::Sq8 => (dim, n * dim),
-            Quantizer::Bq => {
-                let u = crate::quant::bq_bytes(dim);
-                (u, n * u)
-            }
+        let unit = match quantizer {
+            Quantizer::None | Quantizer::Sq8 => dim,
+            Quantizer::Bq => crate::quant::bq_bytes(dim),
+            Quantizer::Pq { m } => m,
+        };
+        let elem_bytes = match quantizer {
+            Quantizer::None => std::mem::size_of::<f32>(),
+            _ => 1,
         };
         let file_bytes = vectors.metadata().ok()?.len() as usize;
-        if file_bytes != expected_bytes {
+        if file_bytes != n * unit * elem_bytes {
             return None;
         }
         let base_len = n * unit;
+        // Only one arm runs, so `vectors` is moved exactly once.
         let store = match quantizer {
             Quantizer::None => Store::Full(MappedVec::paged(
                 PagedBase::new(vectors, unit, n, cache_budget_bytes),
@@ -1095,6 +1279,19 @@ impl AnnIndex {
                     base_len,
                 ),
             },
+            Quantizer::Pq { m } => {
+                // A non-empty paged PQ graph must carry a trained codebook.
+                let codebook = pq.and_then(|(_, cb)| cb)?;
+                Store::Pq {
+                    codebook: Some(Arc::new(codebook)),
+                    warmup: Vec::new(),
+                    codes: MappedVec::paged(
+                        PagedBase::new(vectors, unit, n, cache_budget_bytes),
+                        base_len,
+                    ),
+                    m,
+                }
+            }
         };
         Some(head.into_index(config, store))
     }
@@ -1245,6 +1442,52 @@ fn read_params(r: &mut ByteReader) -> Option<Vec<crate::quant::SqParams>> {
         });
     }
     Some(params)
+}
+
+/// Append the PQ header: `m`, then a present-flag and (if present) the codebook
+/// (`k`, `sub_dim`, and `m·k·sub_dim` centroid floats). `m` is written even when
+/// the codebook is absent, so an empty/unsealed PQ graph still records its shape.
+fn write_pq(w: &mut Vec<u8>, m: usize, codebook: &Option<Arc<crate::quant::PqCodebook>>) {
+    w.extend_from_slice(&(m as u32).to_le_bytes());
+    match codebook {
+        Some(cb) => {
+            w.push(1);
+            w.extend_from_slice(&(cb.k as u32).to_le_bytes());
+            w.extend_from_slice(&(cb.sub_dim as u32).to_le_bytes());
+            for &f in &cb.centroids {
+                w.extend_from_slice(&f.to_le_bytes());
+            }
+        }
+        None => w.push(0),
+    }
+}
+
+/// Inverse of [`write_pq`]: returns `(m, codebook)`. `None` on a truncated or
+/// malformed buffer.
+fn read_pq(r: &mut ByteReader) -> Option<(usize, Option<crate::quant::PqCodebook>)> {
+    let m = r.u32()? as usize;
+    match r.u8()? {
+        0 => Some((m, None)),
+        1 => {
+            let k = r.u32()? as usize;
+            let sub_dim = r.u32()? as usize;
+            let n = m.checked_mul(k)?.checked_mul(sub_dim)?;
+            let mut centroids = Vec::with_capacity(n);
+            for _ in 0..n {
+                centroids.push(r.f32()?);
+            }
+            Some((
+                m,
+                Some(crate::quant::PqCodebook {
+                    m,
+                    k,
+                    sub_dim,
+                    centroids,
+                }),
+            ))
+        }
+        _ => None,
+    }
 }
 
 #[cfg(test)]
@@ -1449,6 +1692,133 @@ mod tests {
             raw_recall >= 0.30,
             "raw BQ recall@10 = {raw_recall:.3} — should still be well above random"
         );
+    }
+
+    #[test]
+    fn pq_seal_serialize_roundtrips_and_search_is_identical() {
+        // Below PQ_TRAIN_SIZE, so the graph warms up on full vectors; `seal`
+        // forces training so it can be serialized and searched as PQ.
+        let dim = 64;
+        let m = 8; // sub_dim 8 → 8 bytes/vec
+        let n = 800;
+        let mut idx = AnnIndex::new(AnnConfig {
+            quantizer: Quantizer::Pq { m },
+            ..AnnConfig::default()
+        });
+        for i in 0..n {
+            idx.insert(
+                Id::new(format!("v{i}")),
+                &Embedding(pseudo_vec(i as u64, dim)),
+            );
+        }
+        idx.seal();
+        assert_eq!(idx.quantizer(), Quantizer::Pq { m });
+
+        // Round-trip through the single-blob format; PQ codebook + codes survive.
+        let bytes = idx.to_bytes();
+        let back = AnnIndex::from_bytes(
+            &bytes,
+            AnnConfig {
+                quantizer: Quantizer::Pq { m },
+                ..AnnConfig::default()
+            },
+        )
+        .expect("PQ blob must reload under a PQ config");
+        assert_eq!(back.len(), idx.len());
+
+        for qi in 0..30 {
+            let q = Embedding(pseudo_vec(9_000_000 + qi as u64, dim));
+            let a: Vec<_> = idx
+                .search(&q, 10, 128)
+                .into_iter()
+                .map(|(id, _)| id.as_str().to_string())
+                .collect();
+            let b: Vec<_> = back
+                .search(&q, 10, 128)
+                .into_iter()
+                .map(|(id, _)| id.as_str().to_string())
+                .collect();
+            assert_eq!(a, b, "reloaded PQ graph must search identically");
+        }
+
+        // A PQ config mismatch (different m) is rejected.
+        assert!(
+            AnnIndex::from_bytes(
+                &bytes,
+                AnnConfig {
+                    quantizer: Quantizer::Pq { m: 16 },
+                    ..AnnConfig::default()
+                }
+            )
+            .is_none(),
+            "a PQ blob must not load under a different m"
+        );
+    }
+
+    #[test]
+    #[ignore = "PQ trains a codebook over 5k vectors; run under --release --ignored"]
+    fn pq_recall_gate_memory_and_rescored_recall() {
+        let n = 5000; // > PQ_TRAIN_SIZE, so the codebook trains during build
+        let dim = 128;
+        let m = 16; // sub_dim 8 → 16 bytes/vec = 8× smaller than 512-byte f32
+        let mut idx = AnnIndex::new(AnnConfig {
+            quantizer: Quantizer::Pq { m },
+            ..AnnConfig::default()
+        });
+        let mut vecs = Vec::with_capacity(n);
+        for i in 0..n {
+            let e = Embedding(pseudo_vec(i as u64, dim));
+            idx.insert(Id::new(format!("v{i}")), &e);
+            vecs.push(e.normalized());
+        }
+        idx.seal();
+        assert_eq!(idx.quantizer(), Quantizer::Pq { m });
+
+        let queries = 100;
+        let (mut raw_found, mut resc_found, mut total) = (0usize, 0usize, 0usize);
+        for qi in 0..queries {
+            let q = Embedding(pseudo_vec(1_000_000 + qi as u64, dim));
+            let qn = q.normalized();
+            let truth = exact_top_k(&vecs, &q, 10);
+            let raw: Vec<usize> = idx
+                .search(&q, 10, 128)
+                .into_iter()
+                .filter_map(|(id, _)| id.as_str()[1..].parse().ok())
+                .collect();
+            let mut cands: Vec<usize> = idx
+                .search(&q, 64, 200)
+                .into_iter()
+                .filter_map(|(id, _)| id.as_str()[1..].parse().ok())
+                .collect();
+            cands.sort_by(|&a, &b| vecs[b].cosine(&qn).total_cmp(&vecs[a].cosine(&qn)));
+            let rescored: Vec<usize> = cands.into_iter().take(10).collect();
+            for t in truth {
+                total += 1;
+                if raw.contains(&t) {
+                    raw_found += 1;
+                }
+                if rescored.contains(&t) {
+                    resc_found += 1;
+                }
+            }
+        }
+        let raw_recall = raw_found as f64 / total as f64;
+        let rescored_recall = resc_found as f64 / total as f64;
+        let full_bytes = n * dim * 4;
+        let pq_bytes = idx.vector_bytes();
+        println!(
+            "PQ GATE — raw recall@10 {raw_recall:.3}, rescored recall@10 {rescored_recall:.3}, \
+             vector bytes {pq_bytes} vs full {full_bytes} ({:.1}× smaller)",
+            full_bytes as f64 / pq_bytes as f64
+        );
+        // PQ sits between SQ8 and BQ; rescore lifts it well past raw. Floor has
+        // margin below the measured ~0.85 (uniform-random data is adversarial —
+        // the tie-band artifact — and real embeddings do better).
+        assert!(
+            rescored_recall >= 0.80,
+            "PQ + rescore recall@10 = {rescored_recall:.3}"
+        );
+        assert!(raw_recall >= 0.40, "raw PQ recall@10 = {raw_recall:.3}");
     }
 
     #[test]

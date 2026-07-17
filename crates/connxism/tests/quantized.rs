@@ -157,3 +157,77 @@ async fn binary_quantized_estate_recall_gate() {
         "binary-quantized estate recall@10 = {recall_at_10:.3}, gate is 0.85"
     );
 }
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "PQ trains a codebook over 5k vectors; run under --release via scripts/gates.sh"]
+async fn product_quantized_estate_recall_gate() {
+    // > PQ_TRAIN_SIZE (4096) so the codebook trains during ingest, and the graph
+    // actually searches on PQ codes rather than warm-up full vectors.
+    let n = 5000;
+    let dim = 128;
+    let m = 16; // 16 bytes/vec
+    let dir = tempfile::tempdir().unwrap();
+    let estate = Estate::open_with(
+        dir.path(),
+        "pq",
+        EstateConfig {
+            quantizer: Quantizer::Pq { m },
+            ..EstateConfig::default()
+        },
+    )
+    .unwrap();
+    let recall = estate.recall();
+
+    let mut vecs = Vec::with_capacity(n);
+    let mut records = Vec::with_capacity(n);
+    for i in 0..n {
+        let e = Embedding(pseudo_vec(i as u64, dim));
+        vecs.push(e.clone());
+        records.push(VectorRecord::new(
+            format!("doc{i}"),
+            e,
+            format!("entry {i}"),
+        ));
+    }
+    recall.upsert(records).await.unwrap();
+    recall.quiesce().await.unwrap();
+
+    let queries = 50;
+    let mut found = 0usize;
+    let mut total = 0usize;
+    for qi in 0..queries {
+        let q = Embedding(pseudo_vec(1_000_000 + qi as u64, dim));
+        let mut truth: Vec<(usize, f32)> = vecs.iter().map(|v| q.cosine(v)).enumerate().collect();
+        truth.sort_by(|a, b| b.1.total_cmp(&a.1));
+        let truth: Vec<String> = truth
+            .into_iter()
+            .take(10)
+            .map(|(i, _)| format!("doc{i}"))
+            .collect();
+
+        let hits = recall.search(&q, 10).await.unwrap();
+        for t in &truth {
+            total += 1;
+            if hits.iter().any(|c| c.id.as_str() == t) {
+                found += 1;
+            }
+        }
+        // Scores must be exact cosine after rescore, even from PQ codes.
+        for c in &hits {
+            let i: usize = c.id.as_str()[3..].parse().unwrap();
+            let exact = q.cosine(&vecs[i]);
+            assert!(
+                (c.score - exact).abs() < 1e-5,
+                "score for {} must be exact after rescore: {} vs {exact}",
+                c.id,
+                c.score
+            );
+        }
+    }
+    let recall_at_10 = found as f64 / total as f64;
+    println!("PQ ESTATE GATE — recall@10 {recall_at_10:.3} ({m}-byte codes + exact rescore)");
+    assert!(
+        recall_at_10 >= 0.80,
+        "product-quantized estate recall@10 = {recall_at_10:.3}, gate is 0.80"
+    );
+}
