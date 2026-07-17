@@ -1,5 +1,11 @@
 //! The Reason Ready flow: the one pass that ties the components together.
 
+/// Intent routing — RRO's own stage, with no counterpart in clyffy's `stage::`
+/// vocabulary. It is post-embed *routing* (`route_tags` over the query vector),
+/// which is neither `shape` (pre-model) nor `recall`. Named as an extension
+/// rather than folded into a clyffy stage that means something else.
+const ST_INTENT: &str = "intent";
+
 use std::sync::Arc;
 
 use classifier::HeuristicClassifier;
@@ -89,6 +95,11 @@ impl ReasonReadyObject {
         let stage = |name: &str, since: Instant, fields: serde_json::Value| {
             rro_core::emit_stage(turn, name, since, fields);
         };
+        // Stage names come from `rro_core::semconv`, which mirrors clyffy's
+        // vocabulary: RRD's gate IS clyffy's `shape` stage, and the readiness
+        // verdict IS its `reason` stage. Emitting "rrd"/"classify" instead meant
+        // the same pipeline had two names depending on who was reading.
+        use rro_core::semconv::stage as st;
         rro_core::emit_turn(
             turn,
             "flow.open",
@@ -107,7 +118,7 @@ impl ReasonReadyObject {
             };
             let rro = rrd.distill_stamped("query", query, &rro_core::Metadata::new(), None, stamp);
             stage(
-                "rrd",
+                st::SHAPE,
                 t,
                 serde_json::json!({
                     "gate": rro.gate,
@@ -133,6 +144,7 @@ impl ReasonReadyObject {
                     }),
                 );
                 return Ok(RecallResult {
+                    turn,
                     query: query.to_string(),
                     candidates: Vec::new(),
                     readiness: rro_core::Readiness::not_ready(
@@ -148,7 +160,7 @@ impl ReasonReadyObject {
 
         let t = Instant::now();
         let q = self.embedder.embed_query_one(query).await?;
-        stage("embed", t, serde_json::json!({ "dim": q.dim() }));
+        stage(st::EMBED, t, serde_json::json!({ "dim": q.dim() }));
 
         // Intent: the L2 half of the query's distillation, on the embedding
         // we just paid for anyway.
@@ -159,7 +171,7 @@ impl ReasonReadyObject {
         };
         // Intent was computed and never emitted — invisible in the stream, so a
         // routed turn looked identical to an unrouted one.
-        stage("intent", t, serde_json::json!({ "tags": intent }));
+        stage(ST_INTENT, t, serde_json::json!({ "tags": intent }));
 
         let t = Instant::now();
         let recalled = self
@@ -167,7 +179,7 @@ impl ReasonReadyObject {
             .hybrid_search(query, &q, self.config.recall_k)
             .await?;
         stage(
-            "recall",
+            st::RECALL,
             t,
             serde_json::json!({
                 "candidates": recalled.len(),
@@ -183,7 +195,7 @@ impl ReasonReadyObject {
         // Which docs, not just how many: "rerank changed the answer" is the
         // claim, and only the ids can show it.
         stage(
-            "rerank",
+            st::RERANK,
             t,
             serde_json::json!({
                 "kept": ranked.len(),
@@ -194,7 +206,7 @@ impl ReasonReadyObject {
         let t = Instant::now();
         let readiness = self.classifier.classify(query, &ranked).await?;
         stage(
-            "classify",
+            st::REASON,
             t,
             serde_json::json!({
                 "ready": readiness.ready,
@@ -221,6 +233,7 @@ impl ReasonReadyObject {
         );
 
         Ok(RecallResult {
+            turn,
             query: query.to_string(),
             candidates: ranked,
             readiness,

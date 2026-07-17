@@ -32,9 +32,14 @@ use std::sync::atomic::{AtomicU64, Ordering};
 /// a UUID. A turn id is minted on the hot path of every query, so it must cost
 /// nothing — and it only has to be unique within a node's event stream, which is
 /// the scope anyone reassembles a turn from.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default, serde::Serialize, serde::Deserialize,
+)]
 pub struct TurnId(u64);
 
+/// Ids start at 1, so `TurnId(0)` — [`TurnId::default`] — can mean "no turn":
+/// a result that never went through the engine, or one deserialized from a
+/// payload written before results carried their turn.
 static NEXT: AtomicU64 = AtomicU64::new(1);
 
 impl TurnId {
@@ -46,6 +51,11 @@ impl TurnId {
     /// The raw counter.
     pub fn get(self) -> u64 {
         self.0
+    }
+
+    /// Whether this id refers to a real turn (see [`TurnId::default`]).
+    pub fn is_real(self) -> bool {
+        self.0 != 0
     }
 }
 
@@ -66,22 +76,32 @@ impl From<u64> for TurnId {
 /// Every stage of every pass goes through here, so the shape is uniform:
 /// `{turn, stage, ms, …}`. A stage that invented its own field names would be a
 /// stage nobody can query for.
+/// The field names come from [`crate::semconv`], which mirrors clyffy's
+/// `clyffy-telemetry` vocabulary verbatim — `devpulse.stage`,
+/// `devpulse.latency_ms`. This module first shipped its own `stage`/`ms`/`turn`
+/// keys, which meant RRO's stream and clyffy's stream described the same five
+/// stages in two different languages and could not be read together. RRO is
+/// pulled INTO clyffy; conforming is the whole point.
 pub fn emit_stage(turn: TurnId, stage: &str, since: std::time::Instant, mut fields: serde_json::Value) {
+    use crate::semconv::attr;
     if let Some(obj) = fields.as_object_mut() {
-        obj.insert("turn".to_string(), serde_json::json!(turn.get()));
-        obj.insert("stage".to_string(), serde_json::json!(stage));
+        obj.insert(attr::TURN.to_string(), serde_json::json!(turn.get()));
+        obj.insert(attr::STAGE.to_string(), serde_json::json!(stage));
         obj.insert(
-            "ms".to_string(),
+            attr::LATENCY_MS.to_string(),
             serde_json::json!(since.elapsed().as_micros() as f64 / 1000.0),
         );
     }
-    crate::events::emit("flow.stage", fields);
+    crate::events::emit(crate::semconv::EVENT_STAGE, fields);
 }
 
 /// Emit an arbitrary turn-scoped signal (`kind` is the event name).
 pub fn emit_turn(turn: TurnId, kind: &str, mut fields: serde_json::Value) {
     if let Some(obj) = fields.as_object_mut() {
-        obj.insert("turn".to_string(), serde_json::json!(turn.get()));
+        obj.insert(
+            crate::semconv::attr::TURN.to_string(),
+            serde_json::json!(turn.get()),
+        );
     }
     crate::events::emit(kind, fields);
 }
@@ -119,14 +139,15 @@ mod tests {
         // The uniform shape is the contract: anything reassembling a turn keys
         // on exactly these fields.
         let turn = TurnId::next();
+        use crate::semconv::attr;
         let mut v = serde_json::json!({ "gate": "pass" });
         if let Some(o) = v.as_object_mut() {
-            o.insert("turn".into(), serde_json::json!(turn.get()));
-            o.insert("stage".into(), serde_json::json!("rrd"));
-            o.insert("ms".into(), serde_json::json!(0.006));
+            o.insert(attr::TURN.into(), serde_json::json!(turn.get()));
+            o.insert(attr::STAGE.into(), serde_json::json!(crate::semconv::stage::SHAPE));
+            o.insert(attr::LATENCY_MS.into(), serde_json::json!(0.006));
         }
-        assert_eq!(v["turn"], serde_json::json!(turn.get()));
-        assert_eq!(v["stage"], "rrd");
+        assert_eq!(v[attr::TURN], serde_json::json!(turn.get()));
+        assert_eq!(v[attr::STAGE], "shape");
         assert!(v.get("gate").is_some(), "stage-specific fields survive");
     }
 }

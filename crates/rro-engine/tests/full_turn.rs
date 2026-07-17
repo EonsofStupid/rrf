@@ -11,6 +11,7 @@
 use std::sync::{Arc, Mutex, OnceLock};
 
 use rro_core::events::{Event, EventSink};
+use rro_core::semconv::attr;
 use rro_core::{Recall, VectorRecord};
 use rro_engine::ReasonReadyObject;
 
@@ -53,7 +54,7 @@ fn turn_of(cap: &Capture, id: u64) -> Vec<Event> {
         .lock()
         .unwrap()
         .iter()
-        .filter(|e| e.fields.get("turn").and_then(|t| t.as_u64()) == Some(id))
+        .filter(|e| e.fields.get(attr::TURN).and_then(|t| t.as_u64()) == Some(id))
         .cloned()
         .collect()
 }
@@ -61,26 +62,31 @@ fn turn_of(cap: &Capture, id: u64) -> Vec<Event> {
 fn stages(events: &[Event]) -> Vec<String> {
     events
         .iter()
-        .filter(|e| e.kind == "flow.stage")
+        .filter(|e| e.kind == rro_core::semconv::EVENT_STAGE)
         .filter_map(|e| {
             e.fields
-                .get("stage")
+                .get(attr::STAGE)
                 .and_then(|s| s.as_str())
                 .map(str::to_string)
         })
         .collect()
 }
 
-/// The turn id of the most recent `flow.turn`.
-fn last_turn_id(cap: &Capture) -> u64 {
+/// Every turn id the stream has closed, oldest first.
+///
+/// There is deliberately no `last_turn_id()` here any more. It read "the newest
+/// `flow.turn` in the stream", which is a *guess* — and under concurrency it
+/// guesses another test's turn, which is exactly what made this file flaky
+/// (7 failures per 100 runs). `ask()` now returns the turn it ran, so a test
+/// never has to guess.
+fn closed_turns(cap: &Capture) -> Vec<u64> {
     cap.events
         .lock()
         .unwrap()
         .iter()
-        .rev()
-        .find(|e| e.kind == "flow.turn")
-        .and_then(|e| e.fields.get("turn").and_then(|t| t.as_u64()))
-        .expect("a pass must close with flow.turn")
+        .filter(|e| e.kind == "flow.turn")
+        .filter_map(|e| e.fields.get(attr::TURN).and_then(|t| t.as_u64()))
+        .collect()
 }
 
 async fn flow_with_docs() -> (tempfile::TempDir, Arc<ReasonReadyObject>) {
@@ -112,9 +118,8 @@ async fn one_query_emits_one_readable_turn() {
     let cap = capture();
     let (_d, flow) = flow_with_docs().await;
 
-    flow.ask("what is retrieval").await.unwrap();
-    let id = last_turn_id(&cap);
-    let events = turn_of(&cap, id);
+    let r = flow.ask("what is retrieval").await.unwrap();
+    let events = turn_of(&cap, r.turn.get());
 
     // Opens and closes. A turn that just stops reads as a crash.
     assert_eq!(
@@ -131,15 +136,15 @@ async fn one_query_emits_one_readable_turn() {
     // The pipeline, in pipeline order.
     assert_eq!(
         stages(&events),
-        vec!["rrd", "embed", "intent", "recall", "rerank", "classify"],
+        vec!["shape", "embed", "intent", "recall", "rerank", "reason"],
         "every stage must appear exactly once, in order — a missing stage means \
          the turn is unreadable at that point"
     );
 
     // Every event is timed and attributable.
-    for e in events.iter().filter(|e| e.kind == "flow.stage") {
-        assert!(e.fields.get("ms").is_some(), "every stage carries its own ms");
-        assert!(e.fields.get("turn").is_some(), "every stage carries its turn");
+    for e in events.iter().filter(|e| e.kind == rro_core::semconv::EVENT_STAGE) {
+        assert!(e.fields.get(attr::LATENCY_MS).is_some(), "every stage carries its own latency");
+        assert!(e.fields.get(attr::TURN).is_some(), "every stage carries its turn");
     }
 
     let close = events.last().unwrap();
@@ -160,28 +165,24 @@ async fn concurrent_turns_do_not_bleed_into_each_other() {
         let f = flow.clone();
         handles.push(tokio::spawn(async move { f.ask(q).await.unwrap() }));
     }
+    // The ids of OUR three passes, straight from the results — no guessing.
+    let mut ids = Vec::new();
     for h in handles {
-        h.await.unwrap();
+        ids.push(h.await.unwrap().turn.get());
+    }
+    assert_eq!(ids.len(), 3);
+    let closed = closed_turns(&cap);
+    for id in &ids {
+        assert!(closed.contains(id), "turn {id} never closed");
     }
 
-    // Collect the ids of the three closing events.
-    let ids: Vec<u64> = cap
-        .events
-        .lock()
-        .unwrap()
-        .iter()
-        .filter(|e| e.kind == "flow.turn")
-        .filter_map(|e| e.fields.get("turn").and_then(|t| t.as_u64()))
-        .collect();
-    assert!(ids.len() >= 3, "each pass must close its own turn");
-
-    // Each of the last three turns must be individually complete — that is only
-    // possible if the ids actually separate the interleaved streams.
-    for id in ids.iter().rev().take(3) {
+    // Each must be individually complete — only possible if the ids actually
+    // separate the interleaved streams.
+    for id in &ids {
         let events = turn_of(&cap, *id);
         assert_eq!(
             stages(&events),
-            vec!["rrd", "embed", "intent", "recall", "rerank", "classify"],
+            vec!["shape", "embed", "intent", "recall", "rerank", "reason"],
             "turn {id} is incomplete — concurrent turns bled together"
         );
         let queries: Vec<&str> = events
@@ -206,12 +207,13 @@ async fn a_gated_turn_closes_and_shows_zero_model_calls() {
     assert!(!r.readiness.ready);
     assert_eq!(r.readiness.label, "gated");
 
-    let id = last_turn_id(&cap);
-    let events = turn_of(&cap, id);
+    // r.turn is THIS pass's id — not "whatever closed last", which is how this
+    // test used to read another test's turn and fail 7% of the time.
+    let events = turn_of(&cap, r.turn.get());
 
     assert_eq!(
         stages(&events),
-        vec!["rrd"],
+        vec!["shape"],
         "a blocked query must NOT reach embed/recall/rerank — if any later stage \
          appears, the gate is not saving the model call it claims to"
     );
@@ -232,10 +234,8 @@ async fn a_gated_turn_closes_and_shows_zero_model_calls() {
 async fn a_fast_turn_still_reports_a_nonzero_total() {
     let cap = capture();
     let (_d, flow) = flow_with_docs().await;
-    flow.ask("fast").await.unwrap();
-
-    let id = last_turn_id(&cap);
-    let events = turn_of(&cap, id);
+    let r = flow.ask("fast").await.unwrap();
+    let events = turn_of(&cap, r.turn.get());
     let total = events
         .last()
         .unwrap()
