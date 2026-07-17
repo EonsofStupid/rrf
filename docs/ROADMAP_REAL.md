@@ -29,7 +29,7 @@ The three things most often asked about:
 |---|---|
 | **RocksDB** | ✅ real — 16 CFs; WAL/crash recovery proven by `abort()`×3 with 500 docs intact. Workload tuning missing (Phase 5). |
 | **connXism** | ✅ real, and the strongest part of the codebase. |
-| **GraphQL** | ❌ **zero occurrences in the tree.** Not a stub, not started. Phase 11. |
+| **GraphQL** | ✅ 2026-07-17 — real parser+executor, rides the a2a transport (a language, not a transport). Query-side; mutations follow. |
 
 ---
 
@@ -85,7 +85,7 @@ Verified by reading code *and call sites*, not `README`/`ASSESSMENT` (both stale
 | Record-level permissions | ❌ | new | **12** |
 | HTTP REST (`/sql`, `/key/:table`) | ❌ | `rro-http` | **11** |
 | WebSocket RPC | ❌ | `rro-http` | **11** |
-| **GraphQL** | ❌ **zero in tree** | `rro-http` | **11** |
+| **GraphQL** | ✅ 2026-07-17 — query surface (parser+executor) over the a2a transport, NOT a bolted-on HTTP server. GraphQL is a language, not a transport. `graphql` verb + `rro_graphql` MCP. Mutations/introspection = follow-on | `rro-engine/src/graphql.rs` | ~~11~~ |
 | Import / export | ❌ | `rro-http` | **11** |
 | Distributed / cluster | ❌ | `rro-net` | **13** |
 | Full-text search + analyzers | ✅ | `index.rs`, `text::Analyzer` | — |
