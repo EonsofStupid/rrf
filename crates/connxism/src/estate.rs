@@ -5,7 +5,9 @@
 //! series. The recall store ([`crate::ConnXRecall`]) shares the same database
 //! through a cheap clone of the inner handle.
 
-use std::path::Path;
+use std::fs::File;
+use std::io::{BufWriter, Write};
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock as StdRwLock};
 
 use recall::{AnnConfig, AnnIndex};
@@ -101,6 +103,11 @@ pub(crate) fn rocks_err(e: rocksdb::Error) -> RroError {
     RroError::Recall(format!("kvs: {e}"))
 }
 
+/// Map filesystem errors (the vector sidecar) into the engine error type.
+pub(crate) fn io_err(e: std::io::Error) -> RroError {
+    RroError::Recall(format!("graph sidecar: {e}"))
+}
+
 /// Resource limits enforced at the write and query boundaries. `None`
 /// means unlimited. Operational config (like quantization), not index
 /// identity — set at open, reported in health.
@@ -170,6 +177,12 @@ pub struct EstateConfig {
     /// Background compaction + flush threads. RocksDB defaults to 2, which
     /// stalls writes on a many-core box during ingest.
     pub background_jobs: usize,
+    /// Resident budget for the paged ANN vector cache, bytes. The graph's
+    /// vectors live in a node-ordered sidecar file (`graph.vectors`) paged
+    /// through a bounded cache of this size — so RAM tracks the working set, not
+    /// the dataset. The single biggest read-path knob for the vector side on a
+    /// large estate; raise it on a box with memory to spare.
+    pub graph_cache_bytes: usize,
 }
 
 impl Default for EstateConfig {
@@ -191,6 +204,9 @@ impl Default for EstateConfig {
             // Compaction + flush threads. RocksDB defaults to 2, which stalls
             // writes on a many-core box during ingest.
             background_jobs: 4,
+            // 256 MiB paged vector cache — bounds vector RAM independently of the
+            // dataset, which can be tens of GB. Raise on a memory-rich box.
+            graph_cache_bytes: 256 * 1024 * 1024,
         }
     }
 }
@@ -214,6 +230,9 @@ pub struct Estate {
     pub(crate) quotas: Quotas,
     /// Whether df stats are maintained (drives write-path merges).
     pub(crate) lexical_stats: bool,
+    /// Path to the paged ANN vector sidecar (`<estate>/graph.vectors`) — written
+    /// by [`Estate::persist_graph`], memory-mapped-free paged on open.
+    vectors_path: PathBuf,
     /// True when this open loaded the graph from CF_GRAPH rather than rebuilding
     /// it from the durable vectors — the observable behind the startup gate.
     graph_loaded: bool,
@@ -392,21 +411,31 @@ impl Estate {
             }
         };
 
-        // Load the ANN graph. A clean shutdown persists the derived graph to
-        // CF_GRAPH tagged with the changefeed seq it was captured at; if that seq
-        // still matches the live feed_seq, nothing has changed the graph since,
-        // and we load it directly instead of rebuilding — the difference between
-        // opening a 10M-vector estate in read-time and in rebuild-time. Any
-        // mismatch, absence, or decode failure falls through to the rebuild, so
-        // the durable vectors remain the sole source of truth and a stale or
-        // corrupt cache can never serve wrong results.
+        // Load the ANN graph. A clean shutdown persists the graph's *structure* to
+        // CF_GRAPH (tagged with the changefeed seq it was captured at) and its
+        // *vectors* to a node-ordered `graph.vectors` sidecar. If that seq still
+        // matches the live feed_seq, nothing has changed the graph since, so we
+        // load the structure and page the vectors from the sidecar — opening a
+        // 10M-vector estate in read-time, with RAM tracking the working set rather
+        // than the dataset. Any mismatch, absence, or decode failure falls through
+        // to the rebuild, so the durable vectors remain the sole source of truth
+        // and a stale or corrupt cache can never serve wrong results.
+        let vectors_path = path.as_ref().join("graph.vectors");
         let ann_config = AnnConfig {
             quantized: config.quantized,
             ..AnnConfig::default()
         };
-        let (ann, graph_loaded) = match Self::load_persisted_graph(&db, ann_config.clone())? {
+        let (ann, graph_loaded) = match Self::load_persisted_graph(
+            &db,
+            ann_config.clone(),
+            &vectors_path,
+            config.graph_cache_bytes,
+        )? {
             Some(loaded) => {
-                tracing::info!(vectors = loaded.len(), "ann graph loaded from CF_GRAPH");
+                tracing::info!(
+                    vectors = loaded.len(),
+                    "ann graph loaded — structure + paged vectors"
+                );
                 (loaded, true)
             }
             None => {
@@ -446,6 +475,7 @@ impl Estate {
             feed_notify: Arc::new(tokio::sync::Notify::new()),
             quotas: config.quotas.clone(),
             lexical_stats,
+            vectors_path,
             graph_loaded,
             persist_on_drop: std::sync::atomic::AtomicBool::new(true),
             applier: Some(applier),
@@ -1109,14 +1139,21 @@ impl Estate {
 }
 
 impl Estate {
-    /// Read the persisted ANN graph from CF_GRAPH, but only if it is still
-    /// current. The blob is `[feed_seq u64 LE][AnnIndex::to_bytes]`; the seq tag
-    /// is the graph's as-of point on the changefeed. When it equals the live
-    /// `feed_seq` nothing has mutated the graph since it was captured, so the
-    /// decoded graph is exact and we return it. Any staleness, absence, or decode
-    /// failure returns `None`, and the caller rebuilds from the durable vectors —
-    /// the cache is never trusted over the source of truth.
-    fn load_persisted_graph(db: &Db, config: AnnConfig) -> Result<Option<AnnIndex>> {
+    /// Read the persisted ANN graph — structure blob from CF_GRAPH, vectors paged
+    /// from the sidecar — but only if it is still current. The blob is
+    /// `[feed_seq u64 LE][AnnIndex::to_structure_bytes]`; the seq tag is the
+    /// graph's as-of point on the changefeed. When it equals the live `feed_seq`
+    /// nothing has mutated the graph since it was captured, so the structure is
+    /// exact and the sidecar (validated by length inside `from_paged`) matches it.
+    /// Any staleness, absence, decode failure, or missing/mismatched sidecar
+    /// returns `None`, and the caller rebuilds from the durable vectors — the
+    /// cache is never trusted over the source of truth.
+    fn load_persisted_graph(
+        db: &Db,
+        config: AnnConfig,
+        vectors_path: &Path,
+        cache_bytes: usize,
+    ) -> Result<Option<AnnIndex>> {
         let handle = db.cf(keys::CF_GRAPH)?;
         let Some(blob) = db.0.get_cf(handle, keys::GRAPH_ANN).map_err(rocks_err)? else {
             return Ok(None);
@@ -1134,10 +1171,17 @@ impl Estate {
             );
             return Ok(None);
         }
-        match AnnIndex::from_bytes(&blob[8..], config) {
+        let file = match File::open(vectors_path) {
+            Ok(f) => f,
+            Err(err) => {
+                tracing::warn!(%err, "graph vector sidecar missing — rebuilding");
+                return Ok(None);
+            }
+        };
+        match AnnIndex::from_paged(&blob[8..], file, config, cache_bytes) {
             Some(ann) => Ok(Some(ann)),
             None => {
-                tracing::warn!("persisted graph failed to decode — rebuilding");
+                tracing::warn!("persisted graph failed to decode / sidecar mismatch — rebuilding");
                 Ok(None)
             }
         }
@@ -1150,6 +1194,14 @@ impl Estate {
         self.graph_loaded
     }
 
+    /// Heap bytes the ANN graph holds for vectors — the RAM tail plus the bounded
+    /// page cache, never the on-disk sidecar. Observable behind "RSS tracks the
+    /// working set, not the dataset": stays bounded by `graph_cache_bytes` even as
+    /// the vector file grows to tens of GB.
+    pub fn graph_heap_vector_bytes(&self) -> usize {
+        self.ann.read().expect("ann lock").heap_vector_bytes()
+    }
+
     /// Enable/disable persisting the graph on drop (default enabled). Disabling
     /// leaves the on-disk blob untouched at shutdown, so the next open sees the
     /// state a crash would have left — a stale or absent graph that must rebuild.
@@ -1158,16 +1210,19 @@ impl Estate {
             .store(on, std::sync::atomic::Ordering::Relaxed);
     }
 
-    /// Capture the in-memory ANN graph to CF_GRAPH so the next open loads it
-    /// instead of rebuilding — the write side of `load_persisted_graph`.
+    /// Capture the ANN graph so the next open loads it instead of rebuilding —
+    /// the write side of `load_persisted_graph`. The structure (ids, links,
+    /// tombstones, SQ8 params) goes to CF_GRAPH tagged with the changefeed seq;
+    /// the vectors go to the `graph.vectors` sidecar, streamed so a multi-GB write
+    /// never materializes in RAM.
     ///
     /// Must be called at a quiescent point (shutdown, or an operator-driven
-    /// snapshot): the graph and the changefeed seq it is tagged with have to be
-    /// captured for the *same* state, and there is no lock that freezes commits.
-    /// This holds the ANN read lock (which stalls the applier) and re-reads
-    /// `feed_seq` around the serialization; if a write races in, it declines to
-    /// persist rather than write a mis-tagged blob — the open path just rebuilds.
-    /// Persisting is always optional: the durable vectors are the truth.
+    /// snapshot): the graph and the seq it is tagged with have to be captured for
+    /// the *same* state, and there is no lock that freezes commits. This holds the
+    /// ANN read lock (which stalls the applier) and re-reads `feed_seq` around the
+    /// capture; if a write races in, it declines rather than write a mis-tagged
+    /// blob — the open path just rebuilds. Persisting is always optional: the
+    /// durable vectors are the truth.
     pub fn persist_graph(&self) -> Result<()> {
         self.quiesce();
         let guard = self.ann.read().expect("ann lock poisoned");
@@ -1178,18 +1233,40 @@ impl Estate {
             return Ok(());
         }
         let seq_before = self.db.get_u64(keys::META_FEED_SEQ)?;
-        let bytes = guard.to_bytes();
+        let structure = guard.to_structure_bytes();
+
+        // Write the sidecar first (atomic temp + rename), so the structure blob we
+        // commit next always references an at-least-as-new sidecar; the length
+        // check in `from_paged` rejects any residual skew. Skip the (potentially
+        // multi-GB) rewrite when the graph is already fully paged from the current
+        // sidecar and has taken no vector writes since — only tombstones/counters
+        // changed, and those live in the structure blob.
+        if guard.needs_vector_flush() {
+            let tmp = self.vectors_path.with_extension("vectors.tmp");
+            let file = File::create(&tmp).map_err(io_err)?;
+            let mut w = BufWriter::new(file);
+            guard.write_vectors_to(&mut w).map_err(io_err)?;
+            w.flush().map_err(io_err)?;
+            w.into_inner()
+                .map_err(|e| io_err(e.into_error()))?
+                .sync_all()
+                .map_err(io_err)?;
+            std::fs::rename(&tmp, &self.vectors_path).map_err(io_err)?;
+        }
         drop(guard);
-        // If a commit slipped in while we serialized (it can bump feed_seq even
+
+        // If a commit slipped in while we captured (it can bump feed_seq even
         // under the read lock, though the applier could not have folded it in),
-        // the bytes no longer correspond to `seq_before` — decline and rebuild.
+        // the structure no longer corresponds to `seq_before` — decline. The
+        // sidecar we may have written is harmless: without a matching structure
+        // blob the open path rebuilds.
         if self.db.get_u64(keys::META_FEED_SEQ)? != seq_before {
             tracing::debug!("skipping graph persist: feed_seq moved mid-capture");
             return Ok(());
         }
-        let mut blob = Vec::with_capacity(8 + bytes.len());
+        let mut blob = Vec::with_capacity(8 + structure.len());
         blob.extend_from_slice(&seq_before.to_le_bytes());
-        blob.extend_from_slice(&bytes);
+        blob.extend_from_slice(&structure);
         let handle = self.db.cf(keys::CF_GRAPH)?;
         self.db
             .0
@@ -1198,7 +1275,7 @@ impl Estate {
         self.db.0.flush_cf(handle).map_err(rocks_err)?;
         rro_core::events::emit(
             "estate.graph_persist",
-            serde_json::json!({ "seq": seq_before, "bytes": blob.len() }),
+            serde_json::json!({ "seq": seq_before, "structure_bytes": blob.len() }),
         );
         Ok(())
     }

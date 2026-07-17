@@ -138,6 +138,23 @@ impl<T: bytemuck::Pod> PagedBase<T> {
             .read_exact_at(&mut out[start..], 0)
             .expect("paged vector read failed");
     }
+
+    /// Stream the whole base to `w` in node order, in fixed-size chunks — so
+    /// re-writing a multi-GB sidecar never materializes the vectors in RAM (which
+    /// would defeat the very ceiling this design lifts).
+    fn stream_to<W: std::io::Write>(&self, w: &mut W) -> std::io::Result<()> {
+        const CHUNK: usize = 1 << 20; // 1 MiB
+        let total_bytes = self.total * self.unit * std::mem::size_of::<T>();
+        let mut buf = vec![0u8; CHUNK.min(total_bytes.max(1))];
+        let mut off = 0u64;
+        while (off as usize) < total_bytes {
+            let n = CHUNK.min(total_bytes - off as usize);
+            self.file.read_exact_at(&mut buf[..n], off)?;
+            w.write_all(&buf[..n])?;
+            off += n as u64;
+        }
+        Ok(())
+    }
 }
 
 /// A bounded, least-recently-used cache of pages. Eviction is an O(cap) scan for
@@ -278,6 +295,22 @@ impl<T: bytemuck::Pod> MappedVec<T> {
             base.append_bytes(out);
         }
         out.extend_from_slice(bytemuck::cast_slice(&self.tail));
+    }
+
+    /// Stream every element in node order (base then tail) to `w` without
+    /// materializing the base in RAM — the sidecar-write path for large graphs.
+    fn stream_to<W: std::io::Write>(&self, w: &mut W) -> std::io::Result<()> {
+        if let Some(base) = &self.base {
+            base.stream_to(w)?;
+        }
+        w.write_all(bytemuck::cast_slice(&self.tail))
+    }
+
+    /// Whether the vectors need writing to a fresh sidecar. A graph that is
+    /// already fully paged from the current sidecar (base present, no tail) is
+    /// byte-for-byte on disk already — skip the (potentially multi-GB) rewrite.
+    fn needs_flush(&self) -> bool {
+        self.base.is_none() || !self.tail.is_empty()
     }
 }
 
@@ -865,7 +898,7 @@ impl AnnIndex {
 
     /// Serialize everything *except* the raw vectors — ids, links, tombstones,
     /// entry, and (for SQ8) the per-vector params. Pair with
-    /// [`AnnIndex::write_vectors`]; reload with [`AnnIndex::from_paged`].
+    /// [`AnnIndex::write_vectors_to`]; reload with [`AnnIndex::from_paged`].
     pub fn to_structure_bytes(&self) -> Vec<u8> {
         let mut w = Vec::with_capacity(4 * 1024);
         w.extend_from_slice(b"RROS"); // magic: structure-only
@@ -881,19 +914,33 @@ impl AnnIndex {
         w
     }
 
-    /// Append the raw vectors in node order — the exact bytes a later open reads
-    /// back as the paged base. Full: `n·dim` `f32` LE. SQ8: `n·dim` code bytes
-    /// (the params travel in the structure blob). No header, so the file starts on
-    /// a vector boundary and page offsets are a plain multiple of the vector size.
-    pub fn write_vectors(&self, out: &mut Vec<u8>) {
+    /// Stream the raw vectors in node order to `w` — the exact bytes a later open
+    /// reads back as the paged base. Full: `n·dim` `f32` LE. SQ8: `n·dim` code
+    /// bytes (the params travel in the structure blob). No header, so the file
+    /// starts on a vector boundary and page offsets are a plain multiple of the
+    /// vector size. Streamed in chunks, so writing a multi-GB sidecar never
+    /// materializes the vectors in RAM.
+    pub fn write_vectors_to<W: std::io::Write>(&self, w: &mut W) -> std::io::Result<()> {
         match &self.store {
-            Store::Full(v) => v.write_all(out),
-            Store::Sq8 { codes, .. } => codes.write_all(out),
+            Store::Full(v) => v.stream_to(w),
+            Store::Sq8 { codes, .. } => codes.stream_to(w),
+        }
+    }
+
+    /// Whether the vectors must be written to a fresh sidecar on the next persist.
+    /// `false` when the graph is already fully paged from the current sidecar and
+    /// has taken no writes since — the sidecar on disk is already correct, so the
+    /// (potentially multi-GB) rewrite can be skipped and only the structure blob
+    /// re-emitted.
+    pub fn needs_vector_flush(&self) -> bool {
+        match &self.store {
+            Store::Full(v) => v.needs_flush(),
+            Store::Sq8 { codes, .. } => codes.needs_flush(),
         }
     }
 
     /// Reconstruct a graph from a structure blob ([`AnnIndex::to_structure_bytes`])
-    /// plus its node-ordered vector file ([`AnnIndex::write_vectors`]). The vectors
+    /// plus its node-ordered vector file ([`AnnIndex::write_vectors_to`]). The vectors
     /// are *not* read into RAM — they are paged through a bounded cache of
     /// `cache_budget_bytes`, so a graph far larger than RAM opens and searches with
     /// only its working set resident.
@@ -1342,7 +1389,7 @@ mod tests {
         let (idx, _) = build(500, 24);
         let structure = idx.to_structure_bytes();
         let mut vectors = Vec::new();
-        idx.write_vectors(&mut vectors);
+        idx.write_vectors_to(&mut vectors).unwrap();
 
         // Structure omits the vectors; the sidecar is exactly the vector bytes.
         assert!(structure.len() < idx.to_bytes().len());
