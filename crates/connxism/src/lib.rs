@@ -27,6 +27,7 @@ mod query;
 mod rels;
 mod store;
 mod strategies;
+mod txn;
 
 pub use estate::{Estate, EstateConfig, FeedStats, HealthReport, Issue, Quotas};
 
@@ -39,8 +40,8 @@ pub use model::{
 };
 pub use rels::{Relation, TraversalSpec};
 /// Re-exported from the core contract so estate consumers keep one import.
-pub use rro_core::{Condition, EstateQuery, Filter, HybridWeights};
-pub use store::ConnXRecall;
+pub use rro_core::{Condition, EstateQuery, Filter, FusionMode, HybridWeights};
+pub use store::{ConnXRecall, WriteOp};
 pub use strategies::Group;
 
 /// Re-export so downstream crates can name the trait without a second dep.

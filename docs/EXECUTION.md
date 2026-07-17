@@ -28,16 +28,16 @@ store doing *less* work over HTTP.
 |---|---|---|---|
 | 1 | This outline | committed | ✅ |
 | 2 | **accuracy@k** in `rro-bench`: planted golden docs (one unique-marked golden per query; accuracy = golden in top-k) | unit test on planting; metric printed + evented | ✅ estate **1.000**, mem-dense 0.936 (hybrid is the difference) |
-| 3 | **a2a remote path**: `rro-bench --remote <addr>` queries a live `rrf` daemon over layer-2 TCP (full pipeline per query) | remote run returns identical accuracy to local; latency recorded | ✅ remote **1.000** == local; p50 191 ms vs 188 ms local (+3 ms for the wire); ingest 6,480 docs/sec over a2a |
+| 3 | **a2a remote path**: `rro-bench --remote <addr>` queries a live `rro` daemon over layer-2 TCP (full pipeline per query) | remote run returns identical accuracy to local; latency recorded | ✅ remote **1.000** == local; p50 191 ms vs 188 ms local (+3 ms for the wire); ingest 6,480 docs/sec over a2a |
 | 4 | **Baseline harness** (outside the tree): same corpus, same precomputed vectors, into ChromaDB embedded + ChromaDB HTTP server | baseline ingest/query/accuracy numbers emitted | ✅ 566–586 docs/sec, acc 0.572–0.606, p50 3–5 ms |
-| 5 | **The bake-off**: rrf (local + a2a) vs baseline (embedded + HTTP), identical inputs | results table + methodology in BENCHMARKS.md; no metric asserted without a run | ✅ 11.7× durable ingest, 1.000 vs 0.606 accuracy, +3 ms wire cost; ANN latency gap quantified → P2 |
+| 5 | **The bake-off**: rro (local + a2a) vs baseline (embedded + HTTP), identical inputs | results table + methodology in BENCHMARKS.md; no metric asserted without a run | ✅ 11.7× durable ingest, 1.000 vs 0.606 accuracy, +3 ms wire cost; ANN latency gap quantified → P2 |
 | 6 | Green close: fmt/clippy/tests, baselines re-gated, commit+push | CI-green tree | ✅ |
 
 **Methodology guards (so the comparison is honest):**
 - Identical corpus and identical pre-computed vectors for both systems — this
   compares *engines*, not embedding models.
-- rrf runs its **full** pipeline (embed→hybrid→rerank→classify) per query;
-  the baseline does plain vector top-k — rrf doing more work at comparable
+- rro runs its **full** pipeline (embed→hybrid→rerank→classify) per query;
+  the baseline does plain vector top-k — rro doing more work at comparable
   latency *is* the claim.
 - Accuracy is defined (golden-doc@k on planted queries), not vibes. The
   historical "1.0 accuracy / 130x" numbers are treated as targets to

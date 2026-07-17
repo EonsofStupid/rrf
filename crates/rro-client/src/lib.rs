@@ -99,6 +99,33 @@ impl Client {
             .ok_or_else(|| RroError::Net("index reply missing total".into()))
     }
 
+    /// Apply a sequence of writes as one atomic transaction, over the wire.
+    ///
+    /// `ops` is a JSON array whose elements are `{"upsert": [<doc>, …]}` or
+    /// `{"remove": "<id>"}`. All of them commit or none do — a failure anywhere
+    /// (a bad op, a dimension mismatch) rolls the whole batch back and nothing
+    /// durable lands. Returns the number of ops committed.
+    pub async fn transaction(&self, ops: serde_json::Value) -> Result<usize> {
+        let body = self.call("tx", serde_json::json!({ "ops": ops })).await?;
+        if let Some(err) = body.get("error").and_then(|e| e.as_str()) {
+            return Err(RroError::Net(format!("tx refused: {err}")));
+        }
+        body.get("committed")
+            .and_then(|t| t.as_u64())
+            .map(|t| t as usize)
+            .ok_or_else(|| RroError::Net("tx reply missing `committed`".into()))
+    }
+
+    /// Run a GraphQL query against the node — over the a2a transport, not HTTP.
+    ///
+    /// Returns the GraphQL response envelope (`{data}` or `{data, errors}`).
+    /// GraphQL is a query language, not a transport, so this rides the same
+    /// connection as every other verb.
+    pub async fn graphql(&self, query: &str) -> Result<serde_json::Value> {
+        self.call("graphql", serde_json::json!({ "query": query }))
+            .await
+    }
+
     /// Page the node's durable changefeed from `since_seq`.
     pub async fn changes(&self, since_seq: u64, limit: usize) -> Result<ChangesPage> {
         let body = self

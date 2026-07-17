@@ -1,5 +1,11 @@
 # Reason Ready — Roadmap
 
+> **⛔ 2026-07-17 — `docs/ROADMAP_REAL.md` is the execution SSOT.**
+> It is re-grounded on code read in July 2026 and carries the full SurrealDB ×
+> Qdrant parity matrix, every gap mapped to a phase with a gate. Where this file
+> disagrees with it about *what is built* or *what happens next*, that file wins.
+> This one is kept for its phase-status history — not deleted, per the no-deprecation rule.
+
 > **The governing document is [PLAN.md](PLAN.md)** — the full capability
 > matrix and phase gates live there. This file tracks phase status only.
 
@@ -8,7 +14,7 @@ Phased, measurable, each phase gated by the one before. Status: 🟢 done ·
 
 ## Phase 0 — Engine skeleton 🟢
 The clean-authored workspace: the four component traits, weightless defaults,
-the connectome map, the a2a surface, and the end-to-end flow + `rrf` daemon.
+the connectome map, the a2a surface, and the end-to-end flow + `rro` daemon.
 All component tests pass; the demo exercises the pipeline.
 
 ## Phase 1 — Rigorous foundation 🟢
