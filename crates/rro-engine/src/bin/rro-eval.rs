@@ -73,12 +73,12 @@ struct StageCollector {
 
 impl EventSink for StageCollector {
     fn record(&self, event: Event) {
-        if event.kind != "flow.stage" {
+        if event.kind != rro_core::semconv::EVENT_STAGE {
             return;
         }
         let (Some(name), Some(ms)) = (
-            event.fields.get("stage").and_then(|v| v.as_str()),
-            event.fields.get("ms").and_then(|v| v.as_f64()),
+            event.fields.get(rro_core::semconv::attr::STAGE).and_then(|v| v.as_str()),
+            event.fields.get(rro_core::semconv::attr::LATENCY_MS).and_then(|v| v.as_f64()),
         ) else {
             return;
         };
@@ -101,7 +101,7 @@ impl StageCollector {
             .collect();
         g.clear();
         // Pipeline order, not alphabetical — this is a pipeline.
-        let order = ["rrd", "embed", "recall", "rerank", "classify"];
+        let order = ["shape", "embed", "intent", "recall", "rerank", "reason"];
         out.sort_by_key(|(k, _, _)| order.iter().position(|o| o == k).unwrap_or(99));
         out
     }
@@ -261,8 +261,27 @@ async fn run() -> anyhow::Result<()> {
     } else {
         vec!["bm25", "dense", "hybrid", "rro"]
     };
+    let mut names: Vec<String> = names.into_iter().map(String::from).collect();
 
-    for arm in names {
+    // The fusion weight sweep. Fusion is query-time only, so every one of these
+    // arms reuses the single (expensive) embed+index pass above — the sweep costs
+    // milliseconds, not another model run per weight.
+    //
+    // This exists because `hybrid` scoring BELOW `dense` was nearly published as
+    // "fusion hurts". Unweighted RRF gives a 0.3283 retriever exactly the same
+    // vote as a 0.4119 one; the honest question is not "does fusion hurt" but
+    // "at what weight does it help, and does it EVER beat dense". The sweep is
+    // what makes that answerable instead of arguable.
+    let sweep: Vec<f32> = std::env::var("RRO_EVAL_SWEEP")
+        .ok()
+        .map(|v| v.split(',').filter_map(|x| x.trim().parse().ok()).collect())
+        .unwrap_or_default();
+    for w in &sweep {
+        names.push(format!("hybrid:w{w}"));
+    }
+
+    for arm in &names {
+        let arm = arm.as_str();
         let mut ndcg = Vec::new();
         let mut rec = Vec::new();
         let mut mrr = Vec::new();
@@ -288,6 +307,20 @@ async fn run() -> anyhow::Result<()> {
                 "bm25" => recall.lexical_search(&q.text, recall_k).await?,
                 "dense" => recall.search(&qv, recall_k).await?,
                 "hybrid" => recall.hybrid_search(&q.text, &qv, recall_k).await?,
+                // hybrid:w<D> — dense weighted D:1 against lexical, via the typed
+                // query path (fusion is a property of the query, not the estate).
+                a if a.starts_with("hybrid:w") => {
+                    let d: f32 = a.trim_start_matches("hybrid:w").parse().unwrap_or(1.0);
+                    recall
+                        .query(connxism::EstateQuery {
+                            text: Some(q.text.clone()),
+                            vector: Some(qv.clone()),
+                            top_k: recall_k,
+                            fusion: connxism::HybridWeights { dense: d, lexical: 1.0 },
+                            ..Default::default()
+                        })
+                        .await?
+                }
                 "hybrid+rerank" => {
                     let c = recall.hybrid_search(&q.text, &qv, recall_k).await?;
                     reranker.as_ref().unwrap().rerank(&q.text, c, top_k).await?

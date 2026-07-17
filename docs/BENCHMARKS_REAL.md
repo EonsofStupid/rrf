@@ -12,20 +12,32 @@ The single most important number here is not RRO's:
 
 | | nDCG@10 |
 |---|---|
-| our BM25 on nfcorpus | **0.3115** |
+| our BM25 on nfcorpus, **stemmed** | **0.3283** |
 | published BEIR BM25 on nfcorpus | **~0.325** |
+| our BM25, unstemmed (`Analyzer::default()`) | 0.3115 |
 
-Our lexical floor reproduces the literature's lexical floor. That is what makes
-everything below arguable rather than self-reported. A harness whose baseline
-doesn't match published work is measuring something else, and its headline number
-is worthless no matter how good it looks.
+Our lexical floor reproduces the literature's lexical floor **to within 1%**.
+That is what makes everything below arguable rather than self-reported. A harness
+whose baseline doesn't match published work is measuring something else, and its
+headline number is worthless no matter how good it looks.
 
-**This was wrong at first, in the most flattering possible direction.** The BM25
-arm originally faked "lexical only" by handing `hybrid_search` a zero vector —
-fusion still ran and blended a degenerate dense ranking into the lexical one,
-scoring **0.159**, less than half the real baseline. A baseline broken *low*
-makes every arm above it look good. Fixed to call the estate's real
-`lexical_search`, which moved it onto the published number.
+**This was wrong twice, both times in the flattering direction.**
+
+1. The BM25 arm originally faked "lexical only" by handing `hybrid_search` a zero
+   vector — fusion still ran and blended a degenerate dense ranking into the
+   lexical one, scoring **0.159**, less than half the real baseline. A baseline
+   broken *low* makes every arm above it look good. Fixed to call the estate's
+   real `lexical_search`.
+2. It then ran **unstemmed** (0.3115), because `Estate::open()` →
+   `EstateConfig::default()` → `Analyzer::default()` is the *legacy* pipeline and
+   nobody had read it. Stemming moved it to **0.3283** — from 4% under the
+   published figure to within 1% of it. The analyzer is now an explicit knob
+   (`RRO_EVAL_ANALYZER=legacy|stemming`, default `stemming`) rather than an
+   inherited default.
+
+The pattern in both: **the harness was quietly miscalibrated low, which makes
+every arm above it look better than it is.** That is the most dangerous direction
+for a bug to point, and therefore the one to check first.
 
 ## nfcorpus (BEIR) — 3,633 docs, 323 judged queries, graded qrels 0..2
 
@@ -67,19 +79,95 @@ with `recall`*, which measures 1.659 ms at 300 docs and 3.724 ms at 3,633.
 Anything labelled `wall ms/query` above is end-to-end and model-dominated. It is
 not a statement about the engine.
 
-### Finding 1 — hybrid fusion HURTS here (−5.4%)
+### Finding 1 — hybrid fusion HURTS here, and it survived two rescue attempts
 
-`hybrid` (0.3902) is **worse than `dense` alone** (0.4124). Reciprocal-rank
-fusion blends a 0.31 lexical ranking into a 0.41 dense one and drags it down.
+`hybrid` (0.3902) is **worse than `dense` alone** (0.4124). Two hypotheses were
+raised that this was a bug in the harness rather than a property of the result.
+**Both were tested. Both failed.** The finding stands.
 
-This contradicts the repo's own marketing. `COMPARISON.md` sells "hybrid
-dense+BM25 fused **by default**" as a headline advantage over vector-first
-stores. On this corpus, with this embedder, the default is a **5.4% nDCG
-regression** versus just not fusing. RRF weights the two rankings equally by
-construction; when one retriever is materially better, equal weighting is a tax.
+**Hypothesis 1 — the lexical arm was crippled by an unstemmed analyzer.**
+`Analyzer::default()` is the *legacy* pipeline: word tokens, lowercased,
+stopword-filtered, **unstemmed**. `rro-eval` used `Estate::open()` →
+`EstateConfig::default()`, so BM25 ran unstemmed on morphology-heavy biomedical
+text (statin/statins, cancer/cancers). Real bug; real fix. Re-run with
+`RRO_EVAL_ANALYZER=stemming`:
 
-Not "hybrid is bad" — it is one corpus. But "fused by default" is now a claim
-with a counter-example, and the fusion needs a weight or a gate, not a default.
+| arm | unstemmed | stemmed |
+|---|---:|---:|
+| `bm25` | 0.3115 | **0.3283** (+5.4%) |
+| `dense` | 0.4124 | 0.4120 (unchanged, as expected) |
+| `hybrid` | 0.3902 (−5.4%) | **0.3943 (−4.3%)** |
+
+Stemming lifted BM25 by 5.4% — **and the regression survived.** A better lexical
+arm narrowed the gap and did not close it.
+
+**Hypothesis 2 — RRF had no weight, so a weak arm got an equal vote.**
+Also a real bug: `reciprocal_rank_fusion` summed `1/(k+rank)` per list with no
+per-list scale at all. The mechanism is arithmetic — a BM25-only hit at rank 1
+scores `1/61 = 0.01639` and beats a dense hit at rank 2 at `1/62 = 0.01613`, so
+the *worse* retriever outvotes the better one on its own turf. That is pinned by
+a unit test (`unweighted_fusion_lets_a_weak_list_outvote_a_strong_one`).
+
+A weight was added (`HybridWeights`) and swept — one embed pass, every weight
+scored against it (fusion is query-time, so re-weighting is a clone, not a
+reindex):
+
+| dense:lexical | nDCG@10 |
+|---|---:|
+| 1:1 (plain RRF) | 0.3943 |
+| 1.5:1 | 0.3980 |
+| 2:1 | 0.4049 |
+| 3:1 | 0.4083 |
+| 5:1 | 0.4102 |
+| 8:1 | 0.4114 |
+| **dense alone** | **0.4120** |
+
+**The curve converges toward dense from below and never crosses it.** That is the
+asymptote, not a plateau: as the dense weight grows, fusion → dense-only. **The
+optimal lexical weight on nfcorpus is ≈ 0.** Weighting doesn't rescue fusion; it
+just lets you dial the damage down to zero by turning BM25 off.
+
+**Conclusion.** On this corpus, with this embedder, BM25 contributes nothing to
+dense and any vote given to it makes results worse. Both "missed optimization"
+theories were real bugs worth fixing on their own merits — and neither was the
+cause.
+
+**What this is *not* evidence of.** It is one corpus. BM25 earns its keep on
+**rare exact tokens** — identifiers, SKUs, error codes, acronyms — and nfcorpus
+is natural-language biomedical prose with none of that. BRIGHT (the real target)
+is reasoning-heavy and lexically richer.
+
+**The actual fix is not a constant.** A single global weight is the wrong
+abstraction: the right weight is a property of *the query*, not of the estate.
+That is what RRD's centroid router is for — classify the shape, pick the fusion
+strategy per query. Note also that any weight chosen by reading the table above
+would be **fit to these 323 evaluation queries** — that is tuning on the test
+set, and it is barred. A weight ships only with a train/dev/test split.
+
+### Finding 1b — the `rro` arm's DEFAULT reranker destroys the result
+
+In the stemmed run the flagship `rro` arm scored **0.3199 — the worst arm
+measured**, below `bm25` (0.3283) and far below `hybrid` (0.3943). That is not a
+statement about the engine. It is a default:
+
+```rust
+match reranker {
+    Some(r) => flow.reranker(r).build(),
+    None    => flow.build(),   // -> LexicalReranker (BM25)
+}
+```
+
+`rro-eval` prints `reranker: none` when `RRO_RERANKER` is unset — but `ask()`
+still runs the flow's reranker, and `ObjectBuilder::build()` defaults it to
+**`LexicalReranker`**. So the "no reranker" arm silently **BM25-re-sorts the
+fused candidates**, dragging 0.3943 down to ≈ BM25's own 0.3199. The harness
+reported the absence of a reranker while a reranker was actively undoing the
+dense ranking.
+
+This is the same failure shape as Findings 1's two hypotheses and the zero-vector
+BM25 bug above: **a default nobody chose, silently degrading a measurement, and
+looking like a result about the architecture.** Three of them in one harness.
+Every default on the measurement path is now suspect until it has been read.
 
 ### Finding 2 — the reranker earns quality and costs ~26x
 
