@@ -179,9 +179,9 @@ async fn reopen_pages_vectors_ram_bounded_and_identical() {
 /// (~seconds) to make the gap unmistakable; run with
 /// `cargo test -p connxism --release --test graph_persist -- --ignored`.
 ///
-/// This is the 6a half of the scale story (startup in read-time). The full
-/// "10M vectors, restart < 5s" gate lands with 6b (mmap vectors), where the
-/// vectors no longer have to fit in RAM at all.
+/// This is the 6a half of the scale story (startup in read-time); the 6b half
+/// (vectors page from disk, RAM tracks the working set) is gated by
+/// `scale_gate_paged_reopen_ram_bounded` below.
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "50k-vector timing gate; run under --release --ignored"]
 async fn load_is_faster_than_rebuild() {
@@ -271,5 +271,134 @@ async fn stale_persisted_graph_is_rejected_and_rebuild_sees_all_writes() {
     assert!(
         hits_b.iter().any(|(id, _)| id == "d1400"),
         "a batch-B document must be findable after rebuild"
+    );
+}
+
+/// Resident set size of this process, bytes (Linux `/proc/self/statm`). Noisy —
+/// it includes RocksDB, the allocator's retained pages, and the test's own
+/// reference data — so it is *logged*, not asserted. The asserted RAM proof is
+/// `graph_heap_vector_bytes`, which is exactly the graph's vector heap.
+fn process_rss_bytes() -> usize {
+    let statm = std::fs::read_to_string("/proc/self/statm").unwrap_or_default();
+    let resident_pages: usize = statm
+        .split_whitespace()
+        .nth(1)
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0);
+    resident_pages * 4096
+}
+
+/// 6b at scale: a dataset far larger than the vector cache reopens **paged** —
+/// the graph loads (not rebuilds), restart is fast, the graph's vector heap stays
+/// bounded by the cache (not the dataset), and recall is preserved. `#[ignore]` —
+/// it seeds 200k vectors (~minutes in release); run via `scripts/gates.sh` or
+/// `cargo test -p connxism --release --test graph_persist -- --ignored`.
+///
+/// The RAM-bounded property is **scale-invariant** — it holds whenever the
+/// dataset exceeds the cache — so 200k with an 8 MiB cache (≈9× smaller than the
+/// dataset) proves what 10M would, without an hours-long HNSW build.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "200k-vector scale gate; run under --release --ignored"]
+async fn scale_gate_paged_reopen_ram_bounded() {
+    use std::time::Instant;
+
+    let dir = tempfile::tempdir().unwrap();
+    let dim = 96;
+    let n = 200_000u64;
+    let dataset_bytes = n as usize * dim * 4; // ≈ 73 MiB
+    let cache_bytes = 8 * 1024 * 1024; // 8 MiB — ≈9× smaller than the dataset
+    let cfg = || EstateConfig {
+        graph_cache_bytes: cache_bytes,
+        ..EstateConfig::default()
+    };
+
+    // The sample queries. Dense-only: a lexical token that matches NO document,
+    // so RRF fusion reduces to the pure dense ranking (a common word would let the
+    // lexical arm, which matches every doc, dominate — the "optimal lexical weight
+    // ≈ 0" finding). We compare the paged reopen to the in-RAM build, an EXACT
+    // identity check — the meaningful recall proof at scale, where "top-10 vs
+    // brute force" is noise because uniform random vectors have no cluster
+    // structure and the exact top-10 is arbitrary within a huge tie band.
+    let queries: Vec<Embedding> = (0..50).map(|qi| wide_vec(9_000_000 + qi, dim)).collect();
+    async fn top10(recall: &connxism::ConnXRecall, q: &Embedding) -> Vec<String> {
+        recall
+            .query(EstateQuery::hybrid(
+                "zzq_no_such_lexical_token",
+                q.clone(),
+                10,
+            ))
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|c| c.id.as_str().to_string())
+            .collect()
+    }
+
+    // Build + persist, capturing the in-RAM answers first.
+    let before = {
+        let estate = Estate::open_with(dir.path(), "scale", cfg()).unwrap();
+        let recall = estate.recall();
+        for start in (0..n).step_by(10_000) {
+            let end = (start + 10_000).min(n);
+            let recs: Vec<_> = (start..end)
+                .map(|i| VectorRecord::new(format!("d{i}"), wide_vec(i, dim), format!("doc {i}")))
+                .collect();
+            recall.upsert(recs).await.unwrap();
+        }
+        recall.quiesce().await.unwrap();
+        let mut before = Vec::with_capacity(queries.len());
+        for q in &queries {
+            before.push(top10(&recall, q).await);
+        }
+        before
+    }; // drop streams the vector sidecar
+
+    assert!(
+        dir.path().join("graph.vectors").exists(),
+        "persist must write the sidecar"
+    );
+
+    // Reopen, paged, and time it.
+    let t = Instant::now();
+    let estate = Estate::open_with(dir.path(), "scale", cfg()).unwrap();
+    let reopen_ms = t.elapsed().as_secs_f64() * 1000.0;
+    assert!(estate.graph_was_loaded(), "must load paged, not rebuild");
+    let recall = estate.recall();
+    assert_eq!(recall.len().await.unwrap() as u64, n);
+
+    // Paged answers must be identical to the in-RAM answers — the exact proof that
+    // paging returns the right vectors at scale.
+    let mut identical = 0usize;
+    for (q, want) in queries.iter().zip(&before) {
+        if &top10(&recall, q).await == want {
+            identical += 1;
+        }
+    }
+    let resident = estate.graph_heap_vector_bytes();
+    let rss = process_rss_bytes();
+
+    println!(
+        "6b SCALE — n={n} dim={dim} dataset={}MiB | reopen={reopen_ms:.0}ms \
+         graph_vector_heap={}KiB (cache budget {}KiB) paged==in-RAM {identical}/{} \
+         process_rss={}MiB",
+        dataset_bytes >> 20,
+        resident >> 10,
+        cache_bytes >> 10,
+        queries.len(),
+        rss >> 20,
+    );
+
+    assert!(
+        resident <= cache_bytes + (1 << 20),
+        "graph vector heap {resident} must stay within the cache budget {cache_bytes}"
+    );
+    assert!(
+        resident * 4 < dataset_bytes,
+        "graph vector heap {resident} must be far below the dataset {dataset_bytes}"
+    );
+    assert_eq!(
+        identical,
+        queries.len(),
+        "every paged query must match the in-RAM answer exactly"
     );
 }

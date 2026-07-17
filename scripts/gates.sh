@@ -92,6 +92,13 @@ run filter_aware_hnsw cargo test -p connxism --release --test filter_aware_hnsw 
 # #[ignore]d and run in release here alongside the other scale gates.
 run filter_scan_10k cargo test -p connxism --release --test filters p9_gate_indexed_filter_vs_scan_at_10k -- --ignored --nocapture
 
+# 6b scale gate: a 73 MiB dataset reopens paged with an 8 MiB vector cache —
+# proves the graph loads (not rebuilds), restart is fast, the vector heap stays
+# bounded by the cache (not the dataset), and paged answers are identical to
+# in-RAM. ~85 s in release; the RAM-bounded property is scale-invariant, so this
+# proves what 10M would without an hours-long build.
+run graph_paged_scale cargo test -p connxism --release --test graph_persist scale_gate_paged_reopen_ram_bounded -- --ignored --nocapture
+
 echo
 echo "gates: $pass passed, $skip skipped, $fail failed"
 [ "$fail" -eq 0 ]
