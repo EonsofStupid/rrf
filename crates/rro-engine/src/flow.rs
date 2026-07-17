@@ -11,22 +11,6 @@ use rro_core::{
     Classifier, Document, Embedder, Recall, RecallResult, Reranker, Result, VectorRecord,
 };
 
-/// Emit one pipeline-stage event: the flow is one engine, and the event
-/// stream shows every stage of every pass (`flow.stage` + `flow.pass`).
-fn stage(name: &str, since: std::time::Instant, mut fields: serde_json::Value) {
-    if let Some(obj) = fields.as_object_mut() {
-        obj.insert(
-            "stage".to_string(),
-            serde_json::Value::String(name.to_string()),
-        );
-        obj.insert(
-            "ms".to_string(),
-            serde_json::json!(since.elapsed().as_micros() as f64 / 1000.0),
-        );
-    }
-    rro_core::events::emit("flow.stage", fields);
-}
-
 /// How wide each stage runs.
 #[derive(Debug, Clone)]
 pub struct ObjectConfig {
@@ -98,6 +82,18 @@ impl ReasonReadyObject {
     pub async fn ask(&self, query: &str) -> Result<RecallResult> {
         use std::time::Instant;
         let pass = Instant::now();
+        // One id, carried by every signal this pass emits, so the stream can be
+        // replayed into exactly THIS turn. Without it, concurrent queries
+        // interleave and only aggregates are readable.
+        let turn = rro_core::TurnId::next();
+        let stage = |name: &str, since: Instant, fields: serde_json::Value| {
+            rro_core::emit_stage(turn, name, since, fields);
+        };
+        rro_core::emit_turn(
+            turn,
+            "flow.open",
+            serde_json::json!({ "query": query, "chars": query.chars().count() }),
+        );
 
         // RRD is literally the instant first thing: stamp + gate ladder on
         // the query BEFORE any model cost. A blocked query never reaches the
@@ -113,9 +109,29 @@ impl ReasonReadyObject {
             stage(
                 "rrd",
                 t,
-                serde_json::json!({ "gate": rro.gate, "mode": rro.mode.name() }),
+                serde_json::json!({
+                    "gate": rro.gate,
+                    "mode": rro.mode.name(),
+                    "sliver": rro.sliver_id,
+                    "signals": rro.signals,
+                }),
             );
             if rro.gate == rrd::GateVerdict::Block {
+                // A block is the most interesting turn in the stream: it is the
+                // engine refusing to spend a model call. Close the turn so the
+                // refusal is as visible as a success — a turn that just stops
+                // reads as a crash.
+                rro_core::emit_turn(
+                    turn,
+                    "flow.turn",
+                    serde_json::json!({
+                        "total_ms": pass.elapsed().as_micros() as f64 / 1000.0,
+                        "gated": true,
+                        "ready": false,
+                        "candidates": 0,
+                        "model_calls": 0,
+                    }),
+                );
                 return Ok(RecallResult {
                     query: query.to_string(),
                     candidates: Vec::new(),
@@ -136,10 +152,14 @@ impl ReasonReadyObject {
 
         // Intent: the L2 half of the query's distillation, on the embedding
         // we just paid for anyway.
+        let t = Instant::now();
         let intent: Vec<String> = match (&self.rrd, &query_rro) {
             (Some(rrd), Some(_)) => rrd.route_tags(&q).into_iter().map(|t| t.tag).collect(),
             _ => Vec::new(),
         };
+        // Intent was computed and never emitted — invisible in the stream, so a
+        // routed turn looked identical to an unrouted one.
+        stage("intent", t, serde_json::json!({ "tags": intent }));
 
         let t = Instant::now();
         let recalled = self
@@ -149,7 +169,10 @@ impl ReasonReadyObject {
         stage(
             "recall",
             t,
-            serde_json::json!({ "candidates": recalled.len() }),
+            serde_json::json!({
+                "candidates": recalled.len(),
+                "top": recalled.iter().take(3).map(|c| c.id.as_str()).collect::<Vec<_>>(),
+            }),
         );
 
         let t = Instant::now();
@@ -157,22 +180,43 @@ impl ReasonReadyObject {
             .reranker
             .rerank(query, recalled, self.config.rerank_k)
             .await?;
-        stage("rerank", t, serde_json::json!({ "kept": ranked.len() }));
+        // Which docs, not just how many: "rerank changed the answer" is the
+        // claim, and only the ids can show it.
+        stage(
+            "rerank",
+            t,
+            serde_json::json!({
+                "kept": ranked.len(),
+                "top": ranked.iter().take(3).map(|c| c.id.as_str()).collect::<Vec<_>>(),
+            }),
+        );
 
         let t = Instant::now();
         let readiness = self.classifier.classify(query, &ranked).await?;
         stage(
             "classify",
             t,
-            serde_json::json!({ "ready": readiness.ready, "confidence": readiness.confidence }),
+            serde_json::json!({
+                "ready": readiness.ready,
+                "confidence": readiness.confidence,
+                "label": readiness.label,
+                "rationale": readiness.rationale,
+            }),
         );
 
-        rro_core::events::emit(
-            "flow.pass",
+        rro_core::emit_turn(
+            turn,
+            "flow.turn",
             serde_json::json!({
-                "total_ms": pass.elapsed().as_millis() as u64,
+                // Sub-ms passes exist (the gate, a warm local store), and
+                // as_millis() rounded them to 0 — a stage that reports 0 is a
+                // stage nobody profiles.
+                "total_ms": pass.elapsed().as_micros() as f64 / 1000.0,
+                "gated": false,
                 "ready": readiness.ready,
+                "confidence": readiness.confidence,
                 "candidates": ranked.len(),
+                "intent": intent,
             }),
         );
 

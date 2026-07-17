@@ -171,9 +171,29 @@ async fn run() -> anyhow::Result<()> {
 
     // ---- index ------------------------------------------------------------
     let estate_dir = tempfile::tempdir()?;
-    let estate = Arc::new(connxism::Estate::open(
+    // THE ANALYZER IS NOT A DETAIL. `Analyzer::default()` is the LEGACY pipeline
+    // — word tokens, lowercased, stopword-filtered, and UNSTEMMED. Running the
+    // lexical arm unstemmed on morphology-heavy text (nfcorpus is biomedical:
+    // statin/statins, cancer/cancers, treat/treating) cripples BM25, and then
+    // fusing that crippled ranking into a strong dense one looks exactly like
+    // "fusion hurts" — a missed optimization wearing a regression's clothes.
+    // Default to stemming here and make it switchable, so the claim is testable
+    // rather than an artifact of a default nobody looked at.
+    let analyzer = match std::env::var("RRO_EVAL_ANALYZER").as_deref() {
+        Ok("legacy") => rro_core::text::Analyzer::default(),
+        _ => rro_core::text::Analyzer::stemming(),
+    };
+    println!(
+        "analyzer: {} (RRO_EVAL_ANALYZER=legacy|stemming)",
+        if analyzer.stem { "stemming" } else { "legacy/unstemmed" }
+    );
+    let estate = Arc::new(connxism::Estate::open_with(
         estate_dir.path().to_str().unwrap(),
         "eval",
+        connxism::EstateConfig {
+            analyzer,
+            ..Default::default()
+        },
     )?);
     let recall = estate.recall();
 

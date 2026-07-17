@@ -8,6 +8,7 @@
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
+mod turn;
 pub mod error;
 pub mod events;
 pub mod geo;
@@ -25,3 +26,4 @@ pub use types::{
     maxsim, Candidate, Chunk, Document, Embedding, Id, Metadata, Query, Readiness, RecallResult,
     SparseVector,
 };
+pub use turn::{emit_stage, emit_turn, TurnId};
