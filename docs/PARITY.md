@@ -1,5 +1,11 @@
 # PARITY — the full union inventory
 
+> **⛔ 2026-07-17 — `docs/ROADMAP_REAL.md` is the execution SSOT.**
+> It is re-grounded on code read in July 2026 and carries the full SurrealDB ×
+> Qdrant parity matrix, every gap mapped to a phase with a gate. Where this file
+> disagrees with it about *what is built* or *what happens next*, that file wins.
+> This one is kept for its detailed per-row capability inventory — not deleted, per the no-deprecation rule.
+
 > **Corrections — 2026-07-16 (verified against code, not docs).** Two rows in this
 > file were overclaims and are fixed above:
 > 1. **"DuckDB-native" event stream** → it is **JSONL**. There is no `duckdb`
