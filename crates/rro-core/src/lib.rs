@@ -13,6 +13,7 @@ pub mod error;
 pub mod events;
 pub mod geo;
 pub mod query;
+pub mod semconv;
 pub mod simd;
 pub mod text;
 pub mod time;
@@ -20,7 +21,7 @@ pub mod traits;
 pub mod types;
 
 pub use error::{Result, RroError};
-pub use query::{Condition, EstateQuery, Filter, Prefetch};
+pub use query::{HybridWeights, Condition, EstateQuery, Filter, Prefetch};
 pub use traits::{Classifier, Embedder, Recall, Reranker, VectorRecord};
 pub use types::{
     maxsim, Candidate, Chunk, Document, Embedding, Id, Metadata, Query, Readiness, RecallResult,
