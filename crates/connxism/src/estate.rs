@@ -862,7 +862,13 @@ impl Estate {
         let members = self.collection_members(name)?;
         let analyzer = self.info.analyzer.clone();
         for id in &members {
-            crate::store::remove_blocking(&self.db, &analyzer, id, self.lexical_stats)?;
+            crate::store::remove_blocking(
+                &self.db,
+                &self.pending,
+                &analyzer,
+                id,
+                self.lexical_stats,
+            )?;
             self.pending.push_remove(rro_core::Id::new(id.clone()));
         }
         let mut registry: Vec<String> = self
