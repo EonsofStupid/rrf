@@ -21,7 +21,7 @@ mod turn;
 pub mod types;
 
 pub use error::{Result, RroError};
-pub use query::{Condition, EstateQuery, Filter, HybridWeights, Prefetch};
+pub use query::{Condition, EstateQuery, Filter, FusionMode, HybridWeights, Prefetch};
 pub use traits::{Classifier, Embedder, Recall, Reranker, VectorRecord};
 pub use turn::{emit_stage, emit_turn, TurnId};
 pub use types::{

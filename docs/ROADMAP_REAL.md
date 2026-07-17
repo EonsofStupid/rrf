@@ -102,7 +102,7 @@ Verified by reading code *and call sites*, not `README`/`ASSESSMENT` (both stale
 | mmap vectors / segments / O(1) startup | ❌ **graph is RAM-resident and rebuilds O(N log N) on open — capacity ≈ RAM** | `recall/src/ann.rs`, `estate.rs` | **6** |
 | Immutable segments + background optimizer | ❌ | `connxism` | **6** |
 | PQ / BQ quantization | ❌ — SQ8 is the only quantizer | `recall/src/quant.rs` | **6** |
-| DBSF (distribution-based score fusion) | ❌ — Qdrant ships it *because* RRF discards magnitude | `connxism/src/index.rs` | **7** |
+| DBSF (distribution-based score fusion) | ✅ 2026-07-17 — `distribution_score_fusion` + `FusionMode`, wired to `EstateQuery::fusion_mode`, magnitude-preservation unit-proven | `connxism/src/index.rs` | ~~7~~ |
 | Shard keys / scatter-gather | ❌ | `rro-net` | **13** |
 | Replication / raft | ❌ | `rro-net` | **13** |
 | REST + gRPC surface | ❌ | `rro-http` | **11** |

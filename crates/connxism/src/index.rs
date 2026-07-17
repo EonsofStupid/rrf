@@ -123,9 +123,164 @@ pub fn reciprocal_rank_fusion_weighted(
     out
 }
 
+/// Distribution-based score fusion: **normalize each arm's scores, then sum**.
+///
+/// Where RRF keeps only ranks, DBSF keeps magnitude. Each list's scores are
+/// min-max normalized to `[0, 1]` — so a cosine arm in `[-1, 1]` and a BM25 arm
+/// in `[0, ∞)` become comparable — and each document's normalized scores are
+/// summed with the per-arm weight. A document present in only one arm still
+/// scores; a document strong in one and absent in another keeps most of its
+/// strength, instead of being flattened to `1/(k+rank)` the way RRF would.
+///
+/// The point of keeping magnitude: it is what lets a *weight* mean something (the
+/// strong arm stays strong under fusion) and what lets a *score threshold* mean
+/// something (a fused 0.9 is genuinely more relevant than a fused 0.2). RRF can
+/// give neither — see the module type [`rro_core::FusionMode`] and
+/// `docs/BENCHMARKS_REAL.md` Finding 1.
+///
+/// A list with zero spread (all scores equal, or one element) normalizes to all
+/// `1.0` — it contributes its weight uniformly rather than dividing by zero.
+pub fn distribution_score_fusion(
+    scored: &[Vec<(String, f32)>],
+    weights: &[f32],
+) -> Vec<(String, f32)> {
+    let mut fused: HashMap<String, f32> = HashMap::new();
+    for (li, list) in scored.iter().enumerate() {
+        let w = weights.get(li).copied().unwrap_or(1.0);
+        if w == 0.0 || list.is_empty() {
+            continue;
+        }
+        let (mut lo, mut hi) = (f32::INFINITY, f32::NEG_INFINITY);
+        for (_, s) in list {
+            lo = lo.min(*s);
+            hi = hi.max(*s);
+        }
+        let span = hi - lo;
+        for (id, s) in list {
+            // Zero span -> every score is 1.0 (uniform, not NaN).
+            let norm = if span > f32::EPSILON {
+                (s - lo) / span
+            } else {
+                1.0
+            };
+            *fused.entry(id.clone()).or_insert(0.0) += w * norm;
+        }
+    }
+    let mut out: Vec<(String, f32)> = fused.into_iter().collect();
+    out.sort_by(|a, b| b.1.total_cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    out
+}
+
+/// Fuse ranked, scored lists by the chosen strategy — the one dispatch point so
+/// no call site branches on the mode itself.
+///
+/// RRF ignores the scores (rank is derived from list order); DBSF uses them.
+/// Both honour the per-arm `weights`.
+pub fn fuse(
+    mode: rro_core::FusionMode,
+    scored: &[Vec<(String, f32)>],
+    weights: &[f32],
+    k: f32,
+) -> Vec<(String, f32)> {
+    match mode {
+        rro_core::FusionMode::Rrf => {
+            let lists: Vec<Vec<String>> = scored
+                .iter()
+                .map(|l| l.iter().map(|(id, _)| id.clone()).collect())
+                .collect();
+            reciprocal_rank_fusion_weighted(&lists, weights, k)
+        }
+        rro_core::FusionMode::Dbsf => distribution_score_fusion(scored, weights),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use rro_core::FusionMode;
+
+    #[test]
+    fn dbsf_preserves_magnitude_where_rrf_flattens_it() {
+        // Two arms. In arm A, `strong` beats `weak` by a LOT (0.95 vs 0.10); in
+        // arm B they are close (0.55 vs 0.50). RRF sees only ranks — `strong` is
+        // rank 1 in both, `weak` rank 2 in both — so their fused gap is fixed by
+        // k, independent of how dominant `strong` actually was. DBSF keeps the
+        // magnitude, so `strong`'s real dominance survives the fusion.
+        let a = vec![("strong".to_string(), 0.95), ("weak".to_string(), 0.10)];
+        let b = vec![("strong".to_string(), 0.55), ("weak".to_string(), 0.50)];
+        let scored = [a, b];
+
+        let dbsf = distribution_score_fusion(&scored, &[1.0, 1.0]);
+        let rrf = fuse(FusionMode::Rrf, &scored, &[1.0, 1.0], 60.0);
+
+        // Both rank `strong` first.
+        assert_eq!(dbsf[0].0, "strong");
+        assert_eq!(rrf[0].0, "strong");
+
+        // The gap is the point. DBSF: strong normalizes to 1+1=2, weak to 0+0=0
+        // -> gap 2.0. RRF: both are rank-1 vs rank-2 in both lists -> a small,
+        // magnitude-blind gap. DBSF's gap must be far larger.
+        let dbsf_gap = dbsf[0].1 - dbsf[1].1;
+        let rrf_gap = rrf[0].1 - rrf[1].1;
+        assert!(
+            dbsf_gap > rrf_gap * 10.0,
+            "DBSF must preserve the real dominance (gap {dbsf_gap}) that RRF              flattens to a rank artefact (gap {rrf_gap})"
+        );
+    }
+
+    #[test]
+    fn dbsf_normalizes_incomparable_scales() {
+        // Cosine in [0,1], BM25 unbounded. Without normalization BM25 would swamp
+        // cosine. DBSF maps each arm to [0,1] first, so a top hit in EITHER arm
+        // contributes ~1.0 — the scales stop mattering.
+        let cosine = vec![("x".to_string(), 0.9), ("y".to_string(), 0.1)];
+        let bm25 = vec![("y".to_string(), 42.0), ("x".to_string(), 3.0)];
+        let fused = distribution_score_fusion(&[cosine, bm25], &[1.0, 1.0]);
+        // x: cos-normalized 1.0 + bm25-normalized 0.0 = 1.0
+        // y: cos-normalized 0.0 + bm25-normalized 1.0 = 1.0
+        // A tie — which is correct: each is the top of one arm and bottom of the
+        // other. The un-normalized sum would have y (42+0.1) crush x (3+0.9).
+        assert!(
+            (fused[0].1 - fused[1].1).abs() < 1e-5,
+            "normalized arms tie fairly"
+        );
+    }
+
+    #[test]
+    fn dbsf_weight_zero_ablates_an_arm() {
+        let a = vec![("only_a".to_string(), 0.9)];
+        let b = vec![("only_b".to_string(), 0.9)];
+        let fused = distribution_score_fusion(&[a, b], &[1.0, 0.0]);
+        assert_eq!(fused.len(), 1);
+        assert_eq!(fused[0].0, "only_a");
+    }
+
+    #[test]
+    fn dbsf_single_element_list_does_not_divide_by_zero() {
+        // Zero spread -> normalize to 1.0, not NaN.
+        let a = vec![("solo".to_string(), 0.42)];
+        let fused = distribution_score_fusion(&[a], &[1.0]);
+        assert_eq!(fused.len(), 1);
+        assert!(
+            (fused[0].1 - 1.0).abs() < 1e-6,
+            "zero-span list normalizes to 1.0"
+        );
+    }
+
+    #[test]
+    fn fuse_dispatches_by_mode() {
+        let scored = [
+            vec![("a".to_string(), 0.9), ("b".to_string(), 0.1)],
+            vec![("b".to_string(), 0.9), ("a".to_string(), 0.1)],
+        ];
+        let rrf = fuse(FusionMode::Rrf, &scored, &[1.0, 1.0], 60.0);
+        let dbsf = fuse(FusionMode::Dbsf, &scored, &[1.0, 1.0], 60.0);
+        // Both agree it's a symmetric tie, but via different math — the dispatch
+        // works and neither panics.
+        assert_eq!(rrf.len(), 2);
+        assert_eq!(dbsf.len(), 2);
+    }
 
     #[test]
     fn rrf_prefers_agreement() {

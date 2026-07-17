@@ -193,26 +193,41 @@ impl ConnXRecall {
                     prefiltered = true;
                     let allow: std::collections::HashSet<String> = ids.into_iter().collect();
                     allowed = Some(allow.clone());
-                    self.filter_aware_search(&text, &vector, want, &allow, q.fusion)
+                    self.filter_aware_search(&text, &vector, want, &allow, q.fusion, q.fusion_mode)
                         .await?
                 }
                 // Filter not resolvable from indexes at all — the only option is
                 // over-fetch + post-filter, with the over-fetch scaled up so the
                 // page is likely to fill even for a selective predicate.
                 None => {
-                    self.unscoped(&text, &vector, q.vector.is_some(), fetch, q.fusion)
-                        .await?
+                    self.unscoped(
+                        &text,
+                        &vector,
+                        q.vector.is_some(),
+                        fetch,
+                        q.fusion,
+                        q.fusion_mode,
+                    )
+                    .await?
                 }
             },
             None => match (&q.using, &q.vector) {
                 // Named space: the dense ranking is exact cosine inside that
                 // space; a lexical ranking (if text) fuses in as usual.
                 (Some(space), Some(v)) => {
-                    self.named_hybrid(space, &text, v, fetch, q.fusion).await?
+                    self.named_hybrid(space, &text, v, fetch, q.fusion, q.fusion_mode)
+                        .await?
                 }
                 _ => {
-                    self.unscoped(&text, &vector, q.vector.is_some(), fetch, q.fusion)
-                        .await?
+                    self.unscoped(
+                        &text,
+                        &vector,
+                        q.vector.is_some(),
+                        fetch,
+                        q.fusion,
+                        q.fusion_mode,
+                    )
+                    .await?
                 }
             },
         };
@@ -226,18 +241,19 @@ impl ConnXRecall {
                     sparse.retain(|c| allowed.contains(c.id.as_str()));
                 }
                 if !sparse.is_empty() {
-                    let lists = [
+                    let scored = [
                         results
                             .iter()
-                            .map(|c| c.id.as_str().to_string())
+                            .map(|c| (c.id.as_str().to_string(), c.score))
                             .collect::<Vec<_>>(),
                         sparse
                             .iter()
-                            .map(|c| c.id.as_str().to_string())
+                            .map(|c| (c.id.as_str().to_string(), c.score))
                             .collect::<Vec<_>>(),
                     ];
-                    let fused = crate::index::reciprocal_rank_fusion_weighted(
-                        &lists,
+                    let fused = crate::index::fuse(
+                        q.fusion_mode,
+                        &scored,
                         &q.fusion.as_slice(),
                         FUSION_RRF_K,
                     );
@@ -370,9 +386,11 @@ impl ConnXRecall {
         has_vector: bool,
         fetch: usize,
         weights: rro_core::HybridWeights,
+        mode: rro_core::FusionMode,
     ) -> Result<Vec<Candidate>> {
         if has_vector {
-            self.hybrid_weighted(text, vector, fetch, weights).await
+            self.hybrid_weighted(text, vector, fetch, weights, mode)
+                .await
         } else {
             self.lexical_search(text, fetch).await
         }
@@ -390,6 +408,7 @@ impl ConnXRecall {
         vector: &Embedding,
         fetch: usize,
         weights: rro_core::HybridWeights,
+        mode: rro_core::FusionMode,
     ) -> Result<Vec<Candidate>> {
         let dense = self.named_search(space, vector, fetch).await?;
         let lexical = if text.is_empty() {
@@ -408,21 +427,17 @@ impl ConnXRecall {
             }
             return Ok(out);
         }
-        let lists = [
+        let scored = [
             dense
                 .iter()
-                .map(|c| c.id.as_str().to_string())
+                .map(|c| (c.id.as_str().to_string(), c.score))
                 .collect::<Vec<_>>(),
             lexical
                 .iter()
-                .map(|c| c.id.as_str().to_string())
+                .map(|c| (c.id.as_str().to_string(), c.score))
                 .collect::<Vec<_>>(),
         ];
-        let fused = crate::index::reciprocal_rank_fusion_weighted(
-            &lists,
-            &weights.as_slice(),
-            FUSION_RRF_K,
-        );
+        let fused = crate::index::fuse(mode, &scored, &weights.as_slice(), FUSION_RRF_K);
         let mut out = Vec::with_capacity(fetch.min(fused.len()));
         for (id, score) in fused.into_iter().take(fetch) {
             if let Some(doc) = self.doc(&id).await? {
