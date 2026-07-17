@@ -42,7 +42,7 @@ fn persist_and_page(
 ) -> (AnnIndex, tempfile::TempDir) {
     let structure = idx.to_structure_bytes();
     let mut vecbytes = Vec::new();
-    idx.write_vectors(&mut vecbytes);
+    idx.write_vectors_to(&mut vecbytes).unwrap();
 
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("graph.vectors");
@@ -152,7 +152,7 @@ fn from_paged_rejects_mismatched_sidecar() {
     let idx = build(100, 16, AnnConfig::default());
     let structure = idx.to_structure_bytes();
     let mut vecbytes = Vec::new();
-    idx.write_vectors(&mut vecbytes);
+    idx.write_vectors_to(&mut vecbytes).unwrap();
     vecbytes.truncate(vecbytes.len() - 4); // one f32 short
 
     let dir = tempfile::tempdir().unwrap();
@@ -175,7 +175,7 @@ fn from_paged_rejects_mismatched_sidecar() {
     );
     let sq_structure = sq.to_structure_bytes();
     let mut sq_vecs = Vec::new();
-    sq.write_vectors(&mut sq_vecs);
+    sq.write_vectors_to(&mut sq_vecs).unwrap();
     let sq_path = dir.path().join("sq.vectors");
     std::fs::write(&sq_path, &sq_vecs).unwrap();
     let sq_file = std::fs::File::open(&sq_path).unwrap();

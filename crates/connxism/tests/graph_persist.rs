@@ -1,23 +1,28 @@
-//! Phase 6a — the ANN graph is persisted, so a clean reopen *loads* it instead
-//! of rebuilding it from scratch.
+//! Phase 6a/6b — the ANN graph is persisted, so a clean reopen *loads* it instead
+//! of rebuilding it from scratch, and its vectors are paged from disk so RAM does
+//! not scale with the dataset.
 //!
 //! The graph is a cache derived from the durable `vecs` column family. A clean
-//! shutdown captures it to `CF_GRAPH` tagged with the changefeed seq it was taken
-//! at; the next open loads that blob iff the seq still matches the live
-//! `feed_seq`. This is what turns an O(N log N) rebuild-on-open into an O(read)
-//! load — the "restart in read-time, not rebuild-time" property.
+//! shutdown captures its structure to `CF_GRAPH` (tagged with the changefeed seq
+//! it was taken at) and its vectors to a `graph.vectors` sidecar; the next open
+//! loads that structure iff the seq still matches the live `feed_seq`, and pages
+//! the vectors from the sidecar. This turns an O(N log N) rebuild-on-open into an
+//! O(read) load and keeps vector RAM bounded — "restart in read-time, RSS tracks
+//! the working set."
 //!
-//! Two things must hold, and both are gated here:
+//! What must hold, and is gated here:
 //!  1. **Loads, and is identical.** After a clean reopen the graph is loaded
 //!     (`graph_was_loaded()`), and it returns the *same* search results as before
 //!     the restart — a persisted graph that answered differently would be a
 //!     silent corruption, worse than rebuilding.
-//!  2. **Falls back safely.** If the persisted blob is stale (a crash left it
+//!  2. **RAM is bounded.** Reopened, the graph's vector heap stays within the
+//!     cache budget, not the dataset size (6b).
+//!  3. **Falls back safely.** If the persisted blob is stale (a crash left it
 //!     behind newer writes), the open rebuilds from the durable vectors and every
 //!     document — including the ones written after the stale capture — is present.
 //!     The cache is never trusted over the source of truth.
 
-use connxism::{Estate, EstateQuery};
+use connxism::{Estate, EstateConfig, EstateQuery};
 use rro_core::{Embedding, Recall, VectorRecord};
 
 const DIM: usize = 32;
@@ -87,6 +92,85 @@ async fn reopen_loads_persisted_graph_and_results_are_identical() {
     assert_eq!(
         before, after,
         "loaded graph must return byte-identical results to the graph it was saved from"
+    );
+}
+
+/// A wider vector, so the dataset dwarfs a deliberately small page-cache budget
+/// and "RAM is bounded" is a real claim rather than an artifact of a tiny corpus.
+fn wide_vec(seed: u64, dim: usize) -> Embedding {
+    let mut x = seed.wrapping_add(0x9E37_79B9_7F4A_7C15);
+    let v: Vec<f32> = (0..dim)
+        .map(|_| {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            (x as f64 / u64::MAX as f64) as f32 * 2.0 - 1.0
+        })
+        .collect();
+    Embedding(v).normalized()
+}
+
+/// 6b: after a clean reopen the estate **pages** its vectors from the sidecar —
+/// the graph loads, results are identical, the vector heap stays bounded by the
+/// cache budget (not the dataset), and the sidecar file exists on disk.
+#[tokio::test(flavor = "multi_thread")]
+async fn reopen_pages_vectors_ram_bounded_and_identical() {
+    let dir = tempfile::tempdir().unwrap();
+    let dim = 128;
+    let n = 3000;
+    let dataset_bytes = n * dim * 4; // ≈ 1.5 MiB
+    let cache_bytes = 256 * 1024; // ≈ 6× smaller than the dataset
+    let cfg = || EstateConfig {
+        graph_cache_bytes: cache_bytes,
+        ..EstateConfig::default()
+    };
+    let query = wide_vec(9_100_001, dim);
+
+    let before = {
+        let estate = Estate::open_with(dir.path(), "pg6b", cfg()).unwrap();
+        let recall = estate.recall();
+        let records: Vec<_> = (0..n)
+            .map(|i| {
+                VectorRecord::new(
+                    format!("d{i}"),
+                    wide_vec(i as u64, dim),
+                    format!("document {i}"),
+                )
+            })
+            .collect();
+        recall.upsert(records).await.unwrap();
+        recall.quiesce().await.unwrap();
+        let before = ranked(&recall, &query, 10).await;
+        assert_eq!(before.len(), 10);
+        before
+    };
+
+    // The clean shutdown wrote the vector sidecar.
+    assert!(
+        dir.path().join("graph.vectors").exists(),
+        "persist must write the graph.vectors sidecar"
+    );
+
+    let estate = Estate::open_with(dir.path(), "pg6b", cfg()).unwrap();
+    assert!(
+        estate.graph_was_loaded(),
+        "a clean reopen must LOAD the paged graph, not rebuild it"
+    );
+    let recall = estate.recall();
+
+    let after = ranked(&recall, &query, 10).await;
+    assert_eq!(before, after, "paged reopen must return identical results");
+
+    // The vectors are paged: the graph's resident vector heap is bounded by the
+    // cache budget and nowhere near the whole dataset.
+    let resident = estate.graph_heap_vector_bytes();
+    assert!(
+        resident <= cache_bytes + 128 * 1024,
+        "resident vector heap {resident} must stay within the cache budget {cache_bytes}"
+    );
+    assert!(
+        resident < dataset_bytes / 2,
+        "resident vector heap {resident} must be well under the dataset {dataset_bytes}"
     );
 }
 
