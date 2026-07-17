@@ -5,7 +5,7 @@ the capability inventory, `ROADMAP.md` the old phase status. Where any of them
 disagree with this file about *what is built* or *what happens next*, this file
 wins. It is re-grounded on code read in July 2026, not on doc claims.
 
-_Reconciled 2026-07-17. Phases 0–2 done and merged to `main`._
+_Reconciled 2026-07-17. Phases 0–4 + shape-as-early-intent done and merged to `main`; Phase 5 next._
 
 ---
 
@@ -97,8 +97,8 @@ Verified by reading code *and call sites*, not `README`/`ASSESSMENT` (both stale
 
 | capability | status | where | phase |
 |---|---|---|---|
-| **Filter-aware HNSW** — predicate applied *during* traversal | ❌ **Qdrant's headline differentiator.** RRO has 2 of 3 strategies: filter-first exact (≤4096 ids) and post-filter (`FILTER_OVERFETCH: 8`). The middle band **silently returns near-empty results** | `recall/src/ann.rs`, `connxism/src/query.rs` | **4** |
-| Cardinality estimation | ❌ — payload-index stats exist; nothing reads them for planning | `filter.rs` | **4** |
+| **Filter-aware HNSW** — predicate applied *during* traversal | ✅ 2026-07-17 — `search_filtered`, three-way strategy by exact cardinality | `recall/src/ann.rs`, `connxism/src/query.rs` | ~~4~~ |
+| Cardinality estimation | ✅ 2026-07-17 — the resolved id-set length IS the exact cardinality | `query.rs` | ~~4~~ |
 | mmap vectors / segments / O(1) startup | ❌ **graph is RAM-resident and rebuilds O(N log N) on open — capacity ≈ RAM** | `recall/src/ann.rs`, `estate.rs` | **6** |
 | Immutable segments + background optimizer | ❌ | `connxism` | **6** |
 | PQ / BQ quantization | ❌ — SQ8 is the only quantizer | `recall/src/quant.rs` | **6** |
@@ -160,7 +160,7 @@ Verified by reading code *and call sites*, not `README`/`ASSESSMENT` (both stale
 
 ## THE PHASES
 
-**Done:** ~~0 reconcile~~ · ~~1 dogfood~~ · ~~2 identity~~ · ~~3 prove the engines~~ — merged, CI green.
+**Done:** ~~0 reconcile~~ · ~~1 dogfood~~ · ~~2 identity~~ · ~~3 prove the engines~~ · ~~4 filter-aware HNSW~~ — merged, CI green.
 
 ### ~~3 — Prove the three engines~~ ✅ DONE (2026-07-17)
 
@@ -195,14 +195,17 @@ NV-Embed-V2 / NV-ReRank-V2 / nemotron-3-rerank are absent.
 **Gate:** matrix green and recorded. No accuracy claim ships before this.
 </details>
 
-### 4 — Filter-aware HNSW *(NEXT)* *(a correctness bug, and Qdrant's differentiator)*
+### ~~4 — Filter-aware HNSW~~ ✅ DONE (2026-07-17) *(a correctness bug, and Qdrant's differentiator)*
 Cardinality estimation from the existing payload-index stats → predicate applied
 during the beam search → three-way strategy choice; `FILTER_OVERFETCH` becomes a
 fallback rather than the plan.
-**Gate:** a 0.5%-selectivity filter over ≥1M docs returns a full, correct top-10
-against an exact oracle. Today it returns near-nothing, silently.
+**DONE:** three strategies chosen by exact cardinality — exact scoping (≤65,536
+matches), filter-aware graph traversal (>65,536), post-filter (unindexed). Bug
+reproduced (200k docs, 2.5% filter → 1 result, recall@10=0.10) then fixed to
+recall@10 ≥ 0.9. `AnnIndex::search_filtered` admits only allowed nodes to the beam.
+Scale tests #[ignore]d (~90s debug), ann-unit test carries the mechanism in CI.
 
-### 5 — The storage layer, done once *(all of it touches `estate.rs`'s open path)*
+### 5 — The storage layer, done once *(NEXT — all of it touches `estate.rs`'s open path)*
 `TransactionDB` — there is no rollback today · the `Db` seam `PARITY.md` claims but
 which was never authored (also makes tests hermetic) · **`prefix_extractor` on
 `CF_TERMS`** — postings are `term \x00 doc_id`, read by prefix scan (the BM25 hot
