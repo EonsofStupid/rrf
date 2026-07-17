@@ -37,6 +37,25 @@ const WINDOW: usize = 128;
 /// PSI above this is reported as drift.
 pub const DRIFT_THRESHOLD: f64 = 0.25;
 
+/// Confidence a context's prediction must reach before speculation is
+/// **actionable** rather than merely observed.
+///
+/// The discipline this encodes: **track always, act rarely.** Observing a shape
+/// costs a hashmap bump, so RRD watches everything from the first payload — but
+/// a prediction is only worth acting on once the context has proven it is boring.
+/// V8 does not optimise on one type observation, and neither should this.
+///
+/// 0.97 is deliberately high. The cost of a *wrong* speculation is a mis-routed
+/// intent — a worse answer, arrived at faster, which is the worst trade the
+/// engine can make. The cost of *not* speculating is that a query takes its
+/// normal path. Those are not symmetric, so the bar is not 0.5.
+///
+/// It is a **ceiling on eagerness, not a promise**: a context can sit below it
+/// forever, and that is a fact about the context (megamorphic input), not a
+/// failure. Nothing is forced by reaching it either — see [`Speculation`], which
+/// reports and lets the caller decide.
+pub const SPECULATION_CONFIDENCE: f64 = 0.97;
+
 /// Recency-weighted sliver distribution.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Distribution {
@@ -105,6 +124,13 @@ impl Distribution {
 /// Per-context state: distribution + recent window + speculation ledger.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ContextStats {
+    /// Payloads observed in this context, ever.
+    ///
+    /// Not derivable from what was already here: `dist.total` is a sum of
+    /// *decayed* weights, and `predictions` only counts passes that asked for a
+    /// prediction. Speculation needs a raw count — 0.99 from two samples is not
+    /// 0.99, it is two samples.
+    pub observations: u64,
     /// The context's recency-weighted shape distribution.
     pub dist: Distribution,
     /// Last `WINDOW` observed slivers (drift sample).
@@ -177,6 +203,7 @@ impl ShapeBaseline {
         let unit = self.unit;
         self.global.add(sliver, unit);
         let ctx = self.contexts.entry(context.to_string()).or_default();
+        ctx.observations += 1;
         ctx.dist.add(sliver, unit);
         ctx.window.push_back(sliver);
         if ctx.window.len() > WINDOW {
@@ -216,6 +243,14 @@ impl ShapeBaseline {
             .get(context)
             .map(|c| c.dist.predictability())
             .unwrap_or(1.0)
+    }
+
+    /// Payloads observed in a context (0 if never seen).
+    pub fn context_observations(&self, context: &str) -> u64 {
+        self.contexts
+            .get(context)
+            .map(|c| c.observations)
+            .unwrap_or(0)
     }
 
     /// Prediction hit-rate for a context.
@@ -391,5 +426,75 @@ mod tests {
         let b2 = ShapeBaseline::restore(restored);
         assert_eq!(b2.predict("c").map(|(s, _)| s), Some(42));
         assert_eq!(b2.observations(), 100);
+    }
+}
+
+/// What the baseline believes about a context right now, and whether that belief
+/// has earned the right to change anything.
+///
+/// This is the read-out of "when something hits this context, is it 99% of the
+/// time X?" — with the answer separated from the decision. Nothing here forces a
+/// route. Shape is **one** signal among several triggers; this reports its
+/// strength and lets the caller weigh it.
+///
+/// The split matters because the two failure modes are asymmetric. Acting on a
+/// weak prediction mis-routes intent — a worse answer, delivered faster. Not
+/// acting on a strong one costs a normal query path. So the default is: watch
+/// everything, speculate on almost nothing.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Speculation {
+    /// The shape the cache expects next, if the context has ever been seen.
+    pub sliver: Option<u64>,
+    /// Its share of the context's recency-weighted mass (0..=1).
+    pub confidence: f64,
+    /// `1 − normalized entropy` over the whole distribution: 1.0 monomorphic,
+    /// → 0.0 megamorphic. `confidence` is about one shape; this is about the
+    /// context's overall boringness.
+    pub predictability: f64,
+    /// Observations folded into this context.
+    pub observations: u64,
+    /// PSI vs the committed snapshot. Above [`DRIFT_THRESHOLD`] the world has
+    /// moved and the baseline is describing a context that no longer exists.
+    pub drift: f64,
+}
+
+impl Speculation {
+    /// Whether this belief is strong enough to act on.
+    ///
+    /// Three conditions, all necessary:
+    ///
+    /// * **confidence ≥ [`SPECULATION_CONFIDENCE`]** — the shape actually dominates.
+    /// * **enough observations** — 0.99 from two samples is not 0.99, it is two
+    ///   samples. `MIN_OBSERVATIONS` is the warm-up every inline cache has.
+    /// * **not drifting** — a high-confidence prediction from a stale baseline is
+    ///   the most dangerous state available: maximally certain about a world that
+    ///   has changed. Drift *disables* speculation rather than lowering it,
+    ///   because a drifting context has not become less predictable; it has
+    ///   become predictable about the wrong thing.
+    pub fn actionable(&self) -> bool {
+        self.sliver.is_some()
+            && self.confidence >= SPECULATION_CONFIDENCE
+            && self.observations >= Self::MIN_OBSERVATIONS
+            && self.drift <= DRIFT_THRESHOLD
+    }
+
+    /// Warm-up before any confidence is believed, however lopsided.
+    pub const MIN_OBSERVATIONS: u64 = 30;
+
+    /// Why speculation is or is not enabled — for signals and for the operator,
+    /// because "we did not speculate" is only useful if it says which condition
+    /// failed.
+    pub fn why(&self) -> &'static str {
+        if self.sliver.is_none() {
+            "unseen: no prediction for this context yet"
+        } else if self.observations < Self::MIN_OBSERVATIONS {
+            "warming: too few observations to believe any confidence"
+        } else if self.drift > DRIFT_THRESHOLD {
+            "drifting: the baseline describes a context that has changed"
+        } else if self.confidence < SPECULATION_CONFIDENCE {
+            "megamorphic: no single shape dominates enough to bet on"
+        } else {
+            "actionable: one shape dominates a stable, well-observed context"
+        }
     }
 }

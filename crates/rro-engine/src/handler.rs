@@ -70,9 +70,23 @@ impl Handler for FlowNode {
             })))),
 
             // `ask` / `recall`: run the flow for `body.query`.
+            // `ask`: the full pass. Body: {"query": "...", "fields": {...}}.
+            //
+            // `fields` is optional and is the shaping input: RRD fingerprints
+            // shape from field names and types, so a caller that sends a
+            // COSTAR-aligned map (context/objective/style/tone/audience/response)
+            // gets a real, distinct sliver. A caller that sends nothing gets
+            // `sliver=0, mode=unshaped` — the same shape as every other bare
+            // query, which is why the baseline learns nothing from them.
             "ask" | "recall" => {
                 let query = msg.body.get("query").and_then(|v| v.as_str()).unwrap_or("");
-                let result = self.flow.ask(query).await?;
+                let fields = msg
+                    .body
+                    .get("fields")
+                    .and_then(|v| v.as_object())
+                    .map(|o| o.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
+                    .unwrap_or_default();
+                let result = self.flow.ask_with(query, &fields).await?;
                 Ok(Some(msg.reply(serde_json::to_value(&result)?)))
             }
 
@@ -429,6 +443,65 @@ impl Handler for FlowNode {
                     .unwrap_or_default();
                 let total = self.flow.index(docs).await?;
                 Ok(Some(msg.reply(serde_json::json!({ "total": total }))))
+            }
+
+            // `graphql`: the GraphQL query surface, over the a2a transport.
+            // Body: {"query": "{ search(query: \"x\", topK: 3) { id score } }"}.
+            // GraphQL is a query language, not a transport — so it rides this
+            // NDJSON connection with every other verb rather than a bolted-on
+            // HTTP server. Reply is the standard GraphQL envelope: {data} or
+            // {data, errors}. Read-side only (writes go through `tx`/`sql`).
+            "graphql" => {
+                let Some(estate) = &self.estate else {
+                    return Ok(Some(msg.reply(serde_json::json!({
+                        "error": "no estate attached to this node"
+                    }))));
+                };
+                let query = msg.body.get("query").and_then(|v| v.as_str()).unwrap_or("");
+                let result = crate::graphql::execute(query, estate, &self.flow).await;
+                Ok(Some(msg.reply(result)))
+            }
+
+            // `tx`: a sequence of writes applied as ONE atomic transaction.
+            // Body: {"ops": [{"upsert": [<doc>, …]}, {"remove": "<id>"}, …]}.
+            // Commits all or none — any failure (a bad op, a dim mismatch)
+            // rolls the whole batch back and nothing durable lands. Upserts are
+            // embedded first, so a model failure aborts before any write.
+            "tx" => {
+                let Some(estate) = &self.estate else {
+                    return Ok(Some(msg.reply(serde_json::json!({
+                        "error": "no estate attached to this node"
+                    }))));
+                };
+                let ops_json = msg
+                    .body
+                    .get("ops")
+                    .and_then(|v| v.as_array())
+                    .ok_or_else(|| {
+                        rro_core::RroError::Recall("tx body needs an `ops` array".into())
+                    })?;
+
+                // Build the WriteOps in order — order is load-bearing (an upsert
+                // then a remove of the same id must apply in that sequence).
+                let mut ops: Vec<connxism::WriteOp> = Vec::with_capacity(ops_json.len());
+                for op in ops_json {
+                    if let Some(docs_v) = op.get("upsert") {
+                        let docs: Vec<Document> = serde_json::from_value(docs_v.clone())?;
+                        // Embed OUTSIDE the transaction: a model call must fail
+                        // before any durable write, never mid-batch.
+                        let records = self.flow.embed_documents(docs).await?;
+                        ops.push(connxism::WriteOp::Upsert(records));
+                    } else if let Some(id) = op.get("remove").and_then(|v| v.as_str()) {
+                        ops.push(connxism::WriteOp::Remove(rro_core::Id::from(id)));
+                    } else {
+                        return Err(rro_core::RroError::Recall(
+                            "each tx op must be {\"upsert\": [...]} or {\"remove\": \"id\"}".into(),
+                        ));
+                    }
+                }
+                let n = ops.len();
+                estate.recall().transaction(ops).await?;
+                Ok(Some(msg.reply(serde_json::json!({ "committed": n }))))
             }
 
             // `health`: uptime + a live estate snapshot + self-reported

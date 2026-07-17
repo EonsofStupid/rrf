@@ -65,9 +65,22 @@ impl ReasonReadyObject {
         if docs.is_empty() {
             return self.recall.len().await;
         }
+        let records = self.embed_documents(docs).await?;
+        self.recall.upsert(records).await?;
+        self.recall.len().await
+    }
+
+    /// Embed documents into upsert-ready records **without** writing them.
+    ///
+    /// This is the embed half of [`index`](Self::index), split out because a
+    /// transaction needs the records built before it opens: embedding is a model
+    /// call that can fail, and it must fail *before* any durable write, not
+    /// half-way through a batch. The `tx` verb embeds every upsert here first,
+    /// then commits the resulting records and any removes as one atomic unit.
+    pub async fn embed_documents(&self, docs: Vec<Document>) -> Result<Vec<VectorRecord>> {
         let texts: Vec<String> = docs.iter().map(|d| d.text.clone()).collect();
         let embeddings = self.embedder.embed_documents(&texts).await?;
-        let records: Vec<VectorRecord> = docs
+        Ok(docs
             .into_iter()
             .zip(embeddings)
             .map(|(d, e)| {
@@ -75,9 +88,7 @@ impl ReasonReadyObject {
                 r.metadata = d.metadata;
                 r
             })
-            .collect();
-        self.recall.upsert(records).await?;
-        self.recall.len().await
+            .collect())
     }
 
     /// Run one full pass for `query`: embed → recall → rerank → classify.
@@ -85,7 +96,32 @@ impl ReasonReadyObject {
     /// Recall is *hybrid*: stores that maintain a lexical index fuse dense and
     /// lexical rankings (reciprocal rank fusion); pure vector stores fall back
     /// to dense search via the trait's default.
+    /// Run one full pass for `query`, with no fields.
+    ///
+    /// Equivalent to [`ask_with`](Self::ask_with) with empty metadata — and that
+    /// has a cost worth naming: **shape is fingerprinted from fields**, so a
+    /// query with none is `sliver=0, mode=unshaped`, every time. The RRD baseline
+    /// then sees one shape forever and reports `predictability = 1.0`: perfectly
+    /// predictable and perfectly useless. If you want shape to mean anything,
+    /// use `ask_with`.
     pub async fn ask(&self, query: &str) -> Result<RecallResult> {
+        self.ask_with(query, &rro_core::Metadata::new()).await
+    }
+
+    /// Run one full pass for `query`, carrying `fields` — the shaping input.
+    ///
+    /// `fields` is what makes RRD's shape machinery do anything. The fingerprint
+    /// is `field:type,field:type,…` over this map, so a COSTAR-aligned prompt —
+    /// context / objective / style / tone / audience / response — arrives as a
+    /// real, distinct shape rather than collapsing into the one empty sliver that
+    /// a bare string produces.
+    ///
+    /// Once shapes are distinct, the baseline earns its design: it learns the
+    /// per-context distribution, its inline cache predicts the next sliver, and
+    /// [`rrd::Rrd::predict`] answers "when something hits this context, 99% of the
+    /// time it is shape X" — **before the embedder runs**, for a hashmap lookup.
+    /// That is shape as early intent, and it is why the gate stage is 0.006 ms.
+    pub async fn ask_with(&self, query: &str, fields: &rro_core::Metadata) -> Result<RecallResult> {
         use std::time::Instant;
         let pass = Instant::now();
         // One id, carried by every signal this pass emits, so the stream can be
@@ -116,7 +152,11 @@ impl ReasonReadyObject {
                 channel: Some("query".to_string()),
                 ..rrd::SourceStamp::default()
             };
-            let rro = rrd.distill_stamped("query", query, &rro_core::Metadata::new(), None, stamp);
+            let rro = rrd.distill_stamped("query", query, fields, None, stamp);
+            // What the baseline believed BEFORE folding this observation in —
+            // read first, or the prediction is contaminated by the thing it is
+            // supposed to be predicting.
+            let spec = rrd.speculation("query");
             stage(
                 st::SHAPE,
                 t,
@@ -125,6 +165,24 @@ impl ReasonReadyObject {
                     "mode": rro.mode.name(),
                     "sliver": rro.sliver_id,
                     "signals": rro.signals,
+                    // Shape as early intent, TRACKED — never forced. `actionable`
+                    // is the 97%-confidence gate; until it trips, this is
+                    // observation only and changes nothing about the pass. Shape
+                    // is one trigger among several, and this reports its strength
+                    // rather than spending it.
+                    //
+                    // `hit` is the honest scorecard: it says whether the cache's
+                    // pre-model guess matched what the payload turned out to be.
+                    // Logged whether or not we acted, because that curve is the
+                    // only evidence that enabling speculation would be safe.
+                    "predicted_sliver": spec.sliver,
+                    "predicted_confidence": spec.confidence,
+                    "predicted_hit": spec.sliver.map(|s| s == rro.sliver_id),
+                    "predictability": spec.predictability,
+                    "drift": spec.drift,
+                    "observations": spec.observations,
+                    "actionable": spec.actionable(),
+                    "speculation": spec.why(),
                 }),
             );
             if rro.gate == rrd::GateVerdict::Block {

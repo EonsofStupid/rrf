@@ -35,7 +35,9 @@ use std::sync::{Arc, RwLock};
 
 use rro_core::{Embedding, Metadata};
 
-pub use baseline::{BaselineSnapshot, ShapeBaseline, DRIFT_THRESHOLD};
+pub use baseline::{
+    BaselineSnapshot, ShapeBaseline, Speculation, DRIFT_THRESHOLD, SPECULATION_CONFIDENCE,
+};
 pub use gates::{ActionGate, DeepEvaluator, GateVerdict, L0Config, LexicalSignals, SourceStamp};
 pub use mode::Mode;
 pub use plan::{FieldRole, Plan};
@@ -110,6 +112,48 @@ impl Rrd {
             .read()
             .expect("baseline lock")
             .predictability(context)
+    }
+
+    /// What this context is *about to be*: the most likely next sliver and the
+    /// share of the context's recency-weighted mass it holds.
+    ///
+    /// This is the inline cache's speculation, read out — "when something hits
+    /// this context, 99% of the time it is shape X". `Some((sliver, 0.99))` says
+    /// exactly that; `None` means the context has never been seen.
+    ///
+    /// It costs a hashmap lookup and an argmax, and it answers **before the
+    /// embedder runs**. That is the whole point of shape as early intent: the
+    /// engine can know what is probably coming while the query is still text.
+    ///
+    /// The number is only worth what the shapes are worth. A context whose
+    /// payloads all carry empty metadata has exactly one sliver, so this returns
+    /// it with confidence 1.0 — perfectly predictable and perfectly useless. See
+    /// [`ShapeFingerprint`]: shape is fingerprinted from *fields*, so feed it
+    /// fields.
+    pub fn predict(&self, context: &str) -> Option<(u64, f64)> {
+        self.baseline
+            .read()
+            .expect("baseline lock")
+            .predict(context)
+    }
+
+    /// Everything the baseline believes about a context, and whether that belief
+    /// is strong enough to act on — see [`Speculation::actionable`].
+    ///
+    /// This is the call for "track now, enable at 97%": read it on every pass,
+    /// act on it only when it says so. It is a pre-model read — a hashmap lookup
+    /// and an argmax — so watching costs nothing whether or not you ever
+    /// speculate.
+    pub fn speculation(&self, context: &str) -> Speculation {
+        let b = self.baseline.read().expect("baseline lock");
+        let predicted = b.predict(context);
+        Speculation {
+            sliver: predicted.map(|(s, _)| s),
+            confidence: predicted.map(|(_, c)| c).unwrap_or(0.0),
+            predictability: b.predictability(context),
+            observations: b.context_observations(context),
+            drift: b.drift(context),
+        }
     }
 
     /// Speculative-prediction hit-rate for a context — the measured

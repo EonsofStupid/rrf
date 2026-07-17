@@ -1,5 +1,11 @@
 # Reason Ready — The Master Plan
 
+> **⛔ 2026-07-17 — `docs/ROADMAP_REAL.md` is the execution SSOT.**
+> It is re-grounded on code read in July 2026 and carries the full SurrealDB ×
+> Qdrant parity matrix, every gap mapped to a phase with a gate. Where this file
+> disagrees with it about *what is built* or *what happens next*, that file wins.
+> This one is kept for its original vision and capability framing — not deleted, per the no-deprecation rule.
+
 **One engine. Recall (vector memory) · Connectome (relations & the visible
 map) · Reason Ready Objects (the readiness-gated pipeline). Clean-authored,
 zero external lineage, every claim measured.**

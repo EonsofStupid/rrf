@@ -373,6 +373,37 @@ impl HybridWeights {
     }
 }
 
+/// How the dense and lexical rankings are combined into one.
+///
+/// RRF and DBSF are the two strategies Qdrant ships, and it ships both for a
+/// concrete reason that Finding 1 measured here:
+///
+/// * **RRF** (reciprocal rank fusion) throws away the *scores* and keeps only the
+///   ranks — `score(d) = Σ w_i / (k + rank_i(d))`. That is robust to arms whose
+///   scores live on different scales (cosine in [-1,1] vs unbounded BM25), but it
+///   is exactly why fusion could not be usefully weighted and why relevance
+///   cannot be gated: a rank-1 hit contributes the same whether it is a perfect
+///   match or barely relevant. On nfcorpus the best lexical weight under RRF was
+///   ~0 — the weak arm could only ever drag the strong one down.
+/// * **DBSF** (distribution-based score fusion) keeps the magnitude: each arm's
+///   scores are min-max normalized to `[0, 1]` and summed with the per-arm
+///   weights. A genuinely strong dense hit stays strong after fusion, and a
+///   weak lexical hit stays weak, so weighting has something real to act on. This
+///   is the strategy that lets score-thresholding mean something.
+///
+/// Which one *wins* on real data is Phase 15's eval, not a claim here — this adds
+/// the mechanism, correctly, and unit-proves the property that distinguishes it
+/// (DBSF preserves magnitude order; RRF does not).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum FusionMode {
+    /// Reciprocal rank fusion — rank-based, scale-robust, magnitude-blind.
+    #[default]
+    Rrf,
+    /// Distribution-based score fusion — normalized scores, magnitude-preserving.
+    Dbsf,
+}
+
 /// A typed retrieval request.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EstateQuery {
@@ -429,9 +460,12 @@ pub struct EstateQuery {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub prefetch: Vec<Prefetch>,
     /// How much say each retriever gets when the dense and lexical rankings are
-    /// fused. Defaults to 1:1 (plain RRF).
+    /// fused. Defaults to 1:1.
     #[serde(default)]
     pub fusion: HybridWeights,
+    /// Which fusion strategy combines the rankings. Defaults to `Rrf`.
+    #[serde(default)]
+    pub fusion_mode: FusionMode,
 }
 
 impl Default for EstateQuery {
@@ -454,6 +488,7 @@ impl Default for EstateQuery {
             highlight: false,
             prefetch: Vec::new(),
             fusion: HybridWeights::default(),
+            fusion_mode: FusionMode::default(),
         }
     }
 }
