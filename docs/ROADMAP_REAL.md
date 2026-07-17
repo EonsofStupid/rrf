@@ -144,9 +144,11 @@ Verified by reading code *and call sites*, not `README`/`ASSESSMENT` (both stale
    however distant; RRF discards magnitude; readiness is lexical. Nothing can tell
    "found the answer" from "found the nearest four things". **Same root cause as
    (1)** — which is why Phase 7 is DBSF + per-query routing, not another constant.
-4. **The three engines are unproven.** 28 `#[ignore]` gates — every candle-Qwen3,
-   engine-agreement, rerank-lift, real-vector-`ef`, live-brain test — have **never
-   run in CI**. Phase 3 exists to fix that before any accuracy claim ships.
+4. ~~**The three engines are unproven.**~~ **RESOLVED 2026-07-17** — 23 gates run
+   on the GB10, 0 failed. candle reproduces the model card to 6 decimals and
+   agrees with llama.cpp on identical weights; both rerankers lift 0.50 → 1.00.
+   `scripts/gates.sh` runs them; CI still cannot (no weights). See Finding 5.
+   **`ef` remains untuned** — the ANN gate passed on only 2,200 vectors.
 5. **Burn training is recoverable, not greenfield.** 2,655 LOC of Qwen3-in-Burn
    with *verified sm_121 gates* lived at `kernel/devpulse-clyffy/`;
    `~/Projects/platform_devpulse` no longer exists. **`~/Projects/qortex-rro-archive.bundle`
@@ -156,9 +158,31 @@ Verified by reading code *and call sites*, not `README`/`ASSESSMENT` (both stale
 
 ## THE PHASES
 
-**Done:** ~~0 reconcile~~ · ~~1 dogfood~~ · ~~2 identity~~ — merged, CI green.
+**Done:** ~~0 reconcile~~ · ~~1 dogfood~~ · ~~2 identity~~ · ~~3 prove the engines~~ — merged, CI green.
 
-### 3 — Prove the three engines
+### ~~3 — Prove the three engines~~ ✅ DONE (2026-07-17)
+
+`scripts/gates.sh` → **5 suites, 23 tests, 0 skipped, 0 failed.** The candle
+encoder reproduces Qwen's published card to 6 decimals; llama.cpp's independent
+C++ implementation on the *same weights* (0.6B GGUF on `:8095`) agrees. Rerankers
+lift BM25 0.50 → 1.00 on both llama.cpp and vLLM, with identical ordering. See
+`BENCHMARKS_REAL.md` Finding 5.
+
+**Still open from this phase, and not to be forgotten:**
+- ⚠️ **`ef` is NOT tuned.** recall@10 = 0.9990 at ef=64 on 2,200 real vectors —
+  but it also passes at **ef=4**, which at that corpus size means the graph is
+  nearly fully connected and the corpus is flattering the index. A ≥50k real-vector
+  run is the honest gate.
+- **The roster is unwired.** `nemotron-3-embed-8b` is on disk (15 GB) and
+  referenced by zero code; NV-Embed-V2 / NV-ReRank-V2 / nemotron-3-rerank absent.
+  ⚠️ *Settle openly:* the roster ask includes Harrier, but
+  `TOTALRECALL_MASTER_PLAN.md:278` lists Harrier as **stale**, superseded by the
+  07-08 Qwen3 single-lock.
+- **The tier ladder (0.6/4/8B) is undecided** — candle's 0.6B reranker saturates
+  (0.50, no lift). That gets decided by BRIGHT at scale (Phase 15), not by n=2.
+
+<details><summary>original scope, for the record</summary>
+
 Run the 28 `#[ignore]` gates with real weights on the GB10. Cross-engine agreement
 matrix: {candle, llama.cpp, vLLM} × {embed, rerank} × {0.6b, 4b, 8b}. Wire the
 roster — `nemotron-3-embed-8b` is **on disk, 15 GB, referenced by zero code**;
@@ -167,8 +191,9 @@ NV-Embed-V2 / NV-ReRank-V2 / nemotron-3-rerank are absent.
 `TOTALRECALL_MASTER_PLAN.md:278` lists Harrier as **stale**, superseded by the
 07-08 Qwen3 single-lock.
 **Gate:** matrix green and recorded. No accuracy claim ships before this.
+</details>
 
-### 4 — Filter-aware HNSW *(a correctness bug, and Qdrant's differentiator)*
+### 4 — Filter-aware HNSW *(NEXT)* *(a correctness bug, and Qdrant's differentiator)*
 Cardinality estimation from the existing payload-index stats → predicate applied
 during the beam search → three-way strategy choice; `FILTER_OVERFETCH` becomes a
 fallback rather than the plan.
