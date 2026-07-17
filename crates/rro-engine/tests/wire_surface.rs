@@ -246,3 +246,85 @@ async fn graph_and_discover_verbs_match_local_calls() {
     // --- bad input errors across the wire rather than panicking ----------
     assert!(client.traverse(vec![], vec![], true, false, 1, 10).await.is_err());
 }
+
+/// B4's gate: RRQL over the wire must equal RRQL applied locally. If they
+/// diverge, the `sql` verb is a second implementation of the language — exactly
+/// what ADR-0003 forbids.
+#[tokio::test(flavor = "multi_thread")]
+async fn rrql_over_the_wire_matches_local_rrql() {
+    let dir = tempfile::tempdir().unwrap();
+    let estate = Arc::new(connxism::Estate::open(dir.path(), "q").unwrap());
+    let recall = estate.recall();
+
+    let mut records = Vec::new();
+    for i in 0..6u64 {
+        let mut r = VectorRecord::new(format!("d{i}"), vec_of(i, 8), format!("doc {i}"));
+        r.metadata.insert(
+            "team".into(),
+            serde_json::json!(if i < 3 { "blue" } else { "red" }),
+        );
+        r.metadata.insert("rank".into(), serde_json::json!(i));
+        records.push(r);
+    }
+    recall.upsert(records).await.unwrap();
+
+    let client = node(estate.clone()).await;
+
+    // --- a write over the wire actually lands ------------------------------
+    client.sql("DEFINE INDEX ON team", false).await.unwrap();
+    assert!(
+        estate.payload_indexes().unwrap().contains(&"team".to_string()),
+        "the index must exist after the wire call — not just be reported"
+    );
+
+    // --- wire == local for the same statement -----------------------------
+    let stmt = "UPDATE d0 SET team = 'green'";
+    client.sql(stmt, false).await.unwrap();
+    let after_wire = recall.doc("d0").await.unwrap().unwrap().metadata;
+    assert_eq!(after_wire.get("team").unwrap(), &serde_json::json!("green"));
+    assert_eq!(
+        after_wire.get("rank").unwrap(),
+        &serde_json::json!(0),
+        "SET merged over the wire too — `rank` must survive"
+    );
+
+    // --- graph over the wire ----------------------------------------------
+    client.sql("RELATE d0 -> cites -> d1", false).await.unwrap();
+    let walked = client.sql("TRAVERSE d0 -> cites -> DEPTH 1", false).await.unwrap();
+    let ids: Vec<String> =
+        serde_json::from_value(walked.get("ids").cloned().unwrap()).unwrap();
+    let spec = connxism::TraversalSpec {
+        verbs: vec!["cites".into()],
+        outbound: true,
+        inbound: false,
+        depth: 1,
+        limit: 10_000,
+    };
+    assert_eq!(
+        ids,
+        estate.traverse(&["d0"], &spec).unwrap(),
+        "the wire walk must equal the local walk"
+    );
+
+    // --- SELECT is embedded server-side: a thin client needs no weights ----
+    let hits = client.sql("SELECT * WHERE team = 'red' LIMIT 5", true).await.unwrap();
+    let cands = hits.get("candidates").and_then(|c| c.as_array()).unwrap();
+    assert!(!cands.is_empty(), "SELECT over the wire returned nothing");
+    assert!(cands.len() <= 5, "LIMIT is honored over the wire");
+
+    // --- read_only actually refuses ---------------------------------------
+    let refused = client.sql("DELETE d1", true).await;
+    assert!(
+        refused.is_err(),
+        "read_only must refuse a write; a caller that pins itself read-only must \
+         not be tricked into a mutation by a crafted string"
+    );
+    assert!(
+        recall.doc("d1").await.unwrap().is_some(),
+        "and the refused write must not have happened"
+    );
+
+    // --- a syntax error comes back as an error, with the span --------------
+    let bad = client.sql("SELECT * WHERE year >= AND x = 1", true).await;
+    assert!(bad.is_err(), "a syntax error must surface, not return empty results");
+}

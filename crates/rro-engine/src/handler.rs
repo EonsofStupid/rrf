@@ -183,6 +183,93 @@ impl Handler for FlowNode {
                 }
             }
 
+            // `sql`: one RRQL statement. Body: {"sql": "...", "read_only": bool}
+            //
+            // This is the verb that makes RRO reachable by anything that can
+            // send text — an MCP tool, a CLI, a REST body — instead of only by
+            // something that can link the crate and hand-build an EstateQuery.
+            "sql" => {
+                let Some(estate) = &self.estate else {
+                    return Ok(Some(msg.reply(serde_json::json!({
+                        "error": "no estate attached to this node"
+                    }))));
+                };
+                let Some(src) = msg.body.get("sql").and_then(|v| v.as_str()) else {
+                    return Ok(Some(msg.reply(serde_json::json!({
+                        "error": "sql needs a `sql` string"
+                    }))));
+                };
+
+                let stmt = match rro_ql::parse(src) {
+                    Ok(s) => s,
+                    // The caret renders the offending line with a marker under
+                    // it. A remote caller that gets "syntax error" has to guess;
+                    // one that gets the span can fix it.
+                    Err(e) => {
+                        return Ok(Some(msg.reply(serde_json::json!({
+                            "error": e.to_string(),
+                            "detail": e.caret(src),
+                        }))))
+                    }
+                };
+
+                // A peer may pin itself read-only. Refusing a write here rather
+                // than at the estate means an exposed node can be safely shared
+                // without trusting the caller's intent.
+                let read_only = msg
+                    .body
+                    .get("read_only")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+                if read_only && stmt.is_write() {
+                    return Ok(Some(msg.reply(serde_json::json!({
+                        "error": format!(
+                            "{} is a write and this request set read_only",
+                            stmt.keyword()
+                        )
+                    }))));
+                }
+
+                // SELECT needs the flow (it must embed the query text); every
+                // other statement is an estate op.
+                if let rro_ql::Statement::Select(_) = stmt {
+                    let q = match rro_ql::parse_query(src) {
+                        Ok(q) => q,
+                        Err(e) => {
+                            return Ok(Some(
+                                msg.reply(serde_json::json!({ "error": e.to_string() })),
+                            ))
+                        }
+                    };
+                    let text = q.text.clone().unwrap_or_default();
+                    let vector = match self.flow.embed_query(&text).await {
+                        Ok(v) => v,
+                        Err(e) => {
+                            return Ok(Some(
+                                msg.reply(serde_json::json!({ "error": e.to_string() })),
+                            ))
+                        }
+                    };
+                    let mut q = q;
+                    q.vector = Some(vector);
+                    return match estate.recall().query(q).await {
+                        Ok(candidates) => Ok(Some(msg.reply(
+                            serde_json::json!({ "kind": "query", "candidates": candidates }),
+                        ))),
+                        Err(e) => Ok(Some(
+                            msg.reply(serde_json::json!({ "error": e.to_string() })),
+                        )),
+                    };
+                }
+
+                match crate::sql::apply(estate, stmt).await {
+                    Ok(outcome) => Ok(Some(msg.reply(serde_json::json!(outcome)))),
+                    Err(e) => Ok(Some(
+                        msg.reply(serde_json::json!({ "error": e.to_string() })),
+                    )),
+                }
+            }
+
             // `discover`: context-pair steered exploration.
             // Body: {"text": "...", "pairs": [["a","b"], ...], "top_k": 10}
             //

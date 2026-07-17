@@ -338,6 +338,24 @@ impl Client {
         Ok(serde_json::from_value(candidates)?)
     }
 
+    /// Run one RRQL statement.
+    ///
+    /// `SELECT` is embedded server-side, so a thin client needs no model
+    /// weights. `read_only` refuses writes at the node — a caller that pins
+    /// itself read-only cannot be tricked into a mutation by a crafted string.
+    ///
+    /// Returns the node's reply verbatim: the shape depends on the statement
+    /// (`{candidates}` for SELECT, `{kind: "defined"|"deleted"|…}` for the
+    /// rest), because flattening them into one shape would lose the only
+    /// information each carries.
+    pub async fn sql(&self, statement: &str, read_only: bool) -> Result<serde_json::Value> {
+        self.call(
+            "sql",
+            serde_json::json!({ "sql": statement, "read_only": read_only }),
+        )
+        .await
+    }
+
     /// Discover: steer exploration by context pairs, ranking by how much each
     /// candidate agrees with the pairs. `text` is embedded server-side.
     pub async fn discover(
