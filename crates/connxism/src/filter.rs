@@ -15,7 +15,7 @@ use std::collections::HashSet;
 
 use rro_core::{Condition, Filter, Result};
 
-use crate::estate::{rocks_err, Db};
+use crate::estate::Db;
 use crate::keys::{self, CF_META, CF_PIDX, META_PIDX, SEP};
 
 /// The estate's payload-indexed field names.
@@ -125,11 +125,8 @@ fn scan_value(db: &Db, field: &str, value: &serde_json::Value) -> Result<HashSet
     let handle = db.cf(CF_PIDX)?;
     let prefix = keys::pidx_value_prefix(field, value);
     let mut out = HashSet::new();
-    for item in db.0.iterator_cf(
-        handle,
-        rocksdb::IteratorMode::From(&prefix, rocksdb::Direction::Forward),
-    ) {
-        let (k, _) = item.map_err(rocks_err)?;
+    for item in db.iter_from(handle, &prefix) {
+        let (k, _) = item?;
         if !k.starts_with(&prefix) {
             break;
         }
@@ -155,11 +152,8 @@ fn scan_range(
     start.extend_from_slice(&keys::encode_f64_sortable(lower));
 
     let mut out = HashSet::new();
-    for item in db.0.iterator_cf(
-        handle,
-        rocksdb::IteratorMode::From(&start, rocksdb::Direction::Forward),
-    ) {
-        let (k, _) = item.map_err(rocks_err)?;
+    for item in db.iter_from(handle, &start) {
+        let (k, _) = item?;
         if !k.starts_with(&num_prefix) {
             break;
         }
@@ -204,11 +198,8 @@ fn scan_dt_range(
     start.extend_from_slice(&keys::encode_i64_sortable(lower));
 
     let mut out = HashSet::new();
-    for item in db.0.iterator_cf(
-        handle,
-        rocksdb::IteratorMode::From(&start, rocksdb::Direction::Forward),
-    ) {
-        let (k, _) = item.map_err(rocks_err)?;
+    for item in db.iter_from(handle, &start) {
+        let (k, _) = item?;
         if !k.starts_with(&dt_prefix) {
             break;
         }
@@ -259,11 +250,8 @@ fn scan_geo(
 
     let docs_cf = db.cf(crate::keys::CF_DOCS)?;
     let mut out = HashSet::new();
-    for item in db.0.iterator_cf(
-        handle,
-        rocksdb::IteratorMode::From(&start, rocksdb::Direction::Forward),
-    ) {
-        let (k, _) = item.map_err(rocks_err)?;
+    for item in db.iter_from(handle, &start) {
+        let (k, _) = item?;
         if !k.starts_with(&geo_prefix) {
             break;
         }
@@ -283,7 +271,7 @@ fn scan_geo(
         }
         let doc_id = String::from_utf8_lossy(&k[val_start + 9..]).into_owned();
         // Exact check from the durable document.
-        if let Some(bytes) = db.0.get_cf(docs_cf, doc_id.as_bytes()).map_err(rocks_err)? {
+        if let Some(bytes) = db.get_cf(docs_cf, doc_id.as_bytes())? {
             let doc: crate::model::StoredDoc = serde_json::from_slice(&bytes)?;
             if exact.matches(&doc.metadata) {
                 out.insert(doc_id);
@@ -298,11 +286,8 @@ fn scan_field(db: &Db, field: &str) -> Result<HashSet<String>> {
     let handle = db.cf(CF_PIDX)?;
     let prefix = keys::pidx_field_prefix(field);
     let mut out = HashSet::new();
-    for item in db.0.iterator_cf(
-        handle,
-        rocksdb::IteratorMode::From(&prefix, rocksdb::Direction::Forward),
-    ) {
-        let (k, _) = item.map_err(rocks_err)?;
+    for item in db.iter_from(handle, &prefix) {
+        let (k, _) = item?;
         if !k.starts_with(&prefix) {
             break;
         }

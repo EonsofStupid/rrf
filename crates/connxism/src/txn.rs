@@ -2,7 +2,7 @@
 //!
 //! ## Why this is not just "accumulate a WriteBatch"
 //!
-//! Every write op already builds a `rocksdb::WriteBatch`, which is atomic on its
+//! Every write op already builds a [`crate::estate::Batch`], which is atomic on its
 //! own — so single-op atomicity was never the gap. The gap is *multi-statement*
 //! atomicity, and the naive version of it is silently wrong.
 //!
@@ -40,10 +40,9 @@
 
 use std::collections::BTreeMap;
 
-use rocksdb::WriteBatch;
 use rro_core::{Embedding, Id, Result, RroError};
 
-use crate::estate::Db;
+use crate::estate::{Batch, Db};
 use crate::keys::{CF_META, META_DOC_COUNT, META_FEED_SEQ, META_SHAPES, META_TOTAL_TOKENS};
 use crate::pending::Pending;
 
@@ -65,7 +64,7 @@ pub(crate) enum GraphOp {
 pub(crate) struct Transaction<'a> {
     db: &'a Db,
     pending: &'a Pending,
-    pub(crate) batch: WriteBatch,
+    pub(crate) batch: Batch,
 
     // Counter state: read once here, mutated by each `*_into`, put once at commit.
     pub(crate) doc_count: u64,
@@ -81,7 +80,7 @@ impl<'a> Transaction<'a> {
     /// Open a transaction: snapshot the counters into memory.
     pub(crate) fn begin(db: &'a Db, pending: &'a Pending) -> Result<Self> {
         Ok(Transaction {
-            batch: WriteBatch::default(),
+            batch: Batch::new(),
             doc_count: db.get_u64(META_DOC_COUNT)?,
             total_tokens: db.get_u64(META_TOTAL_TOKENS)?,
             feed_seq: db.get_u64(META_FEED_SEQ)?,

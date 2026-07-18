@@ -22,6 +22,7 @@ mod estate;
 mod filter;
 pub mod index;
 pub mod keys;
+mod kv;
 pub mod model;
 mod pending;
 mod query;

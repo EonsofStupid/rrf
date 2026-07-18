@@ -8,7 +8,7 @@ use std::collections::{HashMap, HashSet};
 
 use rro_core::{Candidate, Embedding, EstateQuery, Recall as _, Result, RroError};
 
-use crate::estate::{rocks_err, Db};
+use crate::estate::Db;
 use crate::keys::{self, CF_VECS};
 use crate::store::ConnXRecall;
 
@@ -28,9 +28,7 @@ pub struct Group {
 fn stored_vec(db: &Db, id: &str) -> Result<Option<Embedding>> {
     let cf = db.cf(CF_VECS)?;
     Ok(db
-        .0
-        .get_cf(cf, id.as_bytes())
-        .map_err(rocks_err)?
+        .get_cf(cf, id.as_bytes())?
         .map(|b| Embedding(keys::decode_vec(&b))))
 }
 
