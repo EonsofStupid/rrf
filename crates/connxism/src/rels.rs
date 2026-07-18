@@ -16,7 +16,7 @@ use serde::{Deserialize, Serialize};
 
 use rro_core::Result;
 
-use crate::estate::{rocks_err, Estate};
+use crate::estate::{Batch, Estate};
 use crate::keys::{self, CF_RELS, REL_IN, REL_OUT};
 
 /// One directed edge.
@@ -61,7 +61,7 @@ impl Estate {
     /// RELATE: `(from) -[verb]-> (to)`. Idempotent; two blind puts.
     pub fn relate(&self, from: &str, verb: &str, to: &str) -> Result<()> {
         let handle = self.db.cf(CF_RELS)?;
-        let mut batch = rocksdb::WriteBatch::default();
+        let mut batch = Batch::new();
         batch.put_cf(handle, keys::rel_key(REL_OUT, from, verb, to), []);
         batch.put_cf(handle, keys::rel_key(REL_IN, to, verb, from), []);
         self.db.write(batch)
@@ -70,7 +70,7 @@ impl Estate {
     /// Remove one edge (both direction rows).
     pub fn unrelate(&self, from: &str, verb: &str, to: &str) -> Result<()> {
         let handle = self.db.cf(CF_RELS)?;
-        let mut batch = rocksdb::WriteBatch::default();
+        let mut batch = Batch::new();
         batch.delete_cf(handle, keys::rel_key(REL_OUT, from, verb, to));
         batch.delete_cf(handle, keys::rel_key(REL_IN, to, verb, from));
         self.db.write(batch)
@@ -96,11 +96,8 @@ impl Estate {
         let anchor_prefix_len = keys::rel_prefix(dir, anchor).len();
 
         let mut out = Vec::new();
-        for item in self.db.0.iterator_cf(
-            handle,
-            rocksdb::IteratorMode::From(&prefix, rocksdb::Direction::Forward),
-        ) {
-            let (k, _) = item.map_err(rocks_err)?;
+        for item in self.db.iter_from(handle, &prefix) {
+            let (k, _) = item?;
             if !k.starts_with(&prefix) {
                 break;
             }

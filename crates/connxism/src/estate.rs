@@ -19,15 +19,86 @@ use crate::keys::{
 };
 use crate::model::{now_ms, ConnectorInfo, EstateInfo, NodeInfo, SyncState, TrendPoint, WarpPoint};
 
+/// A column-family handle: a borrow of the open database, tied to it for the
+/// duration of a read/write. This is the KV seam's opaque CF token — call sites
+/// obtain one from [`Db::cf`] and hand it to the `Db`/[`Batch`] methods rather
+/// than reaching for a backend-specific handle type. RocksDB's `cf_handle`
+/// returns a borrow (`&ColumnFamily`) under single-threaded mode, so the seam
+/// carries that lifetime; the Fjall backend will wrap a borrowed `Keyspace` the
+/// same shape, keeping every call site backend-agnostic.
+#[derive(Clone, Copy)]
+pub(crate) struct Cf<'a>(&'a ColumnFamily);
+
+/// One raw key/value entry yielded by a store iterator (`iter_from`/`iter_all`).
+/// Aliased so the iterator return types stay readable across the seam.
+pub(crate) type KvItem = Result<(Box<[u8]>, Box<[u8]>)>;
+
+/// An accumulating atomic write, committed by [`Db::write`]. Wraps the backend's
+/// native batch (RocksDB `WriteBatch`) so the recall paths never name it: they
+/// build one with [`Batch::new`], stage `put`/`delete`/`merge_df` against a
+/// [`Cf`], and hand it back to `Db::write`, which commits it atomically.
+#[derive(Default)]
+pub(crate) struct Batch(rocksdb::WriteBatch);
+
+impl Batch {
+    /// A fresh, empty batch.
+    pub(crate) fn new() -> Self {
+        Batch(rocksdb::WriteBatch::default())
+    }
+
+    /// Stage a key/value write into `cf`.
+    pub(crate) fn put_cf(&mut self, cf: Cf, key: impl AsRef<[u8]>, value: impl AsRef<[u8]>) {
+        self.0.put_cf(cf.0, key, value);
+    }
+
+    /// Stage a delete of `key` in `cf`.
+    pub(crate) fn delete_cf(&mut self, cf: Cf, key: impl AsRef<[u8]>) {
+        self.0.delete_cf(cf.0, key);
+    }
+
+    /// Stage a document-frequency delta (`±1`) against `cf`'s counter for `key`.
+    ///
+    /// On RocksDB this is a blind associative merge (`merge_i64_add` composes the
+    /// operands at read/compaction time). The Fjall backend has no merge
+    /// operator, so this same call becomes a transaction-scoped read-modify-write
+    /// accumulated and applied at commit — the on-disk `i64 LE` format is
+    /// identical, so the two backends are byte-compatible on `tdf`.
+    pub(crate) fn merge_df(&mut self, cf: Cf, key: impl AsRef<[u8]>, delta: i64) {
+        self.0.merge_cf(cf.0, key, delta.to_le_bytes());
+    }
+}
+
 /// Shared handle to the open database. Cloneable; all clones see one DB.
+///
+/// This is the KV seam — the single place that names the storage backend. Every
+/// recall path reaches the store through these methods (`cf`, `get_cf`/`put_cf`,
+/// `get_json`/`put_json`, `iter_from`/`iter_all`, `write`, the flush/compact
+/// housekeeping), never through a raw backend handle. Swapping RocksDB for Fjall
+/// is therefore confined to this wrapper plus the open path below.
 #[derive(Clone)]
 pub(crate) struct Db(pub(crate) Arc<DB>, pub(crate) bool);
 
 impl Db {
-    pub(crate) fn cf(&self, name: &str) -> Result<&ColumnFamily> {
+    pub(crate) fn cf(&self, name: &str) -> Result<Cf<'_>> {
         self.0
             .cf_handle(name)
+            .map(Cf)
             .ok_or_else(|| RroError::Recall(format!("missing column family `{name}`")))
+    }
+
+    /// Raw value read from `cf`.
+    pub(crate) fn get_cf(&self, cf: Cf, key: impl AsRef<[u8]>) -> Result<Option<Vec<u8>>> {
+        self.0.get_cf(cf.0, key).map_err(rocks_err)
+    }
+
+    /// Raw single-key write into `cf` (bypassing a batch).
+    pub(crate) fn put_cf(
+        &self,
+        cf: Cf,
+        key: impl AsRef<[u8]>,
+        value: impl AsRef<[u8]>,
+    ) -> Result<()> {
+        self.0.put_cf(cf.0, key, value).map_err(rocks_err)
     }
 
     pub(crate) fn get_json<T: serde::de::DeserializeOwned>(
@@ -36,7 +107,7 @@ impl Db {
         key: &[u8],
     ) -> Result<Option<T>> {
         let handle = self.cf(cf)?;
-        match self.0.get_cf(handle, key).map_err(rocks_err)? {
+        match self.get_cf(handle, key)? {
             Some(bytes) => Ok(Some(serde_json::from_slice(&bytes)?)),
             None => Ok(None),
         }
@@ -49,28 +120,76 @@ impl Db {
         value: &T,
     ) -> Result<()> {
         let handle = self.cf(cf)?;
+        self.put_cf(handle, key, serde_json::to_vec(value)?)
+    }
+
+    /// Iterate `cf` from `start` forward (a prefix or range seek). Callers apply
+    /// their own `starts_with`/range break, matching RocksDB `IteratorMode::From`.
+    pub(crate) fn iter_from<'a>(
+        &'a self,
+        cf: Cf<'a>,
+        start: &[u8],
+    ) -> impl Iterator<Item = KvItem> + 'a {
         self.0
-            .put_cf(handle, key, serde_json::to_vec(value)?)
-            .map_err(rocks_err)
+            .iterator_cf(
+                cf.0,
+                rocksdb::IteratorMode::From(start, rocksdb::Direction::Forward),
+            )
+            .map(|r| r.map_err(rocks_err))
+    }
+
+    /// Iterate every entry of `cf` in key order (RocksDB `IteratorMode::Start`).
+    pub(crate) fn iter_all<'a>(&'a self, cf: Cf<'a>) -> impl Iterator<Item = KvItem> + 'a {
+        self.0
+            .iterator_cf(cf.0, rocksdb::IteratorMode::Start)
+            .map(|r| r.map_err(rocks_err))
     }
 
     /// Commit a batch, honoring the estate's fsync-on-write choice.
-    pub(crate) fn write(&self, batch: rocksdb::WriteBatch) -> Result<()> {
+    pub(crate) fn write(&self, batch: Batch) -> Result<()> {
         if self.1 {
             let mut wo = rocksdb::WriteOptions::default();
             wo.set_sync(true);
-            self.0.write_opt(batch, &wo).map_err(rocks_err)
+            self.0.write_opt(batch.0, &wo).map_err(rocks_err)
         } else {
-            self.0.write(batch).map_err(rocks_err)
+            self.0.write(batch.0).map_err(rocks_err)
         }
+    }
+
+    /// Flush `cf`'s memtable to an SST.
+    pub(crate) fn flush_cf(&self, cf: Cf) -> Result<()> {
+        self.0.flush_cf(cf.0).map_err(rocks_err)
+    }
+
+    /// Sync the write-ahead log.
+    pub(crate) fn flush_wal(&self, sync: bool) -> Result<()> {
+        self.0.flush_wal(sync).map_err(rocks_err)
+    }
+
+    /// Force a full-range compaction of `cf` (operator-invoked optimizer pass).
+    pub(crate) fn compact_cf(&self, cf: Cf) {
+        self.0.compact_range_cf(cf.0, None::<&[u8]>, None::<&[u8]>);
+    }
+
+    /// Live SST bytes held by `cf`.
+    pub(crate) fn cf_sst_bytes(&self, cf: Cf) -> Result<u64> {
+        Ok(self
+            .0
+            .property_int_value_cf(cf.0, "rocksdb.total-sst-files-size")
+            .map_err(rocks_err)?
+            .unwrap_or(0))
+    }
+
+    /// Take a consistent on-disk snapshot into `path` (a fresh directory).
+    pub(crate) fn snapshot_to(&self, path: &Path) -> Result<()> {
+        let checkpoint = rocksdb::checkpoint::Checkpoint::new(&self.0).map_err(rocks_err)?;
+        checkpoint.create_checkpoint(path).map_err(rocks_err)
     }
 
     pub(crate) fn get_u64(&self, key: &[u8]) -> Result<u64> {
         let handle = self.cf(CF_META)?;
         Ok(self
-            .0
-            .get_cf(handle, key)
-            .map_err(rocks_err)?
+            .get_cf(handle, key)?
             .map(|b| {
                 let mut a = [0u8; 8];
                 a.copy_from_slice(&b[..8.min(b.len())]);
@@ -440,8 +559,7 @@ impl Estate {
                 // Fresh estate with stats on: df is maintained from the
                 // first write, unlocking the pruned lexical scorer.
                 if config.lexical_stats {
-                    db.0.put_cf(db.cf(CF_META)?, keys::META_LEXSTATS, 1u64.to_le_bytes())
-                        .map_err(rocks_err)?;
+                    db.put_cf(db.cf(CF_META)?, keys::META_LEXSTATS, 1u64.to_le_bytes())?;
                 }
                 fresh
             }
@@ -483,12 +601,8 @@ impl Estate {
 
         // Stats are live only when configured AND the estate has carried
         // them since creation (the pruned scorer's precondition).
-        let lexical_stats = config.lexical_stats
-            && db
-                .0
-                .get_cf(db.cf(CF_META)?, keys::META_LEXSTATS)
-                .map_err(rocks_err)?
-                .is_some();
+        let lexical_stats =
+            config.lexical_stats && db.get_cf(db.cf(CF_META)?, keys::META_LEXSTATS)?.is_some();
         Ok(Estate {
             db,
             ann,
@@ -578,10 +692,7 @@ impl Estate {
     pub fn tag(&self, doc_id: &str, tags: &[String]) -> Result<()> {
         let handle = self.db.cf(CF_TAGS)?;
         for t in tags {
-            self.db
-                .0
-                .put_cf(handle, keys::tag_key(t, doc_id), [])
-                .map_err(rocks_err)?;
+            self.db.put_cf(handle, keys::tag_key(t, doc_id), [])?;
         }
         Ok(())
     }
@@ -591,12 +702,9 @@ impl Estate {
         let handle = self.db.cf(CF_TAGS)?;
         let prefix = keys::tag_prefix(tag);
         let mut out = Vec::new();
-        let iter = self.db.0.iterator_cf(
-            handle,
-            rocksdb::IteratorMode::From(&prefix, rocksdb::Direction::Forward),
-        );
+        let iter = self.db.iter_from(handle, &prefix);
         for item in iter {
-            let (k, _) = item.map_err(rocks_err)?;
+            let (k, _) = item?;
             if !k.starts_with(&prefix) {
                 break;
             }
@@ -611,8 +719,8 @@ impl Estate {
     pub fn tags(&self) -> Result<Vec<String>> {
         let handle = self.db.cf(CF_TAGS)?;
         let mut out: Vec<String> = Vec::new();
-        for item in self.db.0.iterator_cf(handle, rocksdb::IteratorMode::Start) {
-            let (k, _) = item.map_err(rocks_err)?;
+        for item in self.db.iter_all(handle) {
+            let (k, _) = item?;
             if let Some((tag, _)) = keys::split_compound(&k) {
                 let tag = String::from_utf8_lossy(tag).into_owned();
                 if out.last().map(|t| t != &tag).unwrap_or(true) {
@@ -645,19 +753,16 @@ impl Estate {
         // Backfill from the durable documents.
         let docs_cf = self.db.cf(crate::keys::CF_DOCS)?;
         let pidx_cf = self.db.cf(crate::keys::CF_PIDX)?;
-        let mut batch = rocksdb::WriteBatch::default();
+        let mut batch = Batch::new();
         let mut rows = 0u64;
-        for item in self.db.0.iterator_cf(docs_cf, rocksdb::IteratorMode::Start) {
-            let (_, v) = item.map_err(rocks_err)?;
+        for item in self.db.iter_all(docs_cf) {
+            let (_, v) = item?;
             let doc: crate::model::StoredDoc = serde_json::from_slice(&v)?;
             if let Some(value) = doc.metadata.get(field) {
                 batch.put_cf(pidx_cf, keys::pidx_key(field, value, &doc.id), []);
                 rows += 1;
                 if rows.is_multiple_of(4096) {
-                    self.db
-                        .0
-                        .write(std::mem::take(&mut batch))
-                        .map_err(rocks_err)?;
+                    self.db.write(std::mem::take(&mut batch))?;
                 }
             }
         }
@@ -689,12 +794,9 @@ impl Estate {
         }
         let pidx_cf = self.db.cf(crate::keys::CF_PIDX)?;
         let prefix = keys::pidx_field_prefix(field);
-        let mut batch = rocksdb::WriteBatch::default();
-        for item in self.db.0.iterator_cf(
-            pidx_cf,
-            rocksdb::IteratorMode::From(&prefix, rocksdb::Direction::Forward),
-        ) {
-            let (k, _) = item.map_err(rocks_err)?;
+        let mut batch = Batch::new();
+        for item in self.db.iter_from(pidx_cf, &prefix) {
+            let (k, _) = item?;
             if !k.starts_with(&prefix) {
                 break;
             }
@@ -702,8 +804,8 @@ impl Estate {
         }
         let docs_cf = self.db.cf(crate::keys::CF_DOCS)?;
         let mut rows = 0u64;
-        for item in self.db.0.iterator_cf(docs_cf, rocksdb::IteratorMode::Start) {
-            let (_, v) = item.map_err(rocks_err)?;
+        for item in self.db.iter_all(docs_cf) {
+            let (_, v) = item?;
             let doc: crate::model::StoredDoc = serde_json::from_slice(&v)?;
             if let Some(value) = doc.metadata.get(field) {
                 batch.put_cf(pidx_cf, keys::pidx_key(field, value, &doc.id), []);
@@ -733,8 +835,8 @@ impl Estate {
         }
         let handle = self.db.cf(crate::keys::CF_DOCS)?;
         let mut n = 0u64;
-        for item in self.db.0.iterator_cf(handle, rocksdb::IteratorMode::Start) {
-            let (_, v) = item.map_err(rocks_err)?;
+        for item in self.db.iter_all(handle) {
+            let (_, v) = item?;
             let doc: crate::model::StoredDoc = serde_json::from_slice(&v)?;
             if filter.matches(&doc.metadata) {
                 n += 1;
@@ -758,14 +860,11 @@ impl Estate {
     /// Record one sample of `metric` at now.
     pub fn record_trend(&self, metric: &str, value: f64) -> Result<()> {
         let handle = self.db.cf(CF_TRENDS)?;
-        self.db
-            .0
-            .put_cf(
-                handle,
-                keys::trend_key(metric, crate::model::now_ns()),
-                value.to_le_bytes(),
-            )
-            .map_err(rocks_err)
+        self.db.put_cf(
+            handle,
+            keys::trend_key(metric, crate::model::now_ns()),
+            value.to_le_bytes(),
+        )
     }
 
     /// The stored series for `metric`, oldest first.
@@ -773,11 +872,8 @@ impl Estate {
         let handle = self.db.cf(CF_TRENDS)?;
         let prefix = keys::trend_prefix(metric);
         let mut out = Vec::new();
-        for item in self.db.0.iterator_cf(
-            handle,
-            rocksdb::IteratorMode::From(&prefix, rocksdb::Direction::Forward),
-        ) {
-            let (k, v) = item.map_err(rocks_err)?;
+        for item in self.db.iter_from(handle, &prefix) {
+            let (k, v) = item?;
             if !k.starts_with(&prefix) {
                 break;
             }
@@ -799,8 +895,8 @@ impl Estate {
     pub fn trend_metrics(&self) -> Result<Vec<String>> {
         let handle = self.db.cf(CF_TRENDS)?;
         let mut out: Vec<String> = Vec::new();
-        for item in self.db.0.iterator_cf(handle, rocksdb::IteratorMode::Start) {
-            let (k, _) = item.map_err(rocks_err)?;
+        for item in self.db.iter_all(handle) {
+            let (k, _) = item?;
             if let Some((metric, _)) = keys::split_compound(&k) {
                 let metric = String::from_utf8_lossy(metric).into_owned();
                 if out.last().map(|m| m != &metric).unwrap_or(true) {
@@ -831,10 +927,7 @@ impl Estate {
         // decline). Callers snapshot at quiescent points, which is what
         // `persist_graph` needs.
         let _ = self.persist_graph();
-        let checkpoint = rocksdb::checkpoint::Checkpoint::new(&self.db.0).map_err(rocks_err)?;
-        checkpoint
-            .create_checkpoint(path.as_ref())
-            .map_err(rocks_err)?;
+        self.db.snapshot_to(path.as_ref())?;
         rro_core::events::emit(
             "estate.snapshot",
             serde_json::json!({ "path": path.as_ref().display().to_string() }),
@@ -869,14 +962,11 @@ impl Estate {
         let handle = self.db.cf(crate::keys::CF_FEED)?;
         let start = since_seq.to_be_bytes();
         let mut out = Vec::new();
-        for item in self.db.0.iterator_cf(
-            handle,
-            rocksdb::IteratorMode::From(&start, rocksdb::Direction::Forward),
-        ) {
+        for item in self.db.iter_from(handle, &start) {
             if out.len() >= limit {
                 break;
             }
-            let (_, v) = item.map_err(rocks_err)?;
+            let (_, v) = item?;
             out.push(serde_json::from_slice(&v)?);
         }
         Ok(out)
@@ -934,8 +1024,8 @@ impl Estate {
     fn scan_json<T: serde::de::DeserializeOwned>(&self, cf: &str) -> Result<Vec<T>> {
         let handle = self.db.cf(cf)?;
         let mut out = Vec::new();
-        for item in self.db.0.iterator_cf(handle, rocksdb::IteratorMode::Start) {
-            let (_, v) = item.map_err(rocks_err)?;
+        for item in self.db.iter_all(handle) {
+            let (_, v) = item?;
             out.push(serde_json::from_slice(&v)?);
         }
         Ok(out)
@@ -985,11 +1075,8 @@ impl Estate {
         let handle = self.db.cf(keys::CF_COLL)?;
         let prefix = keys::coll_prefix(name);
         let mut out = Vec::new();
-        for item in self.db.0.iterator_cf(
-            handle,
-            rocksdb::IteratorMode::From(&prefix, rocksdb::Direction::Forward),
-        ) {
-            let (k, _) = item.map_err(rocks_err)?;
+        for item in self.db.iter_from(handle, &prefix) {
+            let (k, _) = item?;
             if !k.starts_with(&prefix) {
                 break;
             }
@@ -1047,8 +1134,8 @@ impl Estate {
             state % bound.max(1)
         };
         let mut seen = 0u64;
-        for item in self.db.0.iterator_cf(handle, rocksdb::IteratorMode::Start) {
-            let (_, v) = item.map_err(rocks_err)?;
+        for item in self.db.iter_all(handle) {
+            let (_, v) = item?;
             seen += 1;
             if reservoir.len() < n {
                 reservoir.push(serde_json::from_slice(&v)?);
@@ -1278,9 +1365,7 @@ impl Estate {
     pub fn term_df(&self, term: &str) -> Result<i64> {
         Ok(self
             .db
-            .0
-            .get_cf(self.db.cf(keys::CF_TDF)?, term.as_bytes())
-            .map_err(rocks_err)?
+            .get_cf(self.db.cf(keys::CF_TDF)?, term.as_bytes())?
             .map(|b| {
                 let mut a = [0u8; 8];
                 a[..b.len().min(8)].copy_from_slice(&b[..b.len().min(8)]);
@@ -1307,7 +1392,7 @@ impl Estate {
         cache_bytes: usize,
     ) -> Result<Option<AnnIndex>> {
         let handle = db.cf(keys::CF_GRAPH)?;
-        let Some(blob) = db.0.get_cf(handle, keys::GRAPH_ANN).map_err(rocks_err)? else {
+        let Some(blob) = db.get_cf(handle, keys::GRAPH_ANN)? else {
             return Ok(None);
         };
         if blob.len() < 8 {
@@ -1347,8 +1432,8 @@ impl Estate {
         let mut ann = AnnIndex::new(config);
         let handle = db.cf(CF_VECS)?;
         let mut rebuilt = 0u64;
-        for item in db.0.iterator_cf(handle, rocksdb::IteratorMode::Start) {
-            let (k, v) = item.map_err(rocks_err)?;
+        for item in db.iter_all(handle) {
+            let (k, v) = item?;
             let id = Id::new(String::from_utf8_lossy(&k).into_owned());
             ann.insert(id, &Embedding(keys::decode_vec(&v)));
             rebuilt += 1;
@@ -1506,11 +1591,8 @@ impl Estate {
         blob.extend_from_slice(&seq_before.to_le_bytes());
         blob.extend_from_slice(&structure);
         let handle = self.db.cf(keys::CF_GRAPH)?;
-        self.db
-            .0
-            .put_cf(handle, keys::GRAPH_ANN, &blob)
-            .map_err(rocks_err)?;
-        self.db.0.flush_cf(handle).map_err(rocks_err)?;
+        self.db.put_cf(handle, keys::GRAPH_ANN, &blob)?;
+        self.db.flush_cf(handle)?;
         rro_core::events::emit(
             "estate.graph_persist",
             serde_json::json!({ "seq": seq_before, "structure_bytes": blob.len() }),
@@ -1523,9 +1605,9 @@ impl Estate {
     /// on disk regardless of process or power fate.
     pub fn flush(&self) -> Result<()> {
         for name in COLUMN_FAMILIES {
-            self.db.0.flush_cf(self.db.cf(name)?).map_err(rocks_err)?;
+            self.db.flush_cf(self.db.cf(name)?)?;
         }
-        self.db.0.flush_wal(true).map_err(rocks_err)?;
+        self.db.flush_wal(true)?;
         rro_core::events::emit("estate.flush", serde_json::json!({}));
         Ok(())
     }
@@ -1535,9 +1617,7 @@ impl Estate {
     /// compactions continuously; this forces a full pass now).
     pub fn compact(&self) -> Result<()> {
         for name in COLUMN_FAMILIES {
-            self.db
-                .0
-                .compact_range_cf(self.db.cf(name)?, None::<&[u8]>, None::<&[u8]>);
+            self.db.compact_cf(self.db.cf(name)?);
         }
         rro_core::events::emit("estate.compact", serde_json::json!({}));
         Ok(())
@@ -1547,12 +1627,7 @@ impl Estate {
     pub fn cf_sizes(&self) -> Result<Vec<(String, u64)>> {
         let mut out = Vec::with_capacity(COLUMN_FAMILIES.len());
         for name in COLUMN_FAMILIES {
-            let bytes = self
-                .db
-                .0
-                .property_int_value_cf(self.db.cf(name)?, "rocksdb.total-sst-files-size")
-                .map_err(rocks_err)?
-                .unwrap_or(0);
+            let bytes = self.db.cf_sst_bytes(self.db.cf(name)?)?;
             out.push((name.to_string(), bytes));
         }
         Ok(out)
@@ -1576,8 +1651,8 @@ impl Estate {
         let handle = self.db.cf(crate::keys::CF_FEED)?;
         let mut first_seq = None;
         let mut retained = 0u64;
-        for item in self.db.0.iterator_cf(handle, rocksdb::IteratorMode::Start) {
-            let (k, _) = item.map_err(rocks_err)?;
+        for item in self.db.iter_all(handle) {
+            let (k, _) = item?;
             if first_seq.is_none() && k.len() == 8 {
                 first_seq = Some(u64::from_be_bytes(k[..8].try_into().expect("8 bytes")));
             }

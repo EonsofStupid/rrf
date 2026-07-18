@@ -11,7 +11,7 @@
 
 use rro_core::{Candidate, Embedding, EstateQuery, Metadata, Result};
 
-use crate::estate::{rocks_err, Estate};
+use crate::estate::Estate;
 use crate::keys::CF_DOCS;
 use crate::model::StoredDoc;
 use crate::store::ConnXRecall;
@@ -361,11 +361,8 @@ impl ConnXRecall {
             let handle = db.cf(crate::keys::CF_COLL)?;
             let prefix = crate::keys::coll_prefix(&name);
             let mut out = Vec::new();
-            for item in db.0.iterator_cf(
-                handle,
-                rocksdb::IteratorMode::From(&prefix, rocksdb::Direction::Forward),
-            ) {
-                let (k, _) = item.map_err(crate::estate::rocks_err)?;
+            for item in db.iter_from(handle, &prefix) {
+                let (k, _) = item?;
                 if !k.starts_with(&prefix) {
                     break;
                 }
@@ -475,8 +472,8 @@ impl Estate {
         }
         let handle = self.db.cf(CF_DOCS)?;
         let mut out = std::collections::BTreeMap::new();
-        for item in self.db.0.iterator_cf(handle, rocksdb::IteratorMode::Start) {
-            let (_, v) = item.map_err(rocks_err)?;
+        for item in self.db.iter_all(handle) {
+            let (_, v) = item?;
             let doc: StoredDoc = serde_json::from_slice(&v)?;
             if let Some(value) = doc.metadata.get(field) {
                 let key = match value {
@@ -499,11 +496,8 @@ impl Estate {
         let handle = self.db.cf(crate::keys::CF_PIDX)?;
         let prefix = crate::keys::pidx_field_prefix(field);
         let mut out = std::collections::BTreeMap::new();
-        for item in self.db.0.iterator_cf(
-            handle,
-            rocksdb::IteratorMode::From(&prefix, rocksdb::Direction::Forward),
-        ) {
-            let (k, _) = item.map_err(rocks_err)?;
+        for item in self.db.iter_from(handle, &prefix) {
+            let (k, _) = item?;
             if !k.starts_with(&prefix) {
                 break;
             }
@@ -545,8 +539,8 @@ impl Estate {
         }
         let handle = self.db.cf(CF_DOCS)?;
         let mut n = 0u64;
-        for item in self.db.0.iterator_cf(handle, rocksdb::IteratorMode::Start) {
-            let (_, v) = item.map_err(rocks_err)?;
+        for item in self.db.iter_all(handle) {
+            let (_, v) = item?;
             let doc: StoredDoc = serde_json::from_slice(&v)?;
             if matches_filter(&doc.metadata, filter) {
                 n += 1;
@@ -559,13 +553,13 @@ impl Estate {
     /// the previous page as `after`; returns up to `limit` docs.
     pub fn scroll(&self, after: Option<&str>, limit: usize) -> Result<Vec<StoredDoc>> {
         let handle = self.db.cf(CF_DOCS)?;
-        let mode = match after {
-            Some(a) => rocksdb::IteratorMode::From(a.as_bytes(), rocksdb::Direction::Forward),
-            None => rocksdb::IteratorMode::Start,
-        };
         let mut out = Vec::new();
-        for item in self.db.0.iterator_cf(handle, mode) {
-            let (k, v) = item.map_err(rocks_err)?;
+        let scan: Box<dyn Iterator<Item = crate::estate::KvItem> + '_> = match after {
+            Some(a) => Box::new(self.db.iter_from(handle, a.as_bytes())),
+            None => Box::new(self.db.iter_all(handle)),
+        };
+        for item in scan {
+            let (k, v) = item?;
             if let Some(a) = after {
                 if k.as_ref() == a.as_bytes() {
                     continue; // strictly after the cursor

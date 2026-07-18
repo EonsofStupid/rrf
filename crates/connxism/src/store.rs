@@ -16,7 +16,7 @@ use recall::AnnIndex;
 use rro_core::{Candidate, Embedding, Id, Recall, Result, RroError, VectorRecord};
 use tokio::sync::Mutex;
 
-use crate::estate::{rocks_err, Db, Estate};
+use crate::estate::{Batch, Db, Estate};
 use crate::index::{bm25_scores, reciprocal_rank_fusion, Bm25Params, Posting, Postings};
 use crate::keys::{
     self, CF_DOCS, CF_FEED, CF_META, CF_PIDX, CF_TERMS, CF_VECS, META_DOC_COUNT, META_ESTATE,
@@ -207,11 +207,8 @@ impl ConnXRecall {
             let mut scores: HashMap<String, f32> = HashMap::new();
             for (dim, qw) in q.iter() {
                 let prefix = keys::sparse_prefix(dim);
-                for item in db.0.iterator_cf(
-                    sparse_cf,
-                    rocksdb::IteratorMode::From(&prefix, rocksdb::Direction::Forward),
-                ) {
-                    let (k, v) = item.map_err(rocks_err)?;
+                for item in db.iter_from(sparse_cf, &prefix) {
+                    let (k, v) = item?;
                     if !k.starts_with(&prefix) {
                         break;
                     }
@@ -240,9 +237,7 @@ impl ConnXRecall {
         tokio::task::spawn_blocking(move || {
             let vecs_cf = db.cf(CF_VECS)?;
             Ok(db
-                .0
-                .get_cf(vecs_cf, id.as_bytes())
-                .map_err(rocks_err)?
+                .get_cf(vecs_cf, id.as_bytes())?
                 .map(|b| Embedding(keys::decode_vec(&b))))
         })
         .await
@@ -258,7 +253,7 @@ impl ConnXRecall {
             let vecs_cf = db.cf(CF_VECS)?;
             let mut known: Vec<(String, Embedding)> = Vec::with_capacity(ids.len());
             for id in &ids {
-                if let Some(b) = db.0.get_cf(vecs_cf, id.as_bytes()).map_err(rocks_err)? {
+                if let Some(b) = db.get_cf(vecs_cf, id.as_bytes())? {
                     known.push((id.clone(), Embedding(keys::decode_vec(&b))));
                 }
             }
@@ -297,11 +292,8 @@ impl ConnXRecall {
             let nvecs_cf = db.cf(keys::CF_NVECS)?;
             let prefix = keys::nvec_prefix(&space);
             let mut scored: Vec<(String, f32)> = Vec::new();
-            for item in db.0.iterator_cf(
-                nvecs_cf,
-                rocksdb::IteratorMode::From(&prefix, rocksdb::Direction::Forward),
-            ) {
-                let (k, v) = item.map_err(rocks_err)?;
+            for item in db.iter_from(nvecs_cf, &prefix) {
+                let (k, v) = item?;
                 if !k.starts_with(&prefix) {
                     break;
                 }
@@ -341,7 +333,7 @@ impl ConnXRecall {
             let mvecs_cf = db.cf(keys::CF_MVECS)?;
             let mut out = Vec::with_capacity(ids.len());
             for id in &ids {
-                let s = match db.0.get_cf(mvecs_cf, id.as_bytes()).map_err(rocks_err)? {
+                let s = match db.get_cf(mvecs_cf, id.as_bytes())? {
                     Some(bytes) => {
                         let doc_tokens: Vec<Embedding> = keys::decode_multi(&bytes)
                             .into_iter()
@@ -477,7 +469,7 @@ impl ConnXRecall {
             let vecs_cf = db.cf(CF_VECS)?;
             let mut out = Vec::with_capacity(top_k.min(fused.len()));
             for id in fused.into_iter().take(top_k) {
-                let score = match db.0.get_cf(vecs_cf, id.as_bytes()).map_err(rocks_err)? {
+                let score = match db.get_cf(vecs_cf, id.as_bytes())? {
                     Some(bytes) => q.cosine(&Embedding(keys::decode_vec(&bytes))),
                     None => continue,
                 };
@@ -525,7 +517,7 @@ impl ConnXRecall {
             let vecs_cf = db.cf(CF_VECS)?;
             let mut dense: Vec<(String, f32)> = Vec::new();
             for id in &scope {
-                if let Some(bytes) = db.0.get_cf(vecs_cf, id.as_bytes()).map_err(rocks_err)? {
+                if let Some(bytes) = db.get_cf(vecs_cf, id.as_bytes())? {
                     let emb = Embedding(keys::decode_vec(&bytes));
                     dense.push((id.clone(), q.cosine(&emb)));
                 }
@@ -994,8 +986,7 @@ fn upsert_into(
     if lexical_stats {
         for (term, delta) in df_delta {
             if delta != 0 {
-                tx.batch
-                    .merge_cf(tdf_cf, term.as_bytes(), delta.to_le_bytes());
+                tx.batch.merge_df(tdf_cf, term.as_bytes(), delta);
             }
         }
     }
@@ -1021,11 +1012,8 @@ fn scan_postings(db: &Db, term: &str) -> Result<Postings> {
     let terms_cf = db.cf(CF_TERMS)?;
     let prefix = keys::term_prefix(term);
     let mut out = Postings::new();
-    for item in db.0.iterator_cf(
-        terms_cf,
-        rocksdb::IteratorMode::From(&prefix, rocksdb::Direction::Forward),
-    ) {
-        let (k, v) = item.map_err(rocks_err)?;
+    for item in db.iter_from(terms_cf, &prefix) {
+        let (k, v) = item?;
         if !k.starts_with(&prefix) {
             break;
         }
@@ -1092,7 +1080,7 @@ fn dense_blocking(
             if rescore {
                 let vecs_cf = db.cf(CF_VECS)?;
                 for (id, s) in scored.iter_mut() {
-                    if let Some(bytes) = db.0.get_cf(vecs_cf, id.as_bytes()).map_err(rocks_err)? {
+                    if let Some(bytes) = db.get_cf(vecs_cf, id.as_bytes())? {
                         *s = query.cosine(&Embedding(keys::decode_vec(&bytes)));
                     }
                 }
@@ -1104,8 +1092,8 @@ fn dense_blocking(
             // current (writes land in `vecs` before enqueueing), no overlay.
             let vecs_cf = db.cf(CF_VECS)?;
             scored = Vec::new();
-            for item in db.0.iterator_cf(vecs_cf, rocksdb::IteratorMode::Start) {
-                let (k, v) = item.map_err(rocks_err)?;
+            for item in db.iter_all(vecs_cf) {
+                let (k, v) = item?;
                 let emb = Embedding(keys::decode_vec(&v));
                 scored.push((String::from_utf8_lossy(&k).into_owned(), query.cosine(&emb)));
             }
@@ -1154,12 +1142,7 @@ fn lexical_topk_blocking(
     top_k: usize,
 ) -> Result<Vec<Candidate>> {
     let meta_cf = db.cf(CF_META)?;
-    if db
-        .0
-        .get_cf(meta_cf, keys::META_LEXSTATS)
-        .map_err(rocks_err)?
-        .is_none()
-    {
+    if db.get_cf(meta_cf, keys::META_LEXSTATS)?.is_none() {
         return lexical_blocking(db, params, terms, top_k);
     }
     let n_docs = db.get_u64(META_DOC_COUNT)?;
@@ -1178,15 +1161,14 @@ fn lexical_topk_blocking(
         if !seen.insert(t.clone()) {
             continue;
         }
-        let df =
-            db.0.get_cf(tdf_cf, t.as_bytes())
-                .map_err(rocks_err)?
-                .map(|b| {
-                    let mut a = [0u8; 8];
-                    a[..b.len().min(8)].copy_from_slice(&b[..b.len().min(8)]);
-                    i64::from_le_bytes(a)
-                })
-                .unwrap_or(0);
+        let df = db
+            .get_cf(tdf_cf, t.as_bytes())?
+            .map(|b| {
+                let mut a = [0u8; 8];
+                a[..b.len().min(8)].copy_from_slice(&b[..b.len().min(8)]);
+                i64::from_le_bytes(a)
+            })
+            .unwrap_or(0);
         if df <= 0 {
             continue; // term absent from the corpus
         }
@@ -1213,11 +1195,8 @@ fn lexical_topk_blocking(
         }
         let (term, idf, _) = &infos[idx];
         let prefix = keys::term_prefix(term);
-        for item in db.0.iterator_cf(
-            terms_cf,
-            rocksdb::IteratorMode::From(&prefix, rocksdb::Direction::Forward),
-        ) {
-            let (k, v) = item.map_err(rocks_err)?;
+        for item in db.iter_from(terms_cf, &prefix) {
+            let (k, v) = item?;
             if !k.starts_with(&prefix) {
                 break;
             }
@@ -1238,10 +1217,7 @@ fn lexical_topk_blocking(
     // Pruned tail: complete every candidate's score by point lookups.
     for (term, idf, _) in &infos[idx..] {
         for (doc_id, score) in acc.iter_mut() {
-            if let Some(v) =
-                db.0.get_cf(terms_cf, keys::term_key(term, doc_id))
-                    .map_err(rocks_err)?
-            {
+            if let Some(v) = db.get_cf(terms_cf, keys::term_key(term, doc_id))? {
                 *score += bm25_term(params, *idf, decode_posting(&v)?, avgdl);
             }
         }
@@ -1306,8 +1282,7 @@ fn remove_into(
     for term in analyzer.analyze(&old.text) {
         tx.batch.delete_cf(terms_cf, keys::term_key(&term, id));
         if lexical_stats && seen.insert(term.clone()) {
-            tx.batch
-                .merge_cf(tdf_cf, term.as_bytes(), (-1i64).to_le_bytes());
+            tx.batch.merge_df(tdf_cf, term.as_bytes(), -1);
         }
     }
     let pidx_cf = db.cf(CF_PIDX)?;
@@ -1416,7 +1391,7 @@ impl ConnXRecall {
             let Some(mut doc) = db.get_json::<StoredDoc>(CF_DOCS, id.as_bytes())? else {
                 return Err(RroError::Recall(format!("no such document: {id}")));
             };
-            let mut batch = rocksdb::WriteBatch::default();
+            let mut batch = Batch::new();
             let pidx_cf = db.cf(CF_PIDX)?;
             let indexed = crate::filter::indexed_fields(&db)?;
 
