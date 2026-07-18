@@ -165,7 +165,7 @@ impl Default for EstateConfig {
 }
 
 /// One operator estate: the kvs-connectome over a single embedded key/value
-/// store (the backend — RocksDB or Fjall — is chosen behind the [`crate::kv`] seam).
+/// store (the backend — RocksDB or Fjall — is chosen behind the `kv` seam).
 pub struct Estate {
     pub(crate) db: Db,
     /// The ANN graph over the estate's vectors. Two-phase by contract: the
