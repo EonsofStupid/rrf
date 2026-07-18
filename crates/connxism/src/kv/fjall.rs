@@ -23,7 +23,10 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use fjall::{Database, Keyspace, KeyspaceCreateOptions, KvSeparationOptions, PersistMode};
+use fjall::config::{BloomConstructionPolicy, CompressionPolicy, FilterPolicy, FilterPolicyEntry};
+use fjall::{
+    CompressionType, Database, Keyspace, KeyspaceCreateOptions, KvSeparationOptions, PersistMode,
+};
 use rro_core::{Result, RroError};
 
 use crate::estate::EstateConfig;
@@ -38,6 +41,59 @@ const KV_SEPARATION_THRESHOLD: u32 = 4 * 1024;
 /// Map a Fjall error into the engine error type.
 fn fjall_err(e: fjall::Error) -> RroError {
     RroError::Recall(format!("kvs: {e}"))
+}
+
+/// Per-keyspace options mirroring the RocksDB backend's per-CF tuning
+/// (`kv/rocks.rs`): a point-lookup bloom, compression, per-CF memtable size, and
+/// KV separation on the vector CFs.
+fn keyspace_options(name: &str, memtable_bytes: u64) -> KeyspaceCreateOptions {
+    // Point-lookup CFs get a bloom (10 bits/key ≈ 1% false positives) and are
+    // told to expect hits; range-scanned CFs skip the bloom — a whole-key filter
+    // cannot answer a prefix scan, so it would be pure space/cache waste.
+    let point_lookup = matches!(
+        name,
+        keys::CF_DOCS
+            | keys::CF_VECS
+            | keys::CF_NVECS
+            | keys::CF_MVECS
+            | keys::CF_META
+            | keys::CF_NODES
+            | keys::CF_CONNS
+            | keys::CF_COLL
+            | keys::CF_TDF
+    );
+    let is_vector = matches!(name, keys::CF_VECS | keys::CF_NVECS | keys::CF_MVECS);
+
+    let filter = if point_lookup {
+        FilterPolicy::all(FilterPolicyEntry::Bloom(
+            BloomConstructionPolicy::BitsPerKey(10.0),
+        ))
+    } else {
+        FilterPolicy::all(FilterPolicyEntry::None)
+    };
+    // Dense f32 vectors do not compress meaningfully; paying CPU to not shrink
+    // them is a straight loss on the hot read path. Everything else gets LZ4.
+    let compression = if is_vector {
+        CompressionPolicy::all(CompressionType::None)
+    } else {
+        CompressionPolicy::all(CompressionType::Lz4)
+    };
+
+    let mut opts = KeyspaceCreateOptions::default()
+        .max_memtable_size(memtable_bytes)
+        .expect_point_read_hits(point_lookup)
+        .filter_policy(filter)
+        .data_block_compression_policy(compression);
+
+    // BlobDB → KV separation on the vector CFs: values above the threshold live
+    // in a value log the LSM only references, so compaction moves pointers, not
+    // 10 KiB vectors. Same intent as the RocksDB BlobDB knob.
+    if is_vector {
+        opts = opts.with_kv_separation(Some(
+            KvSeparationOptions::default().separation_threshold(KV_SEPARATION_THRESHOLD),
+        ));
+    }
+    opts
 }
 
 /// Decode an `i64 LE` counter value (tolerant of short/absent buffers).
@@ -124,26 +180,30 @@ struct Inner {
 pub(crate) struct Db(Arc<Inner>);
 
 impl Db {
-    /// Open (or create) the estate's Fjall database at `path`, opening one
-    /// keyspace per column family (KV separation on the vector CFs).
+    /// Open (or create) the estate's Fjall database at `path`, applying the same
+    /// per-CF tuning the RocksDB backend does: a shared block/blob cache, a
+    /// global memtable ceiling, background workers, per-keyspace point-lookup
+    /// blooms, compression, and KV separation on the vector CFs.
     pub(crate) fn open(path: &Path, config: &EstateConfig) -> Result<Db> {
-        let db = Database::builder(path).open().map_err(fjall_err)?;
+        // Each keyspace's memtable is capped below (`max_memtable_size`), so the
+        // total write memory is bounded by that × the live keyspaces — the same
+        // budget the RocksDB backend states explicitly via `db_write_buffer_size`.
+        let db = Database::builder(path)
+            // One shared block/blob cache across keyspaces (RocksDB's shared LRU).
+            .cache_size(config.block_cache_bytes as u64)
+            // Background compaction/flush workers (RocksDB's `background_jobs`).
+            .worker_threads(config.background_jobs.max(1))
+            .open()
+            .map_err(fjall_err)?;
+
+        let write_buffer_bytes = config.write_buffer_bytes as u64;
         let mut parts = std::collections::HashMap::with_capacity(COLUMN_FAMILIES.len());
         for name in COLUMN_FAMILIES {
-            // Vector CFs get KV separation (values in a value log the LSM only
-            // references) — the BlobDB rationale, same intent, same knob shape.
-            let ks = if matches!(*name, keys::CF_VECS | keys::CF_NVECS | keys::CF_MVECS) {
-                db.keyspace(name, || {
-                    KeyspaceCreateOptions::default().with_kv_separation(Some(
-                        KvSeparationOptions::default()
-                            .separation_threshold(KV_SEPARATION_THRESHOLD),
-                    ))
-                })
-            } else {
-                db.keyspace(name, KeyspaceCreateOptions::default)
-            }
-            .map_err(fjall_err)?;
-            parts.insert(*name, ks);
+            let name = *name;
+            let ks = db
+                .keyspace(name, || keyspace_options(name, write_buffer_bytes))
+                .map_err(fjall_err)?;
+            parts.insert(name, ks);
         }
         Ok(Db(Arc::new(Inner {
             db,
@@ -262,9 +322,14 @@ impl Db {
         self.0.db.persist(PersistMode::SyncAll).map_err(fjall_err)
     }
 
-    /// Fjall runs its own background compaction continuously; there is no
-    /// operator-forced full compaction to invoke, so this is advisory (a no-op).
-    pub(crate) fn compact_cf(&self, _cf: Cf) {}
+    /// Force a full compaction of `cf` — the operator-invoked optimizer pass,
+    /// the same as RocksDB's `compact_range_cf`. Best-effort like that endpoint
+    /// (which cannot fail the caller); a failure is logged, not propagated.
+    pub(crate) fn compact_cf(&self, cf: Cf) {
+        if let Err(e) = cf.ks.major_compact() {
+            tracing::warn!("fjall major_compact of `{}` failed: {e}", cf.name);
+        }
+    }
 
     /// Live on-disk bytes held by `cf`.
     pub(crate) fn cf_sst_bytes(&self, cf: Cf) -> Result<u64> {

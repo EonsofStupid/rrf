@@ -153,3 +153,45 @@ already does for counters:
   differential test loses meaning.
 
 **Estimated effort: ~6–9 focused days**, dominated by Phases 3 and 6.
+
+---
+
+## Backend parity matrix (authored 2026-07-18)
+
+Both backends live behind the KV seam (`crate::kv`), one selected per build.
+Every RocksDB capability in `kv/rocks.rs` has a proven Fjall equivalent in
+`kv/fjall.rs`; the connxism suite passes identically under each. Open-path tuning
+is translated (not dropped) so Fjall is a first-class peer, not a defaults build.
+
+| Capability | RocksDB (`kv/rocks.rs`) | Fjall (`kv/fjall.rs`) | Proof |
+|---|---|---|---|
+| open / CFs | `open_cf_descriptors` | `Database::builder` + `keyspace` per CF | suite opens |
+| shared block/blob cache | `Cache::new_lru_cache(block_cache_bytes)` | `builder.cache_size(block_cache_bytes)` | opens |
+| background workers | `increase_parallelism(background_jobs)` | `builder.worker_threads(background_jobs)` | opens |
+| per-CF memtable | `set_write_buffer_size(write_buffer_bytes)` | `max_memtable_size(write_buffer_bytes)` | opens |
+| point-lookup bloom | `set_bloom_filter(10.0)` on 9 CFs | `filter_policy(Bloom BitsPerKey 10.0)`, same 9 CFs | opens |
+| scan CFs: no bloom | (extractor, no whole-key bloom) | `filter_policy(None)` + `expect_point_read_hits(false)` | postings scan |
+| compression | Lz4; None on vec CFs | `CompressionType::Lz4`; `None` on vec CFs | suite |
+| BlobDB (vec CFs) | `enable_blob_files` + `min_blob_size(4K)` | `with_kv_separation(threshold 4K)` | vector round-trip |
+| get / put / get_json / put_json / get_u64 | `get_cf` / `put_cf` | `Keyspace::get` / `insert` | suite |
+| atomic cross-CF batch | `WriteBatch` | `db.batch()` | transaction tests |
+| durability toggle (fsync) | `WriteOptions::set_sync` | `persist(SyncAll)` iff fsync | reopen test |
+| `tdf` document-freq merge | `merge_operator_associative(i64_add)` | RMW accumulator folded at `write()` (i64-LE unchanged) | df-counter tests |
+| iterate from / all | `iterator_cf(From/Start)` | `Keyspace::range` / `iter` (Guard) | postings/scan tests |
+| flush | `flush_cf` / `flush_wal` | `persist(SyncAll)` | flush test |
+| compact | `compact_range_cf` | `major_compact()` (best-effort, logged) | compact test |
+| cf size | `total-sst-files-size` property | `disk_space()` | cf_sizes |
+| snapshot | `Checkpoint` (hard-link) | `persist(SyncAll)` + directory copy at quiescence | snapshot round-trip |
+
+**Signals unchanged.** Estate-level telemetry (`rro_core::events::emit` for
+`estate.flush`/`compact`/`snapshot`/`graph_persist`, the `SignalKind` stream) is
+backend-agnostic and fires under both — the analytics/audit/logging baseline is
+untouched by the backend choice. The Fjall backend additionally traces
+compaction failures (`tracing::warn`).
+
+**Known Fjall constraint (the one divergence).** Fjall caps keys at 65 536 bytes;
+RocksDB has no key-length limit. The only unbounded key path is `pidx`
+(`keys::pidx_key(field, value, id)` from arbitrary metadata values) and
+user-supplied `doc_id`. Guarded at the write boundary so **both** backends reject
+an over-limit key identically (`keys::MAX_KEY_LEN`) — no silent cross-release
+divergence.
