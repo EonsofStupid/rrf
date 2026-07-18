@@ -11,7 +11,7 @@ publish.workspace = true
 
 [features]
 # Storage backend, forwarded to connxism. Exactly one is active; RocksDB default.
-default = ["kvs-rocks"]
+default = ["kvs-fjall"]
 kvs-rocks = ["connxism/kvs-rocks"]
 kvs-fjall = ["connxism/kvs-fjall"]
 

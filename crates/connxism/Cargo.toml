@@ -15,7 +15,7 @@ publish.workspace = true
 # backend's code compiles — the two never coexist in a build. RocksDB is the
 # shipping default; `kvs-fjall` swaps in the pure-Rust Fjall 3.x LSM. Comparing
 # them is a clyffy-level concern (build clyffy against each), not the engine's.
-default = ["kvs-rocks"]
+default = ["kvs-fjall"]
 kvs-rocks = ["dep:rocksdb"]
 kvs-fjall = ["dep:fjall"]
 

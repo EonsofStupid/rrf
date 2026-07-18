@@ -18,7 +18,7 @@ path = "src/bin/rro.rs"
 # `--no-default-features --features kvs-fjall` (the nightly release). Exactly one
 # backend is active — the feature is forwarded to connxism, the only crate that
 # names a storage engine.
-default = ["kvs-rocks"]
+default = ["kvs-fjall"]
 kvs-rocks = ["connxism/kvs-rocks"]
 kvs-fjall = ["connxism/kvs-fjall"]
 # Build the daemon with the real candle backends compiled in. Off by default so
