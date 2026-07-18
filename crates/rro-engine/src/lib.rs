@@ -19,6 +19,7 @@
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
+pub mod auth;
 mod estate_map;
 mod flow;
 pub mod graphql;
@@ -30,6 +31,7 @@ mod sample;
 mod serve;
 mod sql;
 
+pub use auth::{AuthPolicy, Claims, Role};
 pub use estate_map::estate_map;
 pub use flow::{ObjectBuilder, ObjectConfig, ReasonReadyObject};
 pub use handler::FlowNode;

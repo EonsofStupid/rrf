@@ -28,6 +28,9 @@ pub struct ServeOptions {
     pub estate: Option<std::sync::Arc<connxism::Estate>>,
     /// Capability token: when set, every a2a message except `ping` must bear it.
     pub token: Option<String>,
+    /// RBAC policy (signed HS256 tokens, per-verb roles, namespace scope). When
+    /// set it supersedes `token` — the richer gate for a multi-tenant surface.
+    pub auth: Option<crate::auth::AuthPolicy>,
 }
 
 impl ServeOptions {
@@ -50,7 +53,9 @@ pub async fn serve(flow: Arc<ReasonReadyObject>, opts: ServeOptions) -> Result<(
     if let Some(estate) = &opts.estate {
         node = node.with_estate(estate.clone());
     }
-    if let Some(token) = &opts.token {
+    if let Some(policy) = &opts.auth {
+        node = node.with_auth(policy.clone());
+    } else if let Some(token) = &opts.token {
         node = node.with_token(token.clone());
     }
     let node = Arc::new(node);
