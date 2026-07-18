@@ -227,6 +227,38 @@ at 64 — the tell was ef=4..64 taking an identical 584µs while ef≥100 respon
 and the first conclusion therefore claimed "passes at ef=4" when it had passed at
 64 nine times. The beam is now swept on the CONFIG, not the argument.
 
+### Finding 5b — the ef knee at 50k scale (the honest scale gate)
+
+Finding 5 promised the small-corpus caveat "stands until ≥50k real vectors are
+swept." This is that sweep at scale: **50,000 vectors, dim 64**, in 5,000
+well-separated 10-point clusters — synthetic, but with genuine neighbourhood
+structure (each query is a held-out point inside a blob, so its true top-10 are
+that blob's members, unambiguously). The graph is *not* nearly-fully-connected at
+50k, so this is the beam doing real work, not exhaustive search in disguise. Run:
+
+```
+cargo test -p recall --release ef_search_sweep_50k -- --ignored --nocapture
+```
+
+| ef | recall@10 | p50 (µs) | p95 (µs) |
+|---:|---:|---:|---:|
+| 10 | 0.9400 | 16 | 24 |
+| 16 | 0.9750 | 17 | 27 |
+| 24 | 0.9900 | 19 | 28 |
+| **32** *(knee)* | **1.0000** | 20 | 28 |
+| 48 | 1.0000 | 30 | 43 |
+| **64** *(default)* | **1.0000** | **37** | 51 |
+| 128 | 1.0000 | 77 | 92 |
+| 256 | 1.0000 | 157 | 169 |
+
+**The knee is ef ≈ 32; the shipped default `ef_search=64` clears it with 2×
+headroom** at ~37 µs p50, and everything past 32 buys latency for zero recall.
+This is now a gate assertion, not a note: the sweep fails if the knee ever exceeds
+the default (`knee <= AnnConfig::default().ef_search`). The one thing this run is
+NOT is real embeddings at 50k — that needs 50k real vectors (nfcorpus alone is
+3.6k) and belongs to Phase 15; structured-synthetic is the honest stand-in for
+"does the knee hold at scale," and it does.
+
 ### Finding 4 — ingest is ~1000x slower than advertised
 
 **10 docs/sec** (3,633 docs in 355 s), against the README's **10.9k docs/sec**.
