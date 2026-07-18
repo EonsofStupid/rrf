@@ -17,6 +17,7 @@ pub struct FlowNode {
     flow: Arc<ReasonReadyObject>,
     estate: Option<Arc<connxism::Estate>>,
     token: Option<String>,
+    auth: Option<crate::auth::AuthPolicy>,
     me: NodeId,
     started: std::time::Instant,
 }
@@ -28,6 +29,7 @@ impl FlowNode {
             flow,
             estate: None,
             token: None,
+            auth: None,
             me: me.into(),
             started: std::time::Instant::now(),
         }
@@ -45,15 +47,50 @@ impl FlowNode {
         self.token = Some(token.into());
         self
     }
+
+    /// Require signed HS256 tokens with per-verb RBAC and namespace scope
+    /// ([`crate::auth::AuthPolicy`]). Supersedes the shared-secret [`Self::with_token`]
+    /// gate when set: `ping` stays open, every other verb needs a valid token
+    /// whose role permits it and whose namespace scope matches this node.
+    pub fn with_auth(mut self, policy: crate::auth::AuthPolicy) -> Self {
+        self.auth = Some(policy);
+        self
+    }
+
+    /// Authorize a message before dispatch. `ping` is always open. Under an RBAC
+    /// policy this verifies the signed token, expiry, role capability and
+    /// namespace scope, returning the caller's role; under the legacy shared
+    /// secret it checks the token and returns `None`; an open node returns `None`.
+    /// `Err(())` means refuse with `unauthorized`.
+    fn authorize(&self, msg: &Message) -> std::result::Result<Option<crate::auth::Role>, ()> {
+        if msg.verb == "ping" {
+            return Ok(None);
+        }
+        if let Some(policy) = &self.auth {
+            return policy
+                .authorize(msg.token.as_deref(), &msg.verb)
+                .map(Some)
+                .map_err(|_| ());
+        }
+        if let Some(required) = &self.token {
+            if msg.token.as_deref() != Some(required.as_str()) {
+                return Err(());
+            }
+        }
+        Ok(None)
+    }
 }
 
 #[async_trait]
 impl Handler for FlowNode {
     async fn handle(&self, msg: Message) -> Result<Option<Message>> {
-        // L3 in its first form: fresh authorization at every action. Ping
-        // stays open as the liveness probe.
-        if let Some(required) = &self.token {
-            if msg.verb != "ping" && msg.token.as_deref() != Some(required.as_str()) {
+        // L3: fresh authorization at every action. `ping` stays open as the
+        // liveness probe. When an RBAC policy is set it supersedes the legacy
+        // shared-secret token; the caller's role is carried into the match so
+        // finer decisions (a reader's `sql` is read-only) can be made.
+        let caller_role = match self.authorize(&msg) {
+            Ok(role) => role,
+            Err(()) => {
                 rro_core::events::emit(
                     "a2a.unauthorized",
                     serde_json::json!({ "verb": msg.verb, "from": msg.from.as_str() }),
@@ -62,7 +99,7 @@ impl Handler for FlowNode {
                     "error": "unauthorized"
                 }))));
             }
-        }
+        };
         match msg.verb.as_str() {
             "ping" => Ok(Some(msg.reply(serde_json::json!({
                 "pong": true,
@@ -243,6 +280,19 @@ impl Handler for FlowNode {
                         }))))
                     }
                 };
+
+                // A reader-role token's `sql` is implicitly read-only: a write
+                // statement is refused as unauthorized (not merely read_only),
+                // so RBAC covers the text surface as well as the typed verbs.
+                if caller_role == Some(crate::auth::Role::Reader) && stmt.is_write() {
+                    rro_core::events::emit(
+                        "a2a.unauthorized",
+                        serde_json::json!({ "verb": "sql", "keyword": stmt.keyword() }),
+                    );
+                    return Ok(Some(msg.reply(serde_json::json!({
+                        "error": "unauthorized"
+                    }))));
+                }
 
                 // A peer may pin itself read-only. Refusing a write here rather
                 // than at the estate means an exposed node can be safely shared
@@ -696,17 +746,16 @@ impl Handler for FlowNode {
         if msg.verb != "watch" && msg.verb != "live" {
             return Ok(false);
         }
-        if let Some(required) = &self.token {
-            if msg.token.as_deref() != Some(required.as_str()) {
-                rro_core::events::emit(
-                    "a2a.unauthorized",
-                    serde_json::json!({ "verb": msg.verb, "from": msg.from.as_str() }),
-                );
-                let _ = tx
-                    .send(msg.reply(serde_json::json!({ "error": "unauthorized" })))
-                    .await;
-                return Ok(true);
-            }
+        // Subscriptions are reads; the same gate as request/reply verbs applies.
+        if self.authorize(&msg).is_err() {
+            rro_core::events::emit(
+                "a2a.unauthorized",
+                serde_json::json!({ "verb": msg.verb, "from": msg.from.as_str() }),
+            );
+            let _ = tx
+                .send(msg.reply(serde_json::json!({ "error": "unauthorized" })))
+                .await;
+            return Ok(true);
         }
         let Some(estate) = self.estate.clone() else {
             let _ = tx

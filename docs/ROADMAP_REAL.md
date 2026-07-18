@@ -88,9 +88,9 @@ implements the ones it has its own way. There is no SurrealDB or Qdrant in the c
 | Schemafull `DEFINE` enforcement, `ALTER`, `REMOVE` | ❌ — DEFINE parses; nothing enforces | `rro-ql`, `connxism` | **10** |
 | `LIVE` / `KILL` | ⚠️ **parse-only — refuses at execution**, points at `watch` | `rro-engine/src/sql.rs:182` | **10** |
 | Record links | ⚠️ partial — RELATE covers the edge case | `rels.rs` | **10** |
-| Users / roles (root, ns, db) | ❌ | new | **12** |
-| JWT + JWKS | ❌ | new | **12** |
-| Record-level permissions | ❌ | new | **12** |
+| Users / roles (reader/writer/admin) | ✅ 2026-07-17 — per-verb RBAC at the `FlowNode` gate; a reader's `sql` write is refused too | `rro-engine/src/auth.rs`, `handler.rs` | ~~12~~ |
+| JWT (local HS256) | ✅ 2026-07-17 — **hand-rolled** SHA-256 + HMAC (NIST/RFC vectors), local-key HS256, no external crypto/JWT crate, no JWKS/outbound (self-hosted signs+verifies). Expired/wrong-sig rejected, constant-time MAC compare | `rro-engine/src/auth.rs` | ~~12~~ |
+| Namespace-scoped permissions | ✅ 2026-07-17 — token `ns` claim; a scoped token is refused on a node serving another namespace (the same key cannot bypass it) | `rro-engine/src/auth.rs` | ~~12~~ |
 | HTTP REST doorway | ✅ 2026-07-17 — thin HTTP/1.1 front door (no new crate, no hyper/axum): builds the a2a `Message` and calls the one `FlowNode::handle`, so HTTP is byte-identical to a2a by construction. `POST /query` · `POST /ask` · `GET /health` · probes · `POST /v/{verb}` escape hatch. Bearer token → the same capability gate. Gate: `POST /query` ≡ a2a `query` ≡ `estate.recall().query()` | `rro-engine/src/http.rs` | ~~11~~ |
 | WebSocket RPC | ❌ streaming (`watch`/`live`) doorway — follow-on | `rro-engine/src/http.rs` | **11** |
 | **GraphQL** | ✅ 2026-07-17 — query surface (parser+executor) over the a2a transport, NOT a bolted-on HTTP server. GraphQL is a language, not a transport. `graphql` verb + `rro_graphql` MCP. Mutations/introspection = follow-on | `rro-engine/src/graphql.rs` | ~~11~~ |

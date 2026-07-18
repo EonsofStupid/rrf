@@ -114,12 +114,31 @@ async fn main() -> anyhow::Result<()> {
         );
     }
 
+    // RBAC: when RRO_AUTH_KEY is set, the node signs/verifies HS256 tokens with
+    // per-verb roles and namespace scope. RRO_NAMESPACE scopes the node to one
+    // tenant. On startup we mint a short-lived bootstrap admin token to the log
+    // so an operator can actually reach the guarded surface (self-hosted, local
+    // key — there is no external issuer to bootstrap from).
+    let auth = std::env::var("RRO_AUTH_KEY").ok().map(|key| {
+        let mut policy = rro_engine::AuthPolicy::new(key.into_bytes());
+        if let Ok(ns) = std::env::var("RRO_NAMESPACE") {
+            policy = policy.for_namespace(ns);
+        }
+        let bootstrap = policy.issue_for("bootstrap", rro_engine::Role::Admin, None, 3600);
+        tracing::warn!(
+            token = %bootstrap,
+            "RBAC enabled — bootstrap admin token (valid 1h); mint scoped tokens with the same key"
+        );
+        policy
+    });
+
     let opts = ServeOptions {
         node_id: std::env::var("RRO_NODE").unwrap_or_else(|_| "rro".to_string()),
         listen: std::env::var("RRO_LISTEN").ok(),
         http_listen: std::env::var("RRO_HTTP").ok(),
         estate: estate_handle,
         token: std::env::var("RRO_TOKEN").ok(),
+        auth,
     };
 
     // Ops HTTP surface (prometheus /metrics + health probes), when asked.
