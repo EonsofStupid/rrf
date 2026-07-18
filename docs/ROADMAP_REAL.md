@@ -114,7 +114,7 @@ implements the ones it has its own way. There is no SurrealDB or Qdrant in the c
 | Shard keys / scatter-gather | ❌ | `rro-net` | **13** |
 | Replication / raft | ❌ | `rro-net` | **13** |
 | REST + gRPC surface | ❌ | `rro-http` | **11** |
-| HNSW + `ef` tuning | ✅ | `ann.rs` | — |
+| HNSW + `ef` tuning | ✅ 2026-07-17 — swept at **50k** (structured): knee ef≈32, default 64 clears it 2× with headroom; gated `knee <= default` | `ann.rs` (`ef_search_sweep_50k`), `BENCHMARKS_REAL.md` §5b | — |
 | SQ8 quantization | ✅ | `quant.rs` | — |
 | Named + sparse + multivector | ✅ | `query.rs` | — |
 | Payload indexes, collections, aliases | ✅ | `filter.rs`, `keys.rs` | — |

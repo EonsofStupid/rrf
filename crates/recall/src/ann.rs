@@ -1574,6 +1574,149 @@ mod tests {
         assert!(recall >= 0.95, "recall@10 = {recall:.3}, gate is 0.95");
     }
 
+    /// A clustered corpus: `clusters` tight Gaussian blobs, so each point's true
+    /// top-k neighbours are its blob-mates — unambiguous, unlike uniform-random
+    /// vectors whose exact top-k sit in a distance tie-band. This is the honest
+    /// synthetic stand-in for real embeddings (which have neighbourhood
+    /// structure): recall@k actually plateaus, so a real `ef` knee exists.
+    fn build_clustered(n: usize, dim: usize, per_cluster: usize) -> (AnnIndex, Vec<Embedding>) {
+        // ef_search floor 1 so the sweep measures the passed ef, not a clamp.
+        let mut idx = AnnIndex::new(AnnConfig {
+            ef_search: 1,
+            ..AnnConfig::default()
+        });
+        let mut vecs = Vec::with_capacity(n);
+        let clusters = n / per_cluster;
+        let centers: Vec<Vec<f32>> = (0..clusters)
+            .map(|c| pseudo_vec(7_000_000 + c as u64, dim))
+            .collect();
+        for i in 0..n {
+            let center = &centers[i % clusters];
+            // Tight jitter: with ~per_cluster points per well-separated blob, a
+            // point's true top-k are its blob-mates and the (k+1)th is far — a
+            // clean gap, so recall@k plateaus instead of chasing a tie-band.
+            let noise = pseudo_vec(i as u64, dim);
+            let e = Embedding(
+                center
+                    .iter()
+                    .zip(&noise)
+                    .map(|(c, z)| c + 0.02 * z)
+                    .collect(),
+            );
+            idx.insert(Id::new(format!("v{i}")), &e);
+            vecs.push(e.normalized());
+        }
+        (idx, vecs)
+    }
+
+    /// ef sweep on 50k vectors: the recall@10-vs-exact / latency tradeoff, so the
+    /// `ef_search` default is a measured choice, not a guess. `#[ignore]`d — the
+    /// 50k build is too heavy for 2-core CI; run on the box:
+    ///
+    /// ```text
+    /// cargo test -p recall --release ef_search_sweep_50k -- --ignored --nocapture
+    /// ```
+    ///
+    /// Vectors are synthetic but **clustered** (dim 64, 500 blobs) so neighbours
+    /// are well-defined and recall plateaus — the point is the SHAPE of the curve:
+    /// where more `ef` stops buying recall (the knee), and what each step costs in
+    /// query latency. The absolute numbers are a synthetic proxy, not a product
+    /// claim; the real-embedding proof is Phase 15.
+    #[test]
+    #[ignore = "50k build; run on the box with --ignored --nocapture"]
+    fn ef_search_sweep_50k() {
+        let n = 50_000;
+        let dim = 64;
+        let (idx, vecs) = build_clustered(n, dim, 10);
+        assert_eq!(idx.len(), n);
+
+        // Queries are held-out points drawn INSIDE real blobs (same center seeds
+        // the builder uses), so each query's true top-10 are that blob's members —
+        // a well-posed neighbour question, not a random point in empty space.
+        let clusters = n / 10;
+        let queries = 200;
+        let qs: Vec<Embedding> = (0..queries)
+            .map(|qi| {
+                let c = (qi * 7 + 3) % clusters;
+                let center = pseudo_vec(7_000_000 + c as u64, dim);
+                let noise = pseudo_vec(9_000_000 + qi as u64, dim);
+                Embedding(
+                    center
+                        .iter()
+                        .zip(&noise)
+                        .map(|(c, z)| c + 0.02 * z)
+                        .collect(),
+                )
+            })
+            .collect();
+        let truth: Vec<Vec<usize>> = qs.iter().map(|q| exact_top_k(&vecs, q, 10)).collect();
+
+        println!("\nef_search sweep — {n} vectors (synthetic, dim {dim}), {queries} queries, k=10");
+        println!(
+            "{:>6}  {:>10}  {:>12}  {:>12}",
+            "ef", "recall@10", "p50 (µs)", "p95 (µs)"
+        );
+
+        let efs = [10usize, 16, 24, 32, 48, 64, 96, 128, 192, 256];
+        let mut best_recall = 0.0f64;
+        let mut curve: Vec<(usize, f64, u128)> = Vec::new();
+        for &ef in &efs {
+            let mut found = 0usize;
+            let mut total = 0usize;
+            let mut lat: Vec<u128> = Vec::with_capacity(queries);
+            for (q, tr) in qs.iter().zip(&truth) {
+                let t0 = std::time::Instant::now();
+                let ann: Vec<String> = idx
+                    .search(q, 10, ef)
+                    .into_iter()
+                    .map(|(id, _)| id.as_str().to_string())
+                    .collect();
+                lat.push(t0.elapsed().as_micros());
+                for t in tr {
+                    total += 1;
+                    if ann.iter().any(|id| id == &format!("v{t}")) {
+                        found += 1;
+                    }
+                }
+            }
+            lat.sort_unstable();
+            let recall = found as f64 / total as f64;
+            let p50 = lat[queries / 2];
+            let p95 = lat[queries * 95 / 100];
+            best_recall = best_recall.max(recall);
+            curve.push((ef, recall, p50));
+            println!("{ef:>6}  {recall:>10.4}  {p50:>12}  {p95:>12}");
+        }
+
+        // The knee: the smallest ef whose recall is within 0.5% of the best seen.
+        let knee = curve
+            .iter()
+            .find(|(_, r, _)| *r >= best_recall - 0.005)
+            .map(|(ef, _, _)| *ef)
+            .unwrap_or(efs[efs.len() - 1]);
+        println!("knee ef ≈ {knee} (recall within 0.5% of best {best_recall:.4})\n");
+
+        // Sanity, not theatre: more ef must not REDUCE recall, and the top of the
+        // sweep must clear a real floor on this synthetic set.
+        assert!(
+            curve.last().unwrap().1 >= curve.first().unwrap().1,
+            "recall must be non-decreasing from ef {} to {}",
+            efs[0],
+            efs[efs.len() - 1]
+        );
+        assert!(
+            best_recall >= 0.90,
+            "best recall@10 over the sweep = {best_recall:.4}; expected ≥ 0.90"
+        );
+        // The shipped default must clear the knee — otherwise the default is
+        // leaving recall on the table. (Measured: knee ≈ 32, default 64.)
+        assert!(
+            knee <= AnnConfig::default().ef_search,
+            "knee ef {knee} exceeds the default ef_search {}; the default under-searches",
+            AnnConfig::default().ef_search
+        );
+    }
+
     #[test]
     fn quantized_recall_gate_and_memory() {
         let n = 5000;
