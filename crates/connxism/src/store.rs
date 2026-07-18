@@ -846,6 +846,15 @@ fn upsert_into(
 
     for r in records {
         let id = r.id.as_str().to_string();
+        // Key-length guard (both backends, so behavior never diverges): a doc id
+        // keys `docs`/`vecs`/postings directly, so an over-limit id is rejected up
+        // front rather than accepted by RocksDB and refused by Fjall.
+        if keys::key_too_long(id.as_bytes()) {
+            return Err(RroError::Recall(format!(
+                "document id exceeds {} bytes",
+                keys::MAX_KEY_LEN
+            )));
+        }
 
         // Overwrite semantics: retract the old version's postings (lexical
         // and sparse), payload index rows, and counters.
@@ -904,7 +913,16 @@ fn upsert_into(
         // Payload index rows for indexed fields — blind puts, same tx.batch.
         for field in &indexed_fields {
             if let Some(v) = r.metadata.get(field) {
-                tx.batch.put_cf(pidx_cf, keys::pidx_key(field, v, &id), []);
+                // `pidx` keys embed an arbitrary metadata value — the one
+                // unbounded key path — so guard the composed key on both backends.
+                let key = keys::pidx_key(field, v, &id);
+                if keys::key_too_long(&key) {
+                    return Err(RroError::Recall(format!(
+                        "payload-index key for field `{field}` exceeds {} bytes",
+                        keys::MAX_KEY_LEN
+                    )));
+                }
+                tx.batch.put_cf(pidx_cf, key, []);
             }
         }
 

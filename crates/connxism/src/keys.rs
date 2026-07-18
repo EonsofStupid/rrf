@@ -25,6 +25,16 @@ pub const COLUMN_FAMILIES: &[&str] = &[
     CF_PIDX, CF_SPARSE, CF_NVECS, CF_MVECS, CF_COLL, CF_TDF, CF_GRAPH,
 ];
 
+/// Maximum key length. Fjall caps keys at 65 536 bytes; RocksDB has no limit.
+/// Enforced on both backends so an over-limit key fails identically, never
+/// silently on one and hard on the other.
+pub const MAX_KEY_LEN: usize = 65_536;
+
+/// Whether `key` exceeds [`MAX_KEY_LEN`] (see it for why the bound is enforced).
+pub fn key_too_long(key: &[u8]) -> bool {
+    key.len() > MAX_KEY_LEN
+}
+
 /// Estate metadata + counters.
 pub const CF_META: &str = "meta";
 /// Node registry.
