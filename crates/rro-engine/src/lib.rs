@@ -21,6 +21,7 @@
 
 pub mod auth;
 pub mod cluster;
+mod embedded;
 mod estate_map;
 mod flow;
 pub mod graphql;
@@ -35,6 +36,7 @@ mod sql;
 
 pub use auth::{AuthPolicy, Claims, Role};
 pub use cluster::{elect, Cluster, Lease};
+pub use embedded::EmbeddedEngine;
 pub use estate_map::estate_map;
 pub use flow::{ObjectBuilder, ObjectConfig, ReasonReadyObject};
 pub use handler::FlowNode;
