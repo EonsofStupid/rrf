@@ -159,9 +159,12 @@ already does for counters:
 ## Backend parity matrix (authored 2026-07-18)
 
 Both backends live behind the KV seam (`crate::kv`), one selected per build.
-Every RocksDB capability in `kv/rocks.rs` has a proven Fjall equivalent in
-`kv/fjall.rs`; the connxism suite passes identically under each. Open-path tuning
-is translated (not dropped) so Fjall is a first-class peer, not a defaults build.
+Every RocksDB capability that Fjall 3.1.7 **can express** has an implemented
+Fjall equivalent in `kv/fjall.rs`; the connxism suite passes identically under
+each. Open-path tuning is translated (not dropped) so Fjall is a first-class
+peer, not a defaults build. **Two** RocksDB capabilities have no faithful Fjall
+3.1.7 equivalent and are documented — not faked — in the *Capability conflicts*
+section below.
 
 | Capability | RocksDB (`kv/rocks.rs`) | Fjall (`kv/fjall.rs`) | Proof |
 |---|---|---|---|
@@ -178,10 +181,15 @@ is translated (not dropped) so Fjall is a first-class peer, not a defaults build
 | durability toggle (fsync) | `WriteOptions::set_sync` | `persist(SyncAll)` iff fsync | reopen test |
 | `tdf` document-freq merge | `merge_operator_associative(i64_add)` | RMW accumulator folded at `write()` (i64-LE unchanged) | df-counter tests |
 | iterate from / all | `iterator_cf(From/Start)` | `Keyspace::range` / `iter` (Guard) | postings/scan tests |
-| flush | `flush_cf` / `flush_wal` | `persist(SyncAll)` | flush test |
+| flush memtable | `flush_cf` | `rotate_memtable_and_wait()` | maintenance test |
+| WAL sync | `flush_wal(sync)` | `persist(SyncData)` iff sync, else `Buffer` | flush test |
 | compact | `compact_range_cf` | `major_compact()` (best-effort, logged) | compact test |
 | cf size | `total-sst-files-size` property | `disk_space()` | cf_sizes |
-| snapshot | `Checkpoint` (hard-link) | `persist(SyncAll)` + directory copy at quiescence | snapshot round-trip |
+| filter/index pinning | `pin_l0_filter_and_index_blocks` | `filter_block_pinning_policy` + `index_block_pinning_policy` on point-lookup CFs | opens |
+| data block size | `set_block_size(16K)` | `data_block_size_policy(16K)` | opens |
+| blob GC | `enable_blob_gc(true)` | `KvSeparationOptions` `staleness_threshold`/`age_cutoff` | vector round-trip |
+| write-memory budget | global `db_write_buffer_size` | role-weighted per-keyspace `max_memtable_size` + `max_journaling_size` WAL cap | opens (see conflicts) |
+| snapshot | `Checkpoint` (hard-link, atomic) | applier quiesced + directory copy under a held `Database::snapshot()` (MVCC pin) | crash/snapshot round-trip |
 
 **Signals unchanged.** Estate-level telemetry (`rro_core::events::emit` for
 `estate.flush`/`compact`/`snapshot`/`graph_persist`, the `SignalKind` stream) is
@@ -189,9 +197,41 @@ backend-agnostic and fires under both — the analytics/audit/logging baseline i
 untouched by the backend choice. The Fjall backend additionally traces
 compaction failures (`tracing::warn`).
 
-**Known Fjall constraint (the one divergence).** Fjall caps keys at 65 536 bytes;
+**Known Fjall constraint (key length).** Fjall caps keys at 65 536 bytes;
 RocksDB has no key-length limit. The only unbounded key path is `pidx`
 (`keys::pidx_key(field, value, id)` from arbitrary metadata values) and
 user-supplied `doc_id`. Guarded at the write boundary so **both** backends reject
 an over-limit key identically (`keys::MAX_KEY_LEN`) — no silent cross-release
 divergence.
+
+## Capability conflicts (documented, not faked) — audited 2026-07-18
+
+Two RocksDB capabilities have **no faithful equivalent in Fjall 3.1.7**. Rather
+than fake parity, they are called out here and where they live in the code
+(`kv/fjall.rs` module doc). Both were confirmed against the vendored `fjall`/
+`lsm-tree` 3.1.7 source.
+
+1. **`CF_TERMS` BM25 prefix bloom.** RocksDB accelerates posting-list *prefix*
+   scans with a NUL-terminated `prefix_extractor` + `memtable_prefix_bloom_ratio`,
+   skipping SSTs/memtables that hold no postings for a term. Fjall's filters are
+   **whole-key, point-read only** (`FilterPolicyEntry` is `None | Bloom`; the bloom
+   is consulted only in `Table::get`, never on range scans) — there is no prefix
+   filter or key transform. `CF_TERMS` therefore runs unfiltered: **BM25 lookups
+   stay correct** (a `range`/`prefix` seek still finds the postings), but the
+   scan-skip optimization is absent; it is served by leveled locality + the shared
+   block cache. Closing this would require forking `lsm-tree` to add a prefix
+   filter — deferred until real-workload measurement (clyffy terminal → DuckDB)
+   shows it matters.
+
+2. **Global cross-keyspace memtable cap.** RocksDB's `db_write_buffer_size` is a
+   single hard ceiling over all CFs. Fjall's equivalent (`max_write_buffer_size` /
+   `WriteBufferManager`) is `#[deprecated = "todo"]` and off by default in 3.1.7.
+   Replaced by a **role-weighted per-keyspace budget** (`memtable_size_for`: hot
+   recall-write CFs get the full `write_buffer_bytes`, cold CFs a quarter) plus a
+   `max_journaling_size` WAL cap, so aggregate write memory is still an intentional
+   number — just enforced by sizing each keyspace rather than one global counter.
+
+Everything else RocksDB tunes is implemented on Fjall (see the matrix above).
+The `data_block_hash_ratio` in-block point-read index — a Fjall-native speedup
+RocksDB has no analogue for — is available but **deferred** (it is `#[doc(hidden)]`
+/ experimental in 3.1.7; not shipped unmeasured).
