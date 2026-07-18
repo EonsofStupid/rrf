@@ -26,8 +26,8 @@ embedder ─▶ recall ─▶ reranker ─▶ classifier ─▶ connectome
             ANN+BM25,   relevance)  ready?)      operator reads)
             RRF-fused)
         │
-   connXism estate: RocksDB — docs, vectors, postings, relations,
-   tags, shapes, trends, changefeed · a2a warp mesh · DuckDB events
+   connXism estate: RocksDB (default) · Fjall (nightly) — docs, vectors,
+   postings, relations, tags, shapes, trends, changefeed · a2a warp mesh · events
 ```
 
 ## Measured
@@ -110,6 +110,25 @@ default build is weightless (synthetic embedder, dev/CI only). Wiring real model
 is spec'd exactly in **docs/MODELS.md**; the full remaining plan (models, RRQL,
 cluster, deploy) is in **docs/ROADMAP_REAL.md**.
 
+## Storage backend — two releases
+
+The estate's key/value store is a **mutually-exclusive cargo feature** — exactly
+one backend compiles per build, chosen at the engine root and forwarded down to
+`connxism` (the only crate that names a storage engine). No dual-backend
+machinery inside the engine.
+
+| Release | Backend | Build |
+|---|---|---|
+| **stable** | RocksDB (`kvs-rocks`, default) | `cargo build -p rro-engine --release` |
+| **nightly** | Fjall 3.x, pure-Rust LSM (`kvs-fjall`) | `cargo build -p rro-engine --release --no-default-features --features kvs-fjall` |
+
+Both pass the **same** engine + `connxism` suites (correctness parity); the Fjall
+open path mirrors RocksDB's per-CF tuning (block cache, point-lookup blooms,
+compression, KV separation on the vector CFs) — it is a first-class peer, not a
+defaults build. The full method→backend parity matrix is in
+**[docs/FJALL_MIGRATION_PLAN.md](docs/FJALL_MIGRATION_PLAN.md)**. Add `--features
+candle` to either for the in-process Qwen backends.
+
 ## The workspace
 
 | Crate | Role |
@@ -121,7 +140,7 @@ cluster, deploy) is in **docs/ROADMAP_REAL.md**.
 | `reranker` | True relevance — BM25 default + DevPULSE (Nemotron) plug-point |
 | `classifier` | The readiness daemon |
 | `connectome` | The visual map (flow + estate), JSON/DOT |
-| `connxism` | The kvs-connectome estate: RocksDB, hybrid recall, relations, changefeed, warp points |
+| `connxism` | The kvs-connectome estate (RocksDB or Fjall): hybrid recall, relations, changefeed, warp points |
 | `connectors` | Resumable source drivers + the sync engine (RRD-first) |
 | `rro-net` | a2a layer-2: in-proc bus + TCP; MCP mesh binding lands P5 |
 | `rro-engine` | The orchestrator, `rro` daemon, `rro-bench` harness |
