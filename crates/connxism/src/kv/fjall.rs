@@ -310,14 +310,14 @@ impl Db {
         Ok(())
     }
 
-    /// Make `cf`'s writes durable. Fjall persists at the database (journal)
-    /// level, so this syncs the whole database — the callers that flush a single
-    /// CF (e.g. the graph blob) want exactly that durability.
-    pub(crate) fn flush_cf(&self, _cf: Cf) -> Result<()> {
-        self.0.db.persist(PersistMode::SyncAll).map_err(fjall_err)
+    /// Flush `cf`'s memtable to an on-disk segment (RocksDB's `flush_cf`): rotate
+    /// the active memtable and wait for it to land, so the data is durable as a
+    /// segment and shows up in `disk_space` — not just fsynced in the journal.
+    pub(crate) fn flush_cf(&self, cf: Cf) -> Result<()> {
+        cf.ks.rotate_memtable_and_wait().map_err(fjall_err)
     }
 
-    /// Sync the journal (Fjall's write-ahead log).
+    /// Sync the journal (Fjall's write-ahead log) — RocksDB's `flush_wal`.
     pub(crate) fn flush_wal(&self, _sync: bool) -> Result<()> {
         self.0.db.persist(PersistMode::SyncAll).map_err(fjall_err)
     }

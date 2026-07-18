@@ -37,7 +37,10 @@ reranker = { path = "crates/reranker" }
 classifier = { path = "crates/classifier" }
 connectome = { path = "crates/connectome" }
 connectors = { path = "crates/connectors" }
-connxism = { path = "crates/connxism" }
+# default-features off so each consumer picks the storage backend (one of
+# connxism's mutually-exclusive `kvs-rocks`/`kvs-fjall`); set here, not per-member,
+# because a member-level `default-features = false` on a workspace dep is ignored.
+connxism = { path = "crates/connxism", default-features = false }
 rrd = { path = "crates/rrd" }
 rro-net = { path = "crates/rro-net" }
 rro-ql = { path = "crates/rro-ql" }

@@ -9,6 +9,12 @@ authors.workspace = true
 repository.workspace = true
 publish.workspace = true
 
+[features]
+# Storage backend, forwarded to connxism. Exactly one is active; RocksDB default.
+default = ["kvs-rocks"]
+kvs-rocks = ["connxism/kvs-rocks"]
+kvs-fjall = ["connxism/kvs-fjall"]
+
 [dependencies]
 rro-core = { workspace = true }
 connxism = { workspace = true }

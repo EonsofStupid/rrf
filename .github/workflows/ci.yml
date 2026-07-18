@@ -59,11 +59,12 @@ jobs:
           if-no-files-found: warn
 
   fjall-backend:
-    # connxism's storage backend is a mutually-exclusive cargo feature; the
-    # `--all-features` jobs above compile it as RocksDB (the shipping default),
-    # so the Fjall backend needs its own job to stay guarded. Runs the *same*
-    # connxism suite against Fjall — the migration's parity gate.
-    name: connxism (fjall backend)
+    # The storage backend is a mutually-exclusive cargo feature forwarded from
+    # connxism up to the whole engine; the `--all-features` jobs above compile it
+    # as RocksDB (the shipping default), so the Fjall variant needs its own job to
+    # stay guarded. This is the nightly-Fjall release build: the WHOLE engine on
+    # Fjall, plus the connxism parity suite.
+    name: engine (fjall backend)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -72,8 +73,8 @@ jobs:
           components: clippy
       - uses: Swatinem/rust-cache@v2
       - uses: taiki-e/install-action@nextest
-      - run: cargo clippy -p connxism --no-default-features --features kvs-fjall --all-targets -- -D warnings
-      - run: cargo nextest run --profile ci -p connxism --no-default-features --features kvs-fjall
+      - run: cargo clippy -p rro-engine -p connxism -p connectors --no-default-features --features kvs-fjall --all-targets -- -D warnings
+      - run: cargo nextest run --profile ci -p rro-engine -p connxism --no-default-features --features kvs-fjall
 
   msrv:
     name: msrv (1.90)
