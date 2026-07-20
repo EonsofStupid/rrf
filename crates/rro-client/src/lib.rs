@@ -99,6 +99,33 @@ impl Client {
             .ok_or_else(|| RroError::Net("index reply missing total".into()))
     }
 
+    /// Apply a sequence of writes as one atomic transaction, over the wire.
+    ///
+    /// `ops` is a JSON array whose elements are `{"upsert": [<doc>, …]}` or
+    /// `{"remove": "<id>"}`. All of them commit or none do — a failure anywhere
+    /// (a bad op, a dimension mismatch) rolls the whole batch back and nothing
+    /// durable lands. Returns the number of ops committed.
+    pub async fn transaction(&self, ops: serde_json::Value) -> Result<usize> {
+        let body = self.call("tx", serde_json::json!({ "ops": ops })).await?;
+        if let Some(err) = body.get("error").and_then(|e| e.as_str()) {
+            return Err(RroError::Net(format!("tx refused: {err}")));
+        }
+        body.get("committed")
+            .and_then(|t| t.as_u64())
+            .map(|t| t as usize)
+            .ok_or_else(|| RroError::Net("tx reply missing `committed`".into()))
+    }
+
+    /// Run a GraphQL query against the node — over the a2a transport, not HTTP.
+    ///
+    /// Returns the GraphQL response envelope (`{data}` or `{data, errors}`).
+    /// GraphQL is a query language, not a transport, so this rides the same
+    /// connection as every other verb.
+    pub async fn graphql(&self, query: &str) -> Result<serde_json::Value> {
+        self.call("graphql", serde_json::json!({ "query": query }))
+            .await
+    }
+
     /// Page the node's durable changefeed from `since_seq`.
     pub async fn changes(&self, since_seq: u64, limit: usize) -> Result<ChangesPage> {
         let body = self
@@ -115,7 +142,40 @@ impl Client {
     /// the node side — no polling anywhere). Return `false` from the
     /// callback to stop watching; the cursor to resume from is returned.
     /// The same `since_seq` cursor works across `watch` and [`Client::changes`].
-    pub async fn watch<F>(&self, since_seq: u64, mut on_change: F) -> Result<u64>
+    pub async fn watch<F>(&self, since_seq: u64, on_change: F) -> Result<u64>
+    where
+        F: FnMut(serde_json::Value) -> bool + Send,
+    {
+        self.stream_verb(
+            "watch",
+            serde_json::json!({ "since_seq": since_seq }),
+            since_seq,
+            on_change,
+        )
+        .await
+    }
+
+    /// The RRQL `LIVE` subscription: open a push stream from an RRQL statement.
+    /// `LIVE` streams changes from now; `LIVE SINCE n` resumes from seq `n`.
+    /// Same frames and cursor semantics as [`Client::watch`].
+    pub async fn live<F>(&self, rql: &str, on_change: F) -> Result<u64>
+    where
+        F: FnMut(serde_json::Value) -> bool + Send,
+    {
+        self.stream_verb("live", serde_json::json!({ "sql": rql }), 0, on_change)
+            .await
+    }
+
+    /// Shared push-stream driver for the streaming verbs (`watch`, `live`): one
+    /// long-lived connection, invoke `on_change` per frame, return the resume
+    /// cursor. `start_cursor` seeds the returned cursor before any frame arrives.
+    async fn stream_verb<F>(
+        &self,
+        verb: &str,
+        body: serde_json::Value,
+        start_cursor: u64,
+        mut on_change: F,
+    ) -> Result<u64>
     where
         F: FnMut(serde_json::Value) -> bool + Send,
     {
@@ -126,12 +186,7 @@ impl Client {
             .map_err(|e| RroError::Net(format!("connect: {e}")))?;
         let (read_half, mut write_half) = stream.into_split();
 
-        let mut msg = Message::request(
-            self.from.as_str(),
-            "rro",
-            "watch",
-            serde_json::json!({ "since_seq": since_seq }),
-        );
+        let mut msg = Message::request(self.from.as_str(), "rro", verb, body);
         if let Some(t) = &self.token {
             msg = msg.with_token(t.clone());
         }
@@ -142,7 +197,7 @@ impl Client {
             .await
             .map_err(|e| RroError::Net(format!("write: {e}")))?;
 
-        let mut cursor = since_seq;
+        let mut cursor = start_cursor;
         let mut lines = BufReader::new(read_half).lines();
         while let Some(line) = lines
             .next_line()
@@ -154,7 +209,7 @@ impl Client {
             }
             let frame: Message = serde_json::from_str(&line)?;
             if let Some(err) = frame.body.get("error").and_then(|e| e.as_str()) {
-                return Err(RroError::Net(format!("node refused `watch`: {err}")));
+                return Err(RroError::Net(format!("node refused `{verb}`: {err}")));
             }
             if let Some(next) = frame.body.get("next_seq").and_then(|v| v.as_u64()) {
                 cursor = next;

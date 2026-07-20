@@ -26,8 +26,8 @@ embedder ─▶ recall ─▶ reranker ─▶ classifier ─▶ connectome
             ANN+BM25,   relevance)  ready?)      operator reads)
             RRF-fused)
         │
-   connXism estate: RocksDB — docs, vectors, postings, relations,
-   tags, shapes, trends, changefeed · a2a warp mesh · DuckDB events
+   connXism estate: RocksDB (default) · Fjall (nightly) — docs, vectors,
+   postings, relations, tags, shapes, trends, changefeed · a2a warp mesh · events
 ```
 
 ## Measured
@@ -110,6 +110,69 @@ default build is weightless (synthetic embedder, dev/CI only). Wiring real model
 is spec'd exactly in **docs/MODELS.md**; the full remaining plan (models, RRQL,
 cluster, deploy) is in **docs/ROADMAP_REAL.md**.
 
+### Embed it in your app (import-and-go)
+
+RRO is also a library. Import `rro-engine`, call one constructor, get a working
+recall + intelligence engine. The weightless path needs **no servers, no config**:
+
+```rust
+use rro_engine::{EmbeddedEngine, sample_corpus};
+
+// In-process — deterministic embedder + lexical reranker over a real persistent
+// estate. Ideal for a first run, tests, and CI.
+let engine = EmbeddedEngine::deterministic("./estate", "myapp")?;
+engine.index(sample_corpus()).await?;
+
+let result = engine.ask("how do I upgrade postgres safely?").await?;
+let shaped = engine.ask_with(&query, &fields).await?;      // RRD shape / intent
+let (result, graph) = engine.ask_with_map(&query).await?;  // + connectome map
+```
+
+For the real semantic engine, point at running embedder + reranker HTTP servers
+(vLLM or llama.cpp). The constructor probes both **and cross-checks the embedder's
+dimension against the estate**, so a mismatched model fails at construction — not
+late on the first index:
+
+```rust
+let engine = EmbeddedEngine::embed_http(
+    "./estate", "myapp",
+    "http://127.0.0.1:8090",   // OpenAI-compatible /v1/embeddings
+    "http://127.0.0.1:8092",   // reranker
+).await?;
+let h = engine.health().await;   // re-probe liveness after startup
+```
+
+`Cargo.toml` — set the storage backend explicitly (the vendored engine's default
+may not be yours) and add `candle` for in-process weights:
+
+```toml
+rro-engine = { git = "https://github.com/EonsofStupid/rrobjects", default-features = false, features = ["kvs-rocks"] }
+```
+
+## Storage backend — two releases
+
+The estate's key/value store is a **mutually-exclusive cargo feature** — exactly
+one backend compiles per build, chosen at the engine root and forwarded down to
+`connxism` (the only crate that names a storage engine). No dual-backend
+machinery inside the engine.
+
+| Release | Backend | Build |
+|---|---|---|
+| **stable** | RocksDB (`kvs-rocks`, default) | `cargo build -p rro-engine --release` |
+| **nightly** | Fjall 3.x, pure-Rust LSM (`kvs-fjall`) | `cargo build -p rro-engine --release --no-default-features --features kvs-fjall` |
+
+Both pass the **same** engine + `connxism` suites (correctness parity); the Fjall
+open path mirrors RocksDB's per-CF tuning — shared block cache, point-lookup
+blooms, filter/index-block pinning, 16 KiB blocks, compression, KV separation
+(with GC) on the vector CFs, role-weighted memtable budget, and a consistent
+(MVCC-pinned) snapshot. Two RocksDB capabilities have **no faithful Fjall 3.1.7
+equivalent and are documented, not faked**: the `CF_TERMS` BM25 *prefix* bloom
+(Fjall filters are whole-key only) and the single global memtable cap (deprecated
+in Fjall; replaced by the per-keyspace budget). It is a first-class peer, not a
+defaults build. Full method→backend parity matrix + the two conflicts:
+**[docs/FJALL_MIGRATION_PLAN.md](docs/FJALL_MIGRATION_PLAN.md)**. Add `--features
+candle` to either for the in-process Qwen backends.
+
 ## The workspace
 
 | Crate | Role |
@@ -121,7 +184,7 @@ cluster, deploy) is in **docs/ROADMAP_REAL.md**.
 | `reranker` | True relevance — BM25 default + DevPULSE (Nemotron) plug-point |
 | `classifier` | The readiness daemon |
 | `connectome` | The visual map (flow + estate), JSON/DOT |
-| `connxism` | The kvs-connectome estate: RocksDB, hybrid recall, relations, changefeed, warp points |
+| `connxism` | The kvs-connectome estate (RocksDB or Fjall): hybrid recall, relations, changefeed, warp points |
 | `connectors` | Resumable source drivers + the sync engine (RRD-first) |
 | `rro-net` | a2a layer-2: in-proc bus + TCP; MCP mesh binding lands P5 |
 | `rro-engine` | The orchestrator, `rro` daemon, `rro-bench` harness |

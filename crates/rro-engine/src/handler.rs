@@ -17,6 +17,8 @@ pub struct FlowNode {
     flow: Arc<ReasonReadyObject>,
     estate: Option<Arc<connxism::Estate>>,
     token: Option<String>,
+    auth: Option<crate::auth::AuthPolicy>,
+    cluster: Option<Arc<crate::cluster::Cluster>>,
     me: NodeId,
     started: std::time::Instant,
 }
@@ -28,6 +30,8 @@ impl FlowNode {
             flow,
             estate: None,
             token: None,
+            auth: None,
+            cluster: None,
             me: me.into(),
             started: std::time::Instant::now(),
         }
@@ -45,15 +49,58 @@ impl FlowNode {
         self.token = Some(token.into());
         self
     }
+
+    /// Require signed HS256 tokens with per-verb RBAC and namespace scope
+    /// ([`crate::auth::AuthPolicy`]). Supersedes the shared-secret [`Self::with_token`]
+    /// gate when set: `ping` stays open, every other verb needs a valid token
+    /// whose role permits it and whose namespace scope matches this node.
+    pub fn with_auth(mut self, policy: crate::auth::AuthPolicy) -> Self {
+        self.auth = Some(policy);
+        self
+    }
+
+    /// Make this node a cluster leader: it tracks follower replication progress
+    /// (from their `replicate` polls) and can hold a `durability: "quorum"` write
+    /// until a quorum of members have it. Without this, writes ack on local commit.
+    pub fn with_cluster(mut self, cluster: Arc<crate::cluster::Cluster>) -> Self {
+        self.cluster = Some(cluster);
+        self
+    }
+
+    /// Authorize a message before dispatch. `ping` is always open. Under an RBAC
+    /// policy this verifies the signed token, expiry, role capability and
+    /// namespace scope, returning the caller's role; under the legacy shared
+    /// secret it checks the token and returns `None`; an open node returns `None`.
+    /// `Err(())` means refuse with `unauthorized`.
+    fn authorize(&self, msg: &Message) -> std::result::Result<Option<crate::auth::Role>, ()> {
+        if msg.verb == "ping" {
+            return Ok(None);
+        }
+        if let Some(policy) = &self.auth {
+            return policy
+                .authorize(msg.token.as_deref(), &msg.verb)
+                .map(Some)
+                .map_err(|_| ());
+        }
+        if let Some(required) = &self.token {
+            if msg.token.as_deref() != Some(required.as_str()) {
+                return Err(());
+            }
+        }
+        Ok(None)
+    }
 }
 
 #[async_trait]
 impl Handler for FlowNode {
     async fn handle(&self, msg: Message) -> Result<Option<Message>> {
-        // L3 in its first form: fresh authorization at every action. Ping
-        // stays open as the liveness probe.
-        if let Some(required) = &self.token {
-            if msg.verb != "ping" && msg.token.as_deref() != Some(required.as_str()) {
+        // L3: fresh authorization at every action. `ping` stays open as the
+        // liveness probe. When an RBAC policy is set it supersedes the legacy
+        // shared-secret token; the caller's role is carried into the match so
+        // finer decisions (a reader's `sql` is read-only) can be made.
+        let caller_role = match self.authorize(&msg) {
+            Ok(role) => role,
+            Err(()) => {
                 rro_core::events::emit(
                     "a2a.unauthorized",
                     serde_json::json!({ "verb": msg.verb, "from": msg.from.as_str() }),
@@ -62,7 +109,7 @@ impl Handler for FlowNode {
                     "error": "unauthorized"
                 }))));
             }
-        }
+        };
         match msg.verb.as_str() {
             "ping" => Ok(Some(msg.reply(serde_json::json!({
                 "pong": true,
@@ -70,10 +117,41 @@ impl Handler for FlowNode {
             })))),
 
             // `ask` / `recall`: run the flow for `body.query`.
+            // `ask`: the full pass. Body: {"query": "...", "fields": {...}}.
+            //
+            // `fields` is optional and is the shaping input: RRD fingerprints
+            // shape from field names and types, so a caller that sends a
+            // COSTAR-aligned map (context/objective/style/tone/audience/response)
+            // gets a real, distinct sliver. A caller that sends nothing gets
+            // `sliver=0, mode=unshaped` — the same shape as every other bare
+            // query, which is why the baseline learns nothing from them.
             "ask" | "recall" => {
                 let query = msg.body.get("query").and_then(|v| v.as_str()).unwrap_or("");
-                let result = self.flow.ask(query).await?;
-                Ok(Some(msg.reply(serde_json::to_value(&result)?)))
+                let fields = msg
+                    .body
+                    .get("fields")
+                    .and_then(|v| v.as_object())
+                    .map(|o| o.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
+                    .unwrap_or_default();
+                let result = self.flow.ask_with(query, &fields).await?;
+                // Negotiate the LLM-ready context encoding: serve TOON if the
+                // client accepts it, else JSON plus a recommendation to enable it.
+                let accepts_toon = msg
+                    .body
+                    .get("accepts_toon")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or_else(|| {
+                        matches!(
+                            msg.body.get("format").and_then(|v| v.as_str()),
+                            Some("toon")
+                        )
+                    });
+                let context = rro_core::toon::render_candidates(&result.candidates, accepts_toon);
+                let mut reply = serde_json::to_value(&result)?;
+                if let Some(obj) = reply.as_object_mut() {
+                    obj.insert("context".into(), serde_json::to_value(&context)?);
+                }
+                Ok(Some(msg.reply(reply)))
             }
 
             // `map`: run the flow and return the connectome graph.
@@ -109,6 +187,48 @@ impl Handler for FlowNode {
                     "changes": changes,
                     "next_seq": next,
                 }))))
+            }
+
+            // `replicate`: the replication view of the changefeed — each change
+            // carried with the record a follower needs to apply it. Body:
+            // {"since_seq": 0, "limit": 256}; reply {"entries": [...],
+            // "next_seq": N}. This is what a follower polls to rebuild a leader's
+            // estate from the stream alone (no back-channel fetch), the primitive
+            // the cluster stands on. A read of the leader's log — reader-level.
+            "replicate" => {
+                let Some(estate) = &self.estate else {
+                    return Ok(Some(msg.reply(serde_json::json!({
+                        "error": "no estate attached to this node"
+                    }))));
+                };
+                let since = msg
+                    .body
+                    .get("since_seq")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0);
+                // The poll cursor IS the ack: a follower requesting `since` has
+                // applied everything below it. Record that for quorum-ack.
+                if let Some(cluster) = &self.cluster {
+                    cluster.observe(msg.from.as_str(), since);
+                }
+                let limit = msg
+                    .body
+                    .get("limit")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(256)
+                    .min(4096) as usize;
+                match estate.replication_batch(since, limit).await {
+                    Ok(entries) => {
+                        let next = entries.last().map(|e| e.seq + 1).unwrap_or(since);
+                        Ok(Some(msg.reply(serde_json::json!({
+                            "entries": entries,
+                            "next_seq": next,
+                        }))))
+                    }
+                    Err(e) => Ok(Some(
+                        msg.reply(serde_json::json!({ "error": e.to_string() })),
+                    )),
+                }
             }
 
             // `query`: the full typed query plane over the wire. The body IS
@@ -212,6 +332,19 @@ impl Handler for FlowNode {
                         }))))
                     }
                 };
+
+                // A reader-role token's `sql` is implicitly read-only: a write
+                // statement is refused as unauthorized (not merely read_only),
+                // so RBAC covers the text surface as well as the typed verbs.
+                if caller_role == Some(crate::auth::Role::Reader) && stmt.is_write() {
+                    rro_core::events::emit(
+                        "a2a.unauthorized",
+                        serde_json::json!({ "verb": "sql", "keyword": stmt.keyword() }),
+                    );
+                    return Ok(Some(msg.reply(serde_json::json!({
+                        "error": "unauthorized"
+                    }))));
+                }
 
                 // A peer may pin itself read-only. Refusing a write here rather
                 // than at the estate means an exposed node can be safely shared
@@ -431,6 +564,116 @@ impl Handler for FlowNode {
                 Ok(Some(msg.reply(serde_json::json!({ "total": total }))))
             }
 
+            // `graphql`: the GraphQL query surface, over the a2a transport.
+            // Body: {"query": "{ search(query: \"x\", topK: 3) { id score } }"}.
+            // GraphQL is a query language, not a transport — so it rides this
+            // NDJSON connection with every other verb rather than a bolted-on
+            // HTTP server. Reply is the standard GraphQL envelope: {data} or
+            // {data, errors}. Read-side only (writes go through `tx`/`sql`).
+            "graphql" => {
+                let Some(estate) = &self.estate else {
+                    return Ok(Some(msg.reply(serde_json::json!({
+                        "error": "no estate attached to this node"
+                    }))));
+                };
+                let query = msg.body.get("query").and_then(|v| v.as_str()).unwrap_or("");
+                // GraphQL carries writes (mutations) as well as reads; a reader's
+                // mutation is refused exactly like a reader's `sql` write.
+                if caller_role == Some(crate::auth::Role::Reader)
+                    && crate::graphql::is_mutation(query)
+                {
+                    rro_core::events::emit(
+                        "a2a.unauthorized",
+                        serde_json::json!({ "verb": "graphql", "op": "mutation" }),
+                    );
+                    return Ok(Some(msg.reply(serde_json::json!({
+                        "error": "unauthorized"
+                    }))));
+                }
+                let result = crate::graphql::execute(query, estate, &self.flow).await;
+                Ok(Some(msg.reply(result)))
+            }
+
+            // `tx`: a sequence of writes applied as ONE atomic transaction.
+            // Body: {"ops": [{"upsert": [<doc>, …]}, {"remove": "<id>"}, …]}.
+            // Commits all or none — any failure (a bad op, a dim mismatch)
+            // rolls the whole batch back and nothing durable lands. Upserts are
+            // embedded first, so a model failure aborts before any write.
+            "tx" => {
+                let Some(estate) = &self.estate else {
+                    return Ok(Some(msg.reply(serde_json::json!({
+                        "error": "no estate attached to this node"
+                    }))));
+                };
+                let ops_json = msg
+                    .body
+                    .get("ops")
+                    .and_then(|v| v.as_array())
+                    .ok_or_else(|| {
+                        rro_core::RroError::Recall("tx body needs an `ops` array".into())
+                    })?;
+
+                // Build the WriteOps in order — order is load-bearing (an upsert
+                // then a remove of the same id must apply in that sequence).
+                let mut ops: Vec<connxism::WriteOp> = Vec::with_capacity(ops_json.len());
+                for op in ops_json {
+                    if let Some(docs_v) = op.get("upsert") {
+                        let docs: Vec<Document> = serde_json::from_value(docs_v.clone())?;
+                        // Embed OUTSIDE the transaction: a model call must fail
+                        // before any durable write, never mid-batch.
+                        let records = self.flow.embed_documents(docs).await?;
+                        ops.push(connxism::WriteOp::Upsert(records));
+                    } else if let Some(id) = op.get("remove").and_then(|v| v.as_str()) {
+                        ops.push(connxism::WriteOp::Remove(rro_core::Id::from(id)));
+                    } else {
+                        return Err(rro_core::RroError::Recall(
+                            "each tx op must be {\"upsert\": [...]} or {\"remove\": \"id\"}".into(),
+                        ));
+                    }
+                }
+                let n = ops.len();
+                estate.recall().transaction(ops).await?;
+
+                // Synchronous quorum durability: with `"durability": "quorum"` on
+                // a cluster leader, do not ack until a quorum of members hold this
+                // write. The write is already durable locally and readable by
+                // `replicate` (dense record from CF_VECS/CF_DOCS, not the
+                // out-of-band graph), so followers can pull it immediately.
+                let quorum = msg.body.get("durability").and_then(|v| v.as_str()) == Some("quorum");
+                let mut reply = serde_json::json!({ "committed": n });
+                if quorum {
+                    let Some(cluster) = &self.cluster else {
+                        return Ok(Some(msg.reply(serde_json::json!({
+                            "error": "durability \"quorum\" requested but this node is not a cluster leader",
+                            "committed_local": n,
+                        }))));
+                    };
+                    // The feed cursor one past this write — a follower must reach it.
+                    let target = estate.feed_stats()?.next_seq;
+                    let timeout = std::time::Duration::from_millis(
+                        msg.body
+                            .get("quorum_timeout_ms")
+                            .and_then(|v| v.as_u64())
+                            .unwrap_or(5_000),
+                    );
+                    match cluster.await_quorum(target, timeout).await {
+                        Ok(()) => {
+                            reply["durable"] = serde_json::json!("quorum");
+                            reply["quorum_seq"] = serde_json::json!(target);
+                        }
+                        // The write is durable locally but did NOT reach a quorum;
+                        // say so rather than ack a durability we did not achieve.
+                        Err(e) => {
+                            return Ok(Some(msg.reply(serde_json::json!({
+                                "error": e.to_string(),
+                                "committed_local": n,
+                            }))));
+                        }
+                    }
+                }
+                Ok(Some(msg.reply(reply)))
+            }
+
             // `health`: uptime + a live estate snapshot + self-reported
             // issues. Body: {"backlog_threshold": 10000} (optional).
             "health" => {
@@ -447,6 +690,12 @@ impl Handler for FlowNode {
                         .unwrap_or(10_000) as usize;
                     body["estate"] = serde_json::to_value(estate.health()?)?;
                     body["issues"] = serde_json::to_value(estate.issues(threshold)?)?;
+                }
+                // Cluster view: the follower positions this leader knows.
+                if let Some(cluster) = &self.cluster {
+                    body["cluster"] = serde_json::json!({
+                        "followers": cluster.follower_cursors(),
+                    });
                 }
                 Ok(Some(msg.reply(body)))
             }
@@ -509,8 +758,15 @@ impl Handler for FlowNode {
                         serde_json::json!({ "ok": true })
                     }
                     "compact" => {
+                        // Full optimize pass: reclaim ANN tombstones, then compact
+                        // the RocksDB column families.
+                        let graph = estate.compact_graph()?;
                         estate.compact()?;
-                        serde_json::json!({ "ok": true, "cf_bytes": estate.cf_sizes()? })
+                        serde_json::json!({
+                            "ok": true,
+                            "graph_reclaimed": graph.reclaimed(),
+                            "cf_bytes": estate.cf_sizes()?,
+                        })
                     }
                     "collections" => {
                         serde_json::json!({ "collections": estate.collections()? })
@@ -593,20 +849,22 @@ impl Handler for FlowNode {
         msg: Message,
         tx: tokio::sync::mpsc::Sender<Message>,
     ) -> Result<bool> {
-        if msg.verb != "watch" {
+        // `watch` is the raw subscription; `live` is the RRQL `LIVE` statement,
+        // which opens the same push stream — `LIVE [SINCE n]` maps to the feed
+        // cursor (no SINCE ⇒ from now, only future changes).
+        if msg.verb != "watch" && msg.verb != "live" {
             return Ok(false);
         }
-        if let Some(required) = &self.token {
-            if msg.token.as_deref() != Some(required.as_str()) {
-                rro_core::events::emit(
-                    "a2a.unauthorized",
-                    serde_json::json!({ "verb": "watch", "from": msg.from.as_str() }),
-                );
-                let _ = tx
-                    .send(msg.reply(serde_json::json!({ "error": "unauthorized" })))
-                    .await;
-                return Ok(true);
-            }
+        // Subscriptions are reads; the same gate as request/reply verbs applies.
+        if self.authorize(&msg).is_err() {
+            rro_core::events::emit(
+                "a2a.unauthorized",
+                serde_json::json!({ "verb": msg.verb, "from": msg.from.as_str() }),
+            );
+            let _ = tx
+                .send(msg.reply(serde_json::json!({ "error": "unauthorized" })))
+                .await;
+            return Ok(true);
         }
         let Some(estate) = self.estate.clone() else {
             let _ = tx
@@ -615,11 +873,40 @@ impl Handler for FlowNode {
             return Ok(true);
         };
 
-        let mut since = msg
-            .body
-            .get("since_seq")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(0);
+        // Resolve the resume cursor. For `live`, parse the LIVE statement: SINCE n
+        // resumes from n, no SINCE streams only changes after subscription.
+        let mut since = if msg.verb == "live" {
+            let src = msg
+                .body
+                .get("sql")
+                .and_then(|v| v.as_str())
+                .unwrap_or("LIVE");
+            match rro_ql::parse(src) {
+                Ok(rro_ql::Statement::Live(live)) => match live.since {
+                    Some(n) => n,
+                    None => estate.feed_stats().map(|s| s.next_seq).unwrap_or(0),
+                },
+                Ok(other) => {
+                    let _ = tx
+                        .send(msg.reply(serde_json::json!({
+                            "error": format!("`live` needs a LIVE statement, got {}", other.keyword())
+                        })))
+                        .await;
+                    return Ok(true);
+                }
+                Err(e) => {
+                    let _ = tx
+                        .send(msg.reply(serde_json::json!({ "error": e.to_string() })))
+                        .await;
+                    return Ok(true);
+                }
+            }
+        } else {
+            msg.body
+                .get("since_seq")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0)
+        };
         let signal = estate.feed_signal();
 
         tokio::spawn(async move {

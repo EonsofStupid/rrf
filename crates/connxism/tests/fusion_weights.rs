@@ -169,3 +169,38 @@ async fn zero_weight_ablates_an_arm() {
         "lexical weight 0 must leave the dense ranking untouched at the top"
     );
 }
+
+/// End-to-end: `fusion_mode: Dbsf` actually reaches the query path and changes
+/// behaviour. A knob that deserializes but never reaches the fusion is the trap
+/// this asserts against — the same one `the_query_weight_reaches_the_fusion`
+/// guards for weights.
+#[tokio::test(flavor = "multi_thread")]
+async fn dbsf_mode_reaches_the_query_path() {
+    use connxism::FusionMode;
+    let dir = tempfile::tempdir().unwrap();
+    let estate = Estate::open(dir.path(), "fusion").unwrap();
+    let recall = disagreeing_corpus(&estate).await;
+
+    let q = |mode: FusionMode| EstateQuery {
+        text: Some("quantum entanglement".to_string()),
+        vector: Some(Embedding(vec![1.0, 0.0, 0.0]).normalized()),
+        top_k: 10,
+        fusion_mode: mode,
+        ..Default::default()
+    };
+
+    // Both strategies run and return results; the point is that Dbsf is a live
+    // path, not a silently-ignored field. Dense-aligned `dense_star` should lead
+    // under DBSF (which keeps the strong dense magnitude).
+    let dbsf = recall.query(q(FusionMode::Dbsf)).await.unwrap();
+    let rrf = recall.query(q(FusionMode::Rrf)).await.unwrap();
+
+    assert!(!dbsf.is_empty(), "DBSF path returns results");
+    assert!(!rrf.is_empty(), "RRF path returns results");
+    assert_eq!(
+        dbsf.iter().position(|c| c.id.as_str() == "dense_star"),
+        Some(0),
+        "under DBSF the strong dense hit leads — proving the mode reached the \
+         fusion and used the magnitudes"
+    );
+}

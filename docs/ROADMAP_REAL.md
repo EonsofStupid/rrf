@@ -5,23 +5,27 @@ the capability inventory, `ROADMAP.md` the old phase status. Where any of them
 disagree with this file about *what is built* or *what happens next*, this file
 wins. It is re-grounded on code read in July 2026, not on doc claims.
 
-_Reconciled 2026-07-17. Phases 0–2 done and merged to `main`._
+_Reconciled 2026-07-17. Phases 0–4 + shape-as-early-intent done and merged to `main`; Phase 5 next._
 
 ---
 
 ## The goal, stated exactly
 
-**One engine: everything SurrealDB and Qdrant have, combined, plus RRD + embedder
-+ reranker + classifier, over RocksDB (`connxism`) — and turnkey, meaning fully
-built and fully tested, not packaged.** Then pulled into clyffy as one config
-line. Proof last, on real data.
+**One engine — RRO — with the vector, graph (connectome), and query capabilities
+a memory engine needs, plus RRD + embedder + reranker + classifier, over RocksDB
+(`connxism`), and turnkey: fully built and fully tested.** SurrealDB and Qdrant
+were **guidance absorbed, not authorities to match** — there is no SurrealDB in
+this code; the map layer is `connectome` and the engine is RRO. Then pulled into
+clyffy as one config line. Proof last, on real data.
 
 ## Where it actually stands
 
-RRO today is **a strong Qdrant-class vector engine + a graph layer + its own query
-language + the RRD/model spine**. That is genuinely more than Qdrant ships. It is
-**not** yet SurrealDB's data model, it is missing Qdrant's headline retrieval
-feature, and it has none of either product's serving surface.
+RRO today is **a strong vector engine + the connectome graph layer + its own
+query language (RRQL) + GraphQL + the RRD/model spine**. What's still open: the
+full data model (transactions ✅, but namespaces and schemafull enforcement are
+not built), the RAM-scale story (mmap/segments), and the broader serving surface.
+Those are capabilities the engine is still growing into — not a gap against any
+other product.
 
 The three things most often asked about:
 
@@ -29,7 +33,7 @@ The three things most often asked about:
 |---|---|
 | **RocksDB** | ✅ real — 16 CFs; WAL/crash recovery proven by `abort()`×3 with 500 docs intact. Workload tuning missing (Phase 5). |
 | **connXism** | ✅ real, and the strongest part of the codebase. |
-| **GraphQL** | ❌ **zero occurrences in the tree.** Not a stub, not started. Phase 11. |
+| **GraphQL** | ✅ 2026-07-17 — real parser+executor, rides the a2a transport (a language, not a transport). Query-side; mutations follow. |
 
 ---
 
@@ -69,44 +73,48 @@ Verified by reading code *and call sites*, not `README`/`ASSESSMENT` (both stale
 
 ---
 
-## THE PARITY MATRIX — every remaining gap, mapped to a phase
+## THE CAPABILITY MATRIX — every remaining gap, mapped to a phase
 
-### From SurrealDB
+The columns are capabilities a memory engine wants, grouped by which reference
+tool the *idea* is associated with — **not** a scoreboard against them. RRO
+implements the ones it has its own way. There is no SurrealDB or Qdrant in the code.
+
+### Map / document capabilities (the connectome side)
 
 | capability | status | where | phase |
 |---|---|---|---|
-| ACID transactions | ❌ **no rollback exists** — uses `rocksdb::DB` directly | `connxism/src/store.rs` | **5** |
+| ACID transactions | ⚠️ 2026-07-17 — multi-op atomic `transaction()` over upsert/remove with verified rollback; RRQL BEGIN/COMMIT + other ops = 5b-2 | `connxism/src/txn.rs` | **5** |
 | Namespaces / databases above collections | ❌ | `connxism` | **10** |
 | Schemafull `DEFINE` enforcement, `ALTER`, `REMOVE` | ❌ — DEFINE parses; nothing enforces | `rro-ql`, `connxism` | **10** |
 | `LIVE` / `KILL` | ⚠️ **parse-only — refuses at execution**, points at `watch` | `rro-engine/src/sql.rs:182` | **10** |
 | Record links | ⚠️ partial — RELATE covers the edge case | `rels.rs` | **10** |
-| Users / roles (root, ns, db) | ❌ | new | **12** |
-| JWT + JWKS | ❌ | new | **12** |
-| Record-level permissions | ❌ | new | **12** |
-| HTTP REST (`/sql`, `/key/:table`) | ❌ | `rro-http` | **11** |
-| WebSocket RPC | ❌ | `rro-http` | **11** |
-| **GraphQL** | ❌ **zero in tree** | `rro-http` | **11** |
+| Users / roles (reader/writer/admin) | ✅ 2026-07-17 — per-verb RBAC at the `FlowNode` gate; a reader's `sql` write is refused too | `rro-engine/src/auth.rs`, `handler.rs` | ~~12~~ |
+| JWT (local HS256) | ✅ 2026-07-17 — **hand-rolled** SHA-256 + HMAC (NIST/RFC vectors), local-key HS256, no external crypto/JWT crate, no JWKS/outbound (self-hosted signs+verifies). Expired/wrong-sig rejected, constant-time MAC compare | `rro-engine/src/auth.rs` | ~~12~~ |
+| Namespace-scoped permissions | ✅ 2026-07-17 — token `ns` claim; a scoped token is refused on a node serving another namespace (the same key cannot bypass it) | `rro-engine/src/auth.rs` | ~~12~~ |
+| HTTP REST doorway | ✅ 2026-07-17 — thin HTTP/1.1 front door (no new crate, no hyper/axum): builds the a2a `Message` and calls the one `FlowNode::handle`, so HTTP is byte-identical to a2a by construction. `POST /query` · `POST /ask` · `GET /health` · probes · `POST /v/{verb}` escape hatch. Bearer token → the same capability gate. Gate: `POST /query` ≡ a2a `query` ≡ `estate.recall().query()` | `rro-engine/src/http.rs` | ~~11~~ |
+| WebSocket RPC | ❌ streaming (`watch`/`live`) doorway — follow-on | `rro-engine/src/http.rs` | **11** |
+| **GraphQL** | ✅ 2026-07-17 — query **+ mutation** surface (parser+executor) over the a2a transport, NOT a bolted-on HTTP server. GraphQL is a language, not a transport. `graphql` verb + `rro_graphql` MCP. `mutation { upsert / delete }` write through the same estate the reads query; a reader's mutation is refused like a reader's `sql` write. Introspection/subscriptions = follow-on | `rro-engine/src/graphql.rs` | ~~11~~ |
 | Import / export | ❌ | `rro-http` | **11** |
-| Distributed / cluster | ❌ | `rro-net` | **13** |
+| Distributed / cluster | ✅ 2026-07-17 — **self-reliant failover, no openraft** (3 stages). (1) replication: `replicate` verb + `Replica` follower rebuilds a leader's estate from the stream alone (convergent, idempotent, cursor-resumable, byte-identical vectors). (2) synchronous quorum-ack: `Cluster` learns follower positions from poll cursors (the poll IS the ack); `durability:"quorum"` `tx` blocks until a quorum holds it; an under-replicated write refuses to falsely ack. (3) `Lease` (heartbeat liveness) + `elect` (highest-cursor promotion). **Gate met**: kill the leader under write load → the highest-cursor survivor promotes and holds every acked write (majority-intersection); the laggard would have lost data. Known bound (documented, accepted): quorum-log replication, NOT linearizable consensus — no split-brain proof under partition | `rro-engine/src/{replica,cluster}.rs`, tests `replication`/`quorum_ack`/`failover` | ~~13~~ |
 | Full-text search + analyzers | ✅ | `index.rs`, `text::Analyzer` | — |
 | Geospatial | ✅ true haversine | `query.rs` | — |
 | Graph traversal | ✅ | `rels.rs` | — |
 | Change feeds | ✅ | `model.rs`, `keys.rs` | — |
 
-### From Qdrant
+### Vector capabilities
 
 | capability | status | where | phase |
 |---|---|---|---|
-| **Filter-aware HNSW** — predicate applied *during* traversal | ❌ **Qdrant's headline differentiator.** RRO has 2 of 3 strategies: filter-first exact (≤4096 ids) and post-filter (`FILTER_OVERFETCH: 8`). The middle band **silently returns near-empty results** | `recall/src/ann.rs`, `connxism/src/query.rs` | **4** |
-| Cardinality estimation | ❌ — payload-index stats exist; nothing reads them for planning | `filter.rs` | **4** |
+| **Filter-aware HNSW** — predicate applied *during* traversal | ✅ 2026-07-17 — `search_filtered`, three-way strategy by exact cardinality | `recall/src/ann.rs`, `connxism/src/query.rs` | ~~4~~ |
+| Cardinality estimation | ✅ 2026-07-17 — the resolved id-set length IS the exact cardinality | `query.rs` | ~~4~~ |
 | mmap vectors / segments / O(1) startup | ❌ **graph is RAM-resident and rebuilds O(N log N) on open — capacity ≈ RAM** | `recall/src/ann.rs`, `estate.rs` | **6** |
 | Immutable segments + background optimizer | ❌ | `connxism` | **6** |
 | PQ / BQ quantization | ❌ — SQ8 is the only quantizer | `recall/src/quant.rs` | **6** |
-| DBSF (distribution-based score fusion) | ❌ — Qdrant ships it *because* RRF discards magnitude | `connxism/src/index.rs` | **7** |
+| DBSF (distribution-based score fusion) | ✅ 2026-07-17 — `distribution_score_fusion` + `FusionMode`, wired to `EstateQuery::fusion_mode`, magnitude-preservation unit-proven | `connxism/src/index.rs` | ~~7~~ |
 | Shard keys / scatter-gather | ❌ | `rro-net` | **13** |
 | Replication / raft | ❌ | `rro-net` | **13** |
 | REST + gRPC surface | ❌ | `rro-http` | **11** |
-| HNSW + `ef` tuning | ✅ | `ann.rs` | — |
+| HNSW + `ef` tuning | ✅ 2026-07-17 — swept at **50k** (structured): knee ef≈32, default 64 clears it 2× with headroom; gated `knee <= default` | `ann.rs` (`ef_search_sweep_50k`), `BENCHMARKS_REAL.md` §5b | — |
 | SQ8 quantization | ✅ | `quant.rs` | — |
 | Named + sparse + multivector | ✅ | `query.rs` | — |
 | Payload indexes, collections, aliases | ✅ | `filter.rs`, `keys.rs` | — |
@@ -119,8 +127,10 @@ Verified by reading code *and call sites*, not `README`/`ASSESSMENT` (both stale
 | capability | status | phase |
 |---|---|---|
 | RRD gate ladder + centroid semantic router | ✅ | — |
+| RRD baseline: shape prediction, predictability, PSI drift | ✅ | — |
+| **Shape as early intent** — COSTAR fields → distinct slivers, 97%-gated speculation, cross-session-stable ids | ✅ 2026-07-17 | — |
 | Constrained-decode readiness classifier | ✅ | — |
-| Embedder + reranker in-binary, 3 engines each | ✅ built · ❌ **unproven** | **3** |
+| Embedder + reranker in-binary, 3 engines each | ✅ built · ✅ **proven (Phase 3)** | **3** |
 | MRL truncation | ✅ inference · ❌ training | **9** |
 | Matryoshka / quantization-aware **training** | ❌ greenfield | **9** |
 | TOON recall→LLM encoding | ❌ zero in tree | **8** |
@@ -144,9 +154,11 @@ Verified by reading code *and call sites*, not `README`/`ASSESSMENT` (both stale
    however distant; RRF discards magnitude; readiness is lexical. Nothing can tell
    "found the answer" from "found the nearest four things". **Same root cause as
    (1)** — which is why Phase 7 is DBSF + per-query routing, not another constant.
-4. **The three engines are unproven.** 28 `#[ignore]` gates — every candle-Qwen3,
-   engine-agreement, rerank-lift, real-vector-`ef`, live-brain test — have **never
-   run in CI**. Phase 3 exists to fix that before any accuracy claim ships.
+4. ~~**The three engines are unproven.**~~ **RESOLVED 2026-07-17** — 23 gates run
+   on the GB10, 0 failed. candle reproduces the model card to 6 decimals and
+   agrees with llama.cpp on identical weights; both rerankers lift 0.50 → 1.00.
+   `scripts/gates.sh` runs them; CI still cannot (no weights). See Finding 5.
+   **`ef` remains untuned** — the ANN gate passed on only 2,200 vectors.
 5. **Burn training is recoverable, not greenfield.** 2,655 LOC of Qwen3-in-Burn
    with *verified sm_121 gates* lived at `kernel/devpulse-clyffy/`;
    `~/Projects/platform_devpulse` no longer exists. **`~/Projects/qortex-rro-archive.bundle`
@@ -156,9 +168,31 @@ Verified by reading code *and call sites*, not `README`/`ASSESSMENT` (both stale
 
 ## THE PHASES
 
-**Done:** ~~0 reconcile~~ · ~~1 dogfood~~ · ~~2 identity~~ — merged, CI green.
+**Done:** ~~0 reconcile~~ · ~~1 dogfood~~ · ~~2 identity~~ · ~~3 prove the engines~~ · ~~4 filter-aware HNSW~~ — merged, CI green.
 
-### 3 — Prove the three engines
+### ~~3 — Prove the three engines~~ ✅ DONE (2026-07-17)
+
+`scripts/gates.sh` → **5 suites, 23 tests, 0 skipped, 0 failed.** The candle
+encoder reproduces Qwen's published card to 6 decimals; llama.cpp's independent
+C++ implementation on the *same weights* (0.6B GGUF on `:8095`) agrees. Rerankers
+lift BM25 0.50 → 1.00 on both llama.cpp and vLLM, with identical ordering. See
+`BENCHMARKS_REAL.md` Finding 5.
+
+**Still open from this phase, and not to be forgotten:**
+- ⚠️ **`ef` is NOT tuned.** recall@10 = 0.9990 at ef=64 on 2,200 real vectors —
+  but it also passes at **ef=4**, which at that corpus size means the graph is
+  nearly fully connected and the corpus is flattering the index. A ≥50k real-vector
+  run is the honest gate.
+- **The roster is unwired.** `nemotron-3-embed-8b` is on disk (15 GB) and
+  referenced by zero code; NV-Embed-V2 / NV-ReRank-V2 / nemotron-3-rerank absent.
+  ⚠️ *Settle openly:* the roster ask includes Harrier, but
+  `TOTALRECALL_MASTER_PLAN.md:278` lists Harrier as **stale**, superseded by the
+  07-08 Qwen3 single-lock.
+- **The tier ladder (0.6/4/8B) is undecided** — candle's 0.6B reranker saturates
+  (0.50, no lift). That gets decided by BRIGHT at scale (Phase 15), not by n=2.
+
+<details><summary>original scope, for the record</summary>
+
 Run the 28 `#[ignore]` gates with real weights on the GB10. Cross-engine agreement
 matrix: {candle, llama.cpp, vLLM} × {embed, rerank} × {0.6b, 4b, 8b}. Wire the
 roster — `nemotron-3-embed-8b` is **on disk, 15 GB, referenced by zero code**;
@@ -167,24 +201,36 @@ NV-Embed-V2 / NV-ReRank-V2 / nemotron-3-rerank are absent.
 `TOTALRECALL_MASTER_PLAN.md:278` lists Harrier as **stale**, superseded by the
 07-08 Qwen3 single-lock.
 **Gate:** matrix green and recorded. No accuracy claim ships before this.
+</details>
 
-### 4 — Filter-aware HNSW *(a correctness bug, and Qdrant's differentiator)*
+### ~~4 — Filter-aware HNSW~~ ✅ DONE (2026-07-17) *(a correctness bug, and Qdrant's differentiator)*
 Cardinality estimation from the existing payload-index stats → predicate applied
 during the beam search → three-way strategy choice; `FILTER_OVERFETCH` becomes a
 fallback rather than the plan.
-**Gate:** a 0.5%-selectivity filter over ≥1M docs returns a full, correct top-10
-against an exact oracle. Today it returns near-nothing, silently.
+**DONE:** three strategies chosen by exact cardinality — exact scoping (≤65,536
+matches), filter-aware graph traversal (>65,536), post-filter (unindexed). Bug
+reproduced (200k docs, 2.5% filter → 1 result, recall@10=0.10) then fixed to
+recall@10 ≥ 0.9. `AnnIndex::search_filtered` admits only allowed nodes to the beam.
+Scale tests #[ignore]d (~90s debug), ann-unit test carries the mechanism in CI.
 
-### 5 — The storage layer, done once *(all of it touches `estate.rs`'s open path)*
-`TransactionDB` — there is no rollback today · the `Db` seam `PARITY.md` claims but
-which was never authored (also makes tests hermetic) · **`prefix_extractor` on
-`CF_TERMS`** — postings are `term \x00 doc_id`, read by prefix scan (the BM25 hot
-path); whole-key blooms there do nothing · **BlobDB on `CF_VECS`** — ~10 KB values
-rewritten by every compaction · **the memtable budget** —
-`set_write_buffer_size` is per-CF inside the descriptor loop: 16 × 64 MiB × 2 =
-up to **2 GiB**, never computed.
-**Gate:** rollback leaves every index consistent; suite passes on both `Db`
-backends; each RocksDB change measured before/after.
+### 5 — The storage layer, done once *(in progress)*
+- **5a RocksDB workload fit** ✅ DONE (2026-07-17, PR #10): memtable ceiling +
+  `CF_TERMS` prefix bloom + `CF_VECS` BlobDB. Correctness verified; perf within
+  noise on a warm synthetic bench (benefit is at-scale, deferred to Phase 15).
+- **5b transactions** ✅ core DONE (2026-07-17): multi-op atomic
+  `ConnXRecall::transaction(Vec<WriteOp>)` over upsert/remove. `txn::Transaction`
+  threads the estate's read-modify-write counters through every statement (the
+  hazard: two upserts each re-reading the pre-commit `doc_count` would net +1,
+  not +2) and defers the out-of-band graph ops to commit, so rollback needs no
+  2PC — a dropped-before-commit transaction leaves the graph untouched because
+  nothing durable landed. Every single write is now an implicit one-statement
+  transaction on the same path. *Gate met:* `a_failed_transaction_changes_nothing`
+  proves rollback leaves count + ids + payload index byte-identical.
+  **Follow-on (5b-2):** RRQL `BEGIN`/`COMMIT`/`CANCEL` syntax and `_into` forms
+  for the remaining write ops (relate, payload-patch, define) so an arbitrary
+  statement sequence is transactional, not just upsert/remove.
+- **5c the `Db` seam** — the rocksdb+mem backend `PARITY.md` claims but which was
+  never authored (also makes tests hermetic). *Gate:* suite passes on both backends.
 
 ### 6 — Scale past RAM
 Immutable segments + background optimizer (mirrors the two-phase design already in

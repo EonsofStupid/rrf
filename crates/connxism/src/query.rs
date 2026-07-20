@@ -1,15 +1,17 @@
 //! Query execution: one spec ([`rro_core::EstateQuery`], pure data in the
 //! core contract), every retrieval capability of the estate.
 //!
-//! Filter execution is two-strategy: **filter-first** (exact id-set from
-//! payload secondary indexes, then exact scoring inside it) when every
-//! referenced field is indexed and the set is small enough; **post-filter**
-//! (over-fetch + hydrate + retain) otherwise. Facets, filtered counts, and
-//! cursor-paged **scroll** live beside it on the estate.
+//! Filter execution is **three-strategy**, chosen by the exact cardinality the
+//! payload index already resolves (no estimation): **exact scoping** (score the
+//! whole matched id-set when it is ≤ `EXACT_SCOPE_MAX`), **filter-aware graph
+//! traversal** (walk the HNSW graph admitting only allowed nodes, when the
+//! matched set is larger), and **post-filter** (over-fetch + hydrate + retain)
+//! only when the filter cannot be resolved from indexes at all. Facets, filtered
+//! counts, and cursor-paged **scroll** live beside it on the estate.
 
 use rro_core::{Candidate, Embedding, EstateQuery, Metadata, Result};
 
-use crate::estate::{rocks_err, Estate};
+use crate::estate::Estate;
 use crate::keys::CF_DOCS;
 use crate::model::StoredDoc;
 use crate::store::ConnXRecall;
@@ -17,9 +19,18 @@ use crate::store::ConnXRecall;
 /// How hard filtered searches over-fetch before post-filtering.
 const FILTER_OVERFETCH: usize = 8;
 
-/// Above this many index-matched ids, exact scoring over the set costs more
-/// than over-fetch + post-filter; fall back.
-const INDEXED_SCOPE_MAX: usize = 4096;
+/// Match count up to which an indexed filter is scored **exactly** over its
+/// resolved id set.
+///
+/// Exact cosine over the matched set is one point-lookup + one dot per id —
+/// measured at ~2.7 ms for 5,000 ids — and it is correct at every selectivity.
+/// The old value was 4,096, which was not a cost limit but a *correctness cliff*:
+/// a filter matching 4,097 docs fell to a global post-filter that returned the
+/// query's global neighbours intersected with the filter, i.e. almost nothing
+/// for an uncorrelated filter. 65,536 keeps exact scoring in the sub-100 ms band
+/// while covering essentially every real filtered query; the rare larger matched
+/// set takes the filter-aware graph traversal, which is also correct.
+const EXACT_SCOPE_MAX: usize = 65_536;
 
 /// The standard reciprocal-rank-fusion constant (same as the hybrid path).
 const FUSION_RRF_K: f32 = 60.0;
@@ -150,7 +161,21 @@ impl ConnXRecall {
                     .await?
             }
             None if !dsl.is_empty() => match crate::filter::ids_where(&self.db, &dsl)? {
-                Some(ids) if ids.len() <= INDEXED_SCOPE_MAX => {
+                // Fully-indexed filter: `ids` is the EXACT matching set, and its
+                // length is the exact cardinality — no estimation needed.
+                //
+                // Score it exactly whenever that is affordable. Exact cosine over
+                // the set is a point-lookup per id (~0.5 µs warm) plus a dot
+                // product — measured at 2.7 ms for 5,000 ids — and it is correct
+                // at *every* selectivity. The old code capped this at 4,096 and
+                // fell to global post-filter above it, which is the bug this
+                // phase exists to kill: a filter matching 5,000 of 200,000 docs
+                // (2.5%) exceeded the cap, ran a global ANN fetching k×8=80
+                // candidates, and `retain` kept only the ~2 that happened to fall
+                // in the bucket — a top-10 request answered with 1 result,
+                // silently. Filtered ANN must return the filtered nearest
+                // neighbours, not the global ones that survive a filter.
+                Some(ids) if ids.len() <= EXACT_SCOPE_MAX => {
                     prefiltered = true;
                     allowed = Some(ids.iter().cloned().collect());
                     if ids.is_empty() {
@@ -159,20 +184,52 @@ impl ConnXRecall {
                         self.scoped_search(&text, &vector, want, ids).await?
                     }
                 }
-                _ => {
-                    self.unscoped(&text, &vector, q.vector.is_some(), fetch, q.fusion)
+                // A genuinely huge matched set (> EXACT_SCOPE_MAX). Exact scoring
+                // would be O(matches) and slow, but global post-filter would be
+                // *wrong* — so this is the filter-aware ANN path: walk the graph
+                // and keep only allowed nodes, so the beam spends its whole width
+                // inside the filter instead of on global neighbours that will be
+                // thrown away. Correct at any selectivity, sub-linear in the
+                // matched set.
+                Some(ids) => {
+                    prefiltered = true;
+                    let allow: std::collections::HashSet<String> = ids.into_iter().collect();
+                    allowed = Some(allow.clone());
+                    self.filter_aware_search(&text, &vector, want, &allow, q.fusion, q.fusion_mode)
                         .await?
+                }
+                // Filter not resolvable from indexes at all — the only option is
+                // over-fetch + post-filter, with the over-fetch scaled up so the
+                // page is likely to fill even for a selective predicate.
+                None => {
+                    self.unscoped(
+                        &text,
+                        &vector,
+                        q.vector.is_some(),
+                        fetch,
+                        q.fusion,
+                        q.fusion_mode,
+                    )
+                    .await?
                 }
             },
             None => match (&q.using, &q.vector) {
                 // Named space: the dense ranking is exact cosine inside that
                 // space; a lexical ranking (if text) fuses in as usual.
                 (Some(space), Some(v)) => {
-                    self.named_hybrid(space, &text, v, fetch, q.fusion).await?
+                    self.named_hybrid(space, &text, v, fetch, q.fusion, q.fusion_mode)
+                        .await?
                 }
                 _ => {
-                    self.unscoped(&text, &vector, q.vector.is_some(), fetch, q.fusion)
-                        .await?
+                    self.unscoped(
+                        &text,
+                        &vector,
+                        q.vector.is_some(),
+                        fetch,
+                        q.fusion,
+                        q.fusion_mode,
+                    )
+                    .await?
                 }
             },
         };
@@ -186,18 +243,19 @@ impl ConnXRecall {
                     sparse.retain(|c| allowed.contains(c.id.as_str()));
                 }
                 if !sparse.is_empty() {
-                    let lists = [
+                    let scored = [
                         results
                             .iter()
-                            .map(|c| c.id.as_str().to_string())
+                            .map(|c| (c.id.as_str().to_string(), c.score))
                             .collect::<Vec<_>>(),
                         sparse
                             .iter()
-                            .map(|c| c.id.as_str().to_string())
+                            .map(|c| (c.id.as_str().to_string(), c.score))
                             .collect::<Vec<_>>(),
                     ];
-                    let fused = crate::index::reciprocal_rank_fusion_weighted(
-                        &lists,
+                    let fused = crate::index::fuse(
+                        q.fusion_mode,
+                        &scored,
                         &q.fusion.as_slice(),
                         FUSION_RRF_K,
                     );
@@ -303,11 +361,8 @@ impl ConnXRecall {
             let handle = db.cf(crate::keys::CF_COLL)?;
             let prefix = crate::keys::coll_prefix(&name);
             let mut out = Vec::new();
-            for item in db.0.iterator_cf(
-                handle,
-                rocksdb::IteratorMode::From(&prefix, rocksdb::Direction::Forward),
-            ) {
-                let (k, _) = item.map_err(crate::estate::rocks_err)?;
+            for item in db.iter_from(handle, &prefix) {
+                let (k, _) = item?;
                 if !k.starts_with(&prefix) {
                     break;
                 }
@@ -330,9 +385,11 @@ impl ConnXRecall {
         has_vector: bool,
         fetch: usize,
         weights: rro_core::HybridWeights,
+        mode: rro_core::FusionMode,
     ) -> Result<Vec<Candidate>> {
         if has_vector {
-            self.hybrid_weighted(text, vector, fetch, weights).await
+            self.hybrid_weighted(text, vector, fetch, weights, mode)
+                .await
         } else {
             self.lexical_search(text, fetch).await
         }
@@ -350,6 +407,7 @@ impl ConnXRecall {
         vector: &Embedding,
         fetch: usize,
         weights: rro_core::HybridWeights,
+        mode: rro_core::FusionMode,
     ) -> Result<Vec<Candidate>> {
         let dense = self.named_search(space, vector, fetch).await?;
         let lexical = if text.is_empty() {
@@ -368,21 +426,17 @@ impl ConnXRecall {
             }
             return Ok(out);
         }
-        let lists = [
+        let scored = [
             dense
                 .iter()
-                .map(|c| c.id.as_str().to_string())
+                .map(|c| (c.id.as_str().to_string(), c.score))
                 .collect::<Vec<_>>(),
             lexical
                 .iter()
-                .map(|c| c.id.as_str().to_string())
+                .map(|c| (c.id.as_str().to_string(), c.score))
                 .collect::<Vec<_>>(),
         ];
-        let fused = crate::index::reciprocal_rank_fusion_weighted(
-            &lists,
-            &weights.as_slice(),
-            FUSION_RRF_K,
-        );
+        let fused = crate::index::fuse(mode, &scored, &weights.as_slice(), FUSION_RRF_K);
         let mut out = Vec::with_capacity(fetch.min(fused.len()));
         for (id, score) in fused.into_iter().take(fetch) {
             if let Some(doc) = self.doc(&id).await? {
@@ -418,8 +472,8 @@ impl Estate {
         }
         let handle = self.db.cf(CF_DOCS)?;
         let mut out = std::collections::BTreeMap::new();
-        for item in self.db.0.iterator_cf(handle, rocksdb::IteratorMode::Start) {
-            let (_, v) = item.map_err(rocks_err)?;
+        for item in self.db.iter_all(handle) {
+            let (_, v) = item?;
             let doc: StoredDoc = serde_json::from_slice(&v)?;
             if let Some(value) = doc.metadata.get(field) {
                 let key = match value {
@@ -442,11 +496,8 @@ impl Estate {
         let handle = self.db.cf(crate::keys::CF_PIDX)?;
         let prefix = crate::keys::pidx_field_prefix(field);
         let mut out = std::collections::BTreeMap::new();
-        for item in self.db.0.iterator_cf(
-            handle,
-            rocksdb::IteratorMode::From(&prefix, rocksdb::Direction::Forward),
-        ) {
-            let (k, _) = item.map_err(rocks_err)?;
+        for item in self.db.iter_from(handle, &prefix) {
+            let (k, _) = item?;
             if !k.starts_with(&prefix) {
                 break;
             }
@@ -488,8 +539,8 @@ impl Estate {
         }
         let handle = self.db.cf(CF_DOCS)?;
         let mut n = 0u64;
-        for item in self.db.0.iterator_cf(handle, rocksdb::IteratorMode::Start) {
-            let (_, v) = item.map_err(rocks_err)?;
+        for item in self.db.iter_all(handle) {
+            let (_, v) = item?;
             let doc: StoredDoc = serde_json::from_slice(&v)?;
             if matches_filter(&doc.metadata, filter) {
                 n += 1;
@@ -502,13 +553,13 @@ impl Estate {
     /// the previous page as `after`; returns up to `limit` docs.
     pub fn scroll(&self, after: Option<&str>, limit: usize) -> Result<Vec<StoredDoc>> {
         let handle = self.db.cf(CF_DOCS)?;
-        let mode = match after {
-            Some(a) => rocksdb::IteratorMode::From(a.as_bytes(), rocksdb::Direction::Forward),
-            None => rocksdb::IteratorMode::Start,
-        };
         let mut out = Vec::new();
-        for item in self.db.0.iterator_cf(handle, mode) {
-            let (k, v) = item.map_err(rocks_err)?;
+        let scan: Box<dyn Iterator<Item = crate::estate::KvItem> + '_> = match after {
+            Some(a) => Box::new(self.db.iter_from(handle, a.as_bytes())),
+            None => Box::new(self.db.iter_all(handle)),
+        };
+        for item in scan {
+            let (k, v) = item?;
             if let Some(a) = after {
                 if k.as_ref() == a.as_bytes() {
                     continue; // strictly after the cursor

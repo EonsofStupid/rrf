@@ -14,7 +14,13 @@ name = "rro"
 path = "src/bin/rro.rs"
 
 [features]
-default = []
+# RocksDB by default; the whole engine builds as a Fjall variant with
+# `--no-default-features --features kvs-fjall` (the nightly release). Exactly one
+# backend is active — the feature is forwarded to connxism, the only crate that
+# names a storage engine.
+default = ["kvs-fjall"]
+kvs-rocks = ["connxism/kvs-rocks"]
+kvs-fjall = ["connxism/kvs-fjall"]
 # Build the daemon with the real candle backends compiled in. Off by default so
 # the workspace builds weightless (no model weights, no inference deps). With it,
 # `RRO_EMBEDDER=candle-qwen` / `RRO_RERANKER=candle-cross-encoder` load real

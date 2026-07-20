@@ -144,6 +144,44 @@ strategy per query. Note also that any weight chosen by reading the table above
 would be **fit to these 323 evaluation queries** — that is tuning on the test
 set, and it is barred. A weight ships only with a train/dev/test split.
 
+### Finding 1c — the ladder now carries confidence intervals and p-values
+
+Every number above was a point estimate. "Dense beats BM25", "fusion hurts",
+"rerank helps" were stated from means with no measure of whether 323 queries could
+produce them by chance. `rro-eval` now computes, on the same run (the scores are
+**paired** — every arm scores the same queries in the same order):
+
+- a **percentile bootstrap** 95% CI on each arm's mean nDCG@10 (10,000 resamples), and
+- a **paired sign-flip permutation test** on each ladder step's per-query delta —
+  the textbook distribution-free test for paired data.
+
+Both are seeded (`0xC0FFEE`), so the numbers reproduce exactly. Stemmed run,
+Qwen3-4B embedder, nemotron reranker:
+
+| arm | nDCG@10 | 95% CI |
+|---|---:|---|
+| `bm25` | 0.3283 | [0.2942, 0.3633] |
+| `dense` | 0.4120 | [0.3756, 0.4490] |
+| `hybrid` | 0.3943 | [0.3587, 0.4307] |
+| `hybrid+rerank` | 0.4293 | [0.3938, 0.4656] |
+| `rro` | 0.4293 | [0.3938, 0.4656] |
+
+| ladder step | Δ nDCG@10 | 95% CI | p | verdict |
+|---|---:|---|---:|---|
+| `dense` vs `bm25` | **+0.0837** | [+0.063, +0.105] | 0.0001 | **significant** — dense clearly wins |
+| `hybrid` vs `dense` | **−0.0177** | [−0.031, −0.004] | 0.0104 | **significant** — fusion genuinely *hurts* (CI excludes 0) |
+| `hybrid+rerank` vs `hybrid` | **+0.0350** | [+0.020, +0.051] | 0.0001 | **significant** — the reranker earns its 1.1 s |
+| `rro` vs `hybrid+rerank` | +0.0000 | [0, 0] | 1.0000 | n.s. — identical pipeline, as expected |
+
+This upgrades Finding 1 from directional to **statistically significant**: the
+"fusion earns nothing" result is not resampling noise — the mean-delta CI is
+entirely below zero at p=0.01. And it holds the harness honest in the other
+direction: `rro` vs `hybrid+rerank` comes back exactly n.s. (they are the same
+pipeline), which is the null result a working significance test must produce.
+
+Still one corpus. The cross-dataset check (a second BEIR/BRIGHT set) is the
+remaining Phase-15 work — it needs a second corpus embedded, not just re-scored.
+
 ### Finding 1b — the `rro` arm's DEFAULT reranker destroys the result
 
 In the stemmed run the flagship `rro` arm scored **0.3199 — the worst arm
@@ -226,6 +264,38 @@ not the beam, and sat flat at ~4.2ms); `search(q,k,ef)` **clamps**
 at 64 — the tell was ef=4..64 taking an identical 584µs while ef≥100 responded;
 and the first conclusion therefore claimed "passes at ef=4" when it had passed at
 64 nine times. The beam is now swept on the CONFIG, not the argument.
+
+### Finding 5b — the ef knee at 50k scale (the honest scale gate)
+
+Finding 5 promised the small-corpus caveat "stands until ≥50k real vectors are
+swept." This is that sweep at scale: **50,000 vectors, dim 64**, in 5,000
+well-separated 10-point clusters — synthetic, but with genuine neighbourhood
+structure (each query is a held-out point inside a blob, so its true top-10 are
+that blob's members, unambiguously). The graph is *not* nearly-fully-connected at
+50k, so this is the beam doing real work, not exhaustive search in disguise. Run:
+
+```
+cargo test -p recall --release ef_search_sweep_50k -- --ignored --nocapture
+```
+
+| ef | recall@10 | p50 (µs) | p95 (µs) |
+|---:|---:|---:|---:|
+| 10 | 0.9400 | 16 | 24 |
+| 16 | 0.9750 | 17 | 27 |
+| 24 | 0.9900 | 19 | 28 |
+| **32** *(knee)* | **1.0000** | 20 | 28 |
+| 48 | 1.0000 | 30 | 43 |
+| **64** *(default)* | **1.0000** | **37** | 51 |
+| 128 | 1.0000 | 77 | 92 |
+| 256 | 1.0000 | 157 | 169 |
+
+**The knee is ef ≈ 32; the shipped default `ef_search=64` clears it with 2×
+headroom** at ~37 µs p50, and everything past 32 buys latency for zero recall.
+This is now a gate assertion, not a note: the sweep fails if the knee ever exceeds
+the default (`knee <= AnnConfig::default().ef_search`). The one thing this run is
+NOT is real embeddings at 50k — that needs 50k real vectors (nfcorpus alone is
+3.6k) and belongs to Phase 15; structured-synthetic is the honest stand-in for
+"does the knee hold at scale," and it does.
 
 ### Finding 4 — ingest is ~1000x slower than advertised
 

@@ -16,11 +16,8 @@ use recall::AnnIndex;
 use rro_core::{Candidate, Embedding, Id, Recall, Result, RroError, VectorRecord};
 use tokio::sync::Mutex;
 
-use crate::estate::{rocks_err, Db, Estate};
-use crate::index::{
-    bm25_scores, reciprocal_rank_fusion, reciprocal_rank_fusion_weighted, Bm25Params, Posting,
-    Postings,
-};
+use crate::estate::{Batch, Db, Estate};
+use crate::index::{bm25_scores, reciprocal_rank_fusion, Bm25Params, Posting, Postings};
 use crate::keys::{
     self, CF_DOCS, CF_FEED, CF_META, CF_PIDX, CF_TERMS, CF_VECS, META_DOC_COUNT, META_ESTATE,
     META_FEED_SEQ, META_SHAPES, META_TOTAL_TOKENS,
@@ -36,6 +33,17 @@ const RRF_K: f32 = 60.0;
 /// graph (tiny corpora: the scan is faster and exact).
 const ANN_MIN_CORPUS: usize = 1024;
 
+/// One write in a [`ConnXRecall::transaction`] batch — the ops that compose
+/// atomically. Applying a sequence of these commits all of them or none: an
+/// error on any op rolls the whole batch back, and nothing durable lands until
+/// the last one succeeds.
+pub enum WriteOp {
+    /// Upsert a batch of records (same semantics as [`Recall::upsert`]).
+    Upsert(Vec<VectorRecord>),
+    /// Remove one document by id.
+    Remove(Id),
+}
+
 /// Persistent, hybrid (dense + lexical) recall over an estate.
 #[derive(Clone)]
 pub struct ConnXRecall {
@@ -48,10 +56,11 @@ pub struct ConnXRecall {
     analyzer: Arc<rro_core::text::Analyzer>,
     writer: Arc<Mutex<()>>,
     params: Bm25Params,
-    /// Rescore graph hits exactly from the durable vectors (set when the
-    /// graph stores quantized codes — scores must never be approximate at
-    /// the API surface without saying so; here we simply make them exact).
-    rescore: bool,
+    /// How the graph quantizes its vectors. Lossy modes rescore graph hits
+    /// exactly from the durable vectors (scores must never be approximate at the
+    /// API surface without saying so), and BQ additionally over-fetches wider —
+    /// its 1-bit codes surface fewer true neighbours per candidate.
+    quantizer: recall::Quantizer,
 }
 
 impl Estate {
@@ -67,9 +76,17 @@ impl Estate {
             analyzer: Arc::new(self.info().analyzer.clone()),
             writer: Arc::new(Mutex::new(())),
             params: Bm25Params::default(),
-            rescore: self.quantized,
+            quantizer: self.quantizer,
         }
     }
+}
+
+/// Map candidates to `(id, score)` for the fusion functions.
+fn scored_ids(cands: &[Candidate]) -> Vec<(String, f32)> {
+    cands
+        .iter()
+        .map(|c| (c.id.as_str().to_string(), c.score))
+        .collect()
 }
 
 impl ConnXRecall {
@@ -85,6 +102,7 @@ impl ConnXRecall {
         query: &Embedding,
         top_k: usize,
         weights: rro_core::HybridWeights,
+        mode: rro_core::FusionMode,
     ) -> Result<Vec<Candidate>> {
         if top_k == 0 {
             return Ok(Vec::new());
@@ -97,29 +115,21 @@ impl ConnXRecall {
         let q = query.clone();
         let terms = self.analyzer.analyze(query_text);
         let depth = top_k.saturating_mul(FUSION_DEPTH_FACTOR).max(top_k);
-        let rescore = self.rescore;
+        let quantizer = self.quantizer;
 
         tokio::task::spawn_blocking(move || {
             // Two rankings over the same estate…
-            let dense = dense_blocking(&db, &ann, &pending, &q, depth, false, rescore)?;
+            let dense = dense_blocking(&db, &ann, &pending, &q, depth, false, quantizer)?;
             let lexical = if terms.is_empty() {
                 Vec::new()
             } else {
                 lexical_topk_blocking(&db, params, &terms, depth)?
             };
 
-            // …fused by reciprocal rank fusion.
-            let lists = [
-                dense
-                    .iter()
-                    .map(|c| c.id.as_str().to_string())
-                    .collect::<Vec<_>>(),
-                lexical
-                    .iter()
-                    .map(|c| c.id.as_str().to_string())
-                    .collect::<Vec<_>>(),
-            ];
-            let fused = reciprocal_rank_fusion_weighted(&lists, &weights, RRF_K);
+            // …fused by the chosen strategy. Scored lists carry `(id, score)` so
+            // DBSF can use the magnitudes; RRF ignores them and keeps the order.
+            let scored = [scored_ids(&dense), scored_ids(&lexical)];
+            let fused = crate::index::fuse(mode, &scored, &weights, RRF_K);
 
             let mut out = Vec::with_capacity(top_k);
             for (doc_id, score) in fused.into_iter().take(top_k) {
@@ -133,6 +143,41 @@ impl ConnXRecall {
         })
         .await
         .map_err(|e| RroError::Recall(format!("join: {e}")))?
+    }
+
+    /// A batch of write operations applied as one atomic transaction.
+    pub async fn transaction(&self, ops: Vec<WriteOp>) -> Result<()> {
+        if ops.is_empty() {
+            return Ok(());
+        }
+        // Serialize writers: the transaction threads the estate's counters, and
+        // two concurrent transactions reading the same pre-commit counter would
+        // both write a stale value. The whole transaction runs under this guard.
+        let _guard = self.writer.lock().await;
+        let db = self.db.clone();
+        let pending = self.pending.clone();
+        let analyzer = self.analyzer.clone();
+        let lexical_stats = self.lexical_stats;
+        tokio::task::spawn_blocking(move || {
+            let mut tx = crate::txn::Transaction::begin(&db, &pending)?;
+            for op in ops {
+                match op {
+                    // Any Err here returns before `commit`, so `tx` drops and the
+                    // whole batch rolls back — nothing durable, graph untouched.
+                    WriteOp::Upsert(records) => {
+                        upsert_into(&mut tx, &db, &analyzer, records, lexical_stats)?
+                    }
+                    WriteOp::Remove(id) => {
+                        remove_into(&mut tx, &db, &analyzer, id.as_str(), lexical_stats)?
+                    }
+                }
+            }
+            tx.commit()
+        })
+        .await
+        .map_err(|e| RroError::Recall(format!("join: {e}")))??;
+        self.feed_notify.notify_waiters();
+        Ok(())
     }
 
     /// Fetch a stored document by id.
@@ -162,11 +207,8 @@ impl ConnXRecall {
             let mut scores: HashMap<String, f32> = HashMap::new();
             for (dim, qw) in q.iter() {
                 let prefix = keys::sparse_prefix(dim);
-                for item in db.0.iterator_cf(
-                    sparse_cf,
-                    rocksdb::IteratorMode::From(&prefix, rocksdb::Direction::Forward),
-                ) {
-                    let (k, v) = item.map_err(rocks_err)?;
+                for item in db.iter_from(sparse_cf, &prefix) {
+                    let (k, v) = item?;
                     if !k.starts_with(&prefix) {
                         break;
                     }
@@ -195,9 +237,7 @@ impl ConnXRecall {
         tokio::task::spawn_blocking(move || {
             let vecs_cf = db.cf(CF_VECS)?;
             Ok(db
-                .0
-                .get_cf(vecs_cf, id.as_bytes())
-                .map_err(rocks_err)?
+                .get_cf(vecs_cf, id.as_bytes())?
                 .map(|b| Embedding(keys::decode_vec(&b))))
         })
         .await
@@ -213,7 +253,7 @@ impl ConnXRecall {
             let vecs_cf = db.cf(CF_VECS)?;
             let mut known: Vec<(String, Embedding)> = Vec::with_capacity(ids.len());
             for id in &ids {
-                if let Some(b) = db.0.get_cf(vecs_cf, id.as_bytes()).map_err(rocks_err)? {
+                if let Some(b) = db.get_cf(vecs_cf, id.as_bytes())? {
                     known.push((id.clone(), Embedding(keys::decode_vec(&b))));
                 }
             }
@@ -252,11 +292,8 @@ impl ConnXRecall {
             let nvecs_cf = db.cf(keys::CF_NVECS)?;
             let prefix = keys::nvec_prefix(&space);
             let mut scored: Vec<(String, f32)> = Vec::new();
-            for item in db.0.iterator_cf(
-                nvecs_cf,
-                rocksdb::IteratorMode::From(&prefix, rocksdb::Direction::Forward),
-            ) {
-                let (k, v) = item.map_err(rocks_err)?;
+            for item in db.iter_from(nvecs_cf, &prefix) {
+                let (k, v) = item?;
                 if !k.starts_with(&prefix) {
                     break;
                 }
@@ -296,7 +333,7 @@ impl ConnXRecall {
             let mvecs_cf = db.cf(keys::CF_MVECS)?;
             let mut out = Vec::with_capacity(ids.len());
             for id in &ids {
-                let s = match db.0.get_cf(mvecs_cf, id.as_bytes()).map_err(rocks_err)? {
+                let s = match db.get_cf(mvecs_cf, id.as_bytes())? {
                     Some(bytes) => {
                         let doc_tokens: Vec<Embedding> = keys::decode_multi(&bytes)
                             .into_iter()
@@ -356,6 +393,107 @@ impl ConnXRecall {
     /// scoring is *exact* over it (point lookups, no ANN approximation) and
     /// lexical BM25 is filtered to it, fused as usual. Ids in the scope that
     /// aren't documents are ignored.
+    /// Filter-aware dense search: nearest `top_k` among `allow`, via graph
+    /// traversal that admits only allowed nodes (see `AnnIndex::search_filtered`).
+    ///
+    /// This is the correct answer for a matched set too large to score exactly:
+    /// it walks the HNSW graph but only ever collects nodes the filter accepts,
+    /// so the result is the *filtered* nearest neighbours rather than the global
+    /// ones that happen to survive a post-filter. When text is present a scoped
+    /// BM25 ranking over the same allowed set fuses in, exactly like the hybrid
+    /// path. Below the ANN minimum corpus the graph is not built, so this falls back
+    /// to exact scoped scoring — which is also correct, just O(matches).
+    pub async fn filter_aware_search(
+        &self,
+        query_text: &str,
+        query: &Embedding,
+        top_k: usize,
+        allow: &std::collections::HashSet<String>,
+        weights: rro_core::HybridWeights,
+        mode: rro_core::FusionMode,
+    ) -> Result<Vec<Candidate>> {
+        if top_k == 0 || allow.is_empty() {
+            return Ok(Vec::new());
+        }
+        // Small corpus: no graph. Exact scoping is correct and cheap.
+        let has_graph = { self.ann.read().expect("ann lock").len() >= ANN_MIN_CORPUS };
+        if !has_graph {
+            return self
+                .scoped_search(query_text, query, top_k, allow.iter().cloned().collect())
+                .await;
+        }
+
+        let ann = self.ann.clone();
+        let db = self.db.clone();
+        let params = self.params;
+        let q = query.clone();
+        let terms = self.analyzer.analyze(query_text);
+        let allow_ids: std::collections::HashSet<rro_core::Id> =
+            allow.iter().map(|s| rro_core::Id(s.clone())).collect();
+        let allow_str = allow.clone();
+        let weights = weights.as_slice();
+
+        tokio::task::spawn_blocking(move || {
+            // Filter-aware dense ranking off the graph — keep the scores for DBSF.
+            let dense: Vec<(String, f32)> = {
+                let graph = ann.read().expect("ann lock");
+                graph
+                    .search_filtered(&q, top_k, top_k.max(64), &allow_ids)
+                    .into_iter()
+                    .map(|(id, s)| (id.as_str().to_string(), s))
+                    .collect()
+            };
+
+            // Lexical ranking, restricted to the allowed set.
+            let lexical: Vec<(String, f32)> = if terms.is_empty() {
+                Vec::new()
+            } else {
+                let mut lex = lexical_blocking(&db, params, &terms, top_k * 4)?;
+                lex.retain(|c| allow_str.contains(c.id.as_str()));
+                lex.into_iter()
+                    .map(|c| (c.id.as_str().to_string(), c.score))
+                    .collect()
+            };
+
+            let fused: Vec<String> = if lexical.is_empty() {
+                dense.into_iter().map(|(id, _)| id).collect()
+            } else {
+                let scored = [dense, lexical];
+                crate::index::fuse(mode, &scored, &weights, RRF_K)
+                    .into_iter()
+                    .map(|(id, _)| id)
+                    .collect()
+            };
+
+            // Hydrate winners exactly from the durable vectors + doc store.
+            let vecs_cf = db.cf(CF_VECS)?;
+            let mut out = Vec::with_capacity(top_k.min(fused.len()));
+            for id in fused.into_iter().take(top_k) {
+                let score = match db.get_cf(vecs_cf, id.as_bytes())? {
+                    Some(bytes) => q.cosine(&Embedding(keys::decode_vec(&bytes))),
+                    None => continue,
+                };
+                let mut c = Candidate::new(id.clone(), String::new(), score);
+                if let Some(doc) = db.get_json::<crate::model::StoredDoc>(CF_DOCS, id.as_bytes())? {
+                    c.text = doc.text;
+                    c.metadata = doc.metadata;
+                }
+                out.push(c);
+            }
+            out.sort_by(|a, b| {
+                b.score
+                    .total_cmp(&a.score)
+                    .then_with(|| a.id.as_str().cmp(b.id.as_str()))
+            });
+            Ok(out)
+        })
+        .await
+        .map_err(|e| RroError::Recall(format!("join: {e}")))?
+    }
+
+    /// Exact hybrid recall restricted to `scope`: exact cosine over the scope by
+    /// point-lookup, fused with a scoped BM25 ranking. Correct at any size; the
+    /// cost is O(scope).
     pub async fn scoped_search(
         &self,
         query_text: &str,
@@ -379,7 +517,7 @@ impl ConnXRecall {
             let vecs_cf = db.cf(CF_VECS)?;
             let mut dense: Vec<(String, f32)> = Vec::new();
             for id in &scope {
-                if let Some(bytes) = db.0.get_cf(vecs_cf, id.as_bytes()).map_err(rocks_err)? {
+                if let Some(bytes) = db.get_cf(vecs_cf, id.as_bytes())? {
                     let emb = Embedding(keys::decode_vec(&bytes));
                     dense.push((id.clone(), q.cosine(&emb)));
                 }
@@ -454,11 +592,6 @@ impl Recall for ConnXRecall {
         let max_docs = self.quotas.max_docs;
         let lexical_stats = self.lexical_stats;
         tokio::task::spawn_blocking(move || {
-            // Two-phase: durable write commits first…
-            let for_index: Vec<(Id, Embedding)> = records
-                .iter()
-                .map(|r| (r.id.clone(), r.embedding.clone()))
-                .collect();
             // Doc cap: net-new docs counted inside the serialized writer,
             // so the check is race-free.
             if let Some(cap) = max_docs {
@@ -477,14 +610,14 @@ impl Recall for ConnXRecall {
                     )));
                 }
             }
-            upsert_blocking(&db, &analyzer, records, lexical_stats)?;
-            // …then graph ops enqueue for the out-of-band applier. Ingest is
-            // never blocked by graph construction; searches stay correct by
-            // overlaying the pending set (read-your-writes).
-            for (id, emb) in for_index {
-                pending.push_upsert(id, emb);
-            }
-            Ok::<_, RroError>(())
+            // One implicit single-statement transaction: the durable batch and
+            // the counter deltas land atomically, and the graph ops enqueue for
+            // the out-of-band applier only after that batch commits. This is the
+            // exact same path an explicit `BEGIN … COMMIT` takes with more
+            // statements — there is no second write implementation.
+            let mut tx = crate::txn::Transaction::begin(&db, &pending)?;
+            upsert_into(&mut tx, &db, &analyzer, records, lexical_stats)?;
+            tx.commit()
         })
         .await
         .map_err(|e| RroError::Recall(format!("join: {e}")))??;
@@ -501,9 +634,9 @@ impl Recall for ConnXRecall {
         let ann = self.ann.clone();
         let pending = self.pending.clone();
         let q = query.clone();
-        let rescore = self.rescore;
+        let quantizer = self.quantizer;
         tokio::task::spawn_blocking(move || {
-            dense_blocking(&db, &ann, &pending, &q, top_k, true, rescore)
+            dense_blocking(&db, &ann, &pending, &q, top_k, true, quantizer)
         })
         .await
         .map_err(|e| RroError::Recall(format!("join: {e}")))?
@@ -518,8 +651,14 @@ impl Recall for ConnXRecall {
         // The port carries no query, so it fuses 1:1 (plain RRF). Callers that
         // have an EstateQuery go through `hybrid_weighted` and honour its
         // `fusion` weights.
-        self.hybrid_weighted(query_text, query, top_k, rro_core::HybridWeights::default())
-            .await
+        self.hybrid_weighted(
+            query_text,
+            query,
+            top_k,
+            rro_core::HybridWeights::default(),
+            rro_core::FusionMode::Rrf,
+        )
+        .await
     }
 
     async fn len(&self) -> Result<usize> {
@@ -537,9 +676,11 @@ impl Recall for ConnXRecall {
         let lexical_stats = self.lexical_stats;
         let id = id.clone();
         tokio::task::spawn_blocking(move || {
-            remove_blocking(&db, &analyzer, id.as_str(), lexical_stats)?;
-            pending.push_remove(id);
-            Ok::<_, RroError>(())
+            // One implicit single-statement transaction: durable deletes commit
+            // atomically, then the tombstone enqueues for the applier.
+            let mut tx = crate::txn::Transaction::begin(&db, &pending)?;
+            remove_into(&mut tx, &db, &analyzer, id.as_str(), lexical_stats)?;
+            tx.commit()
         })
         .await
         .map_err(|e| RroError::Recall(format!("join: {e}")))??;
@@ -560,7 +701,24 @@ impl Recall for ConnXRecall {
 
 // ---- blocking internals (run on the blocking pool) ----------------------------
 
-fn upsert_blocking(
+/// Apply an upsert into a transaction: durable index writes into `tx.batch`,
+/// counter deltas onto `tx`'s threaded counters, and one deferred graph op per
+/// record. The transaction commits (or cancels) them as a unit.
+///
+/// `db` is passed alongside `tx` purely so column-family handles can be resolved
+/// without holding an immutable borrow of `tx` across its own mutation — both
+/// reference the same estate, and `&Db` is shared, so this aliasing is sound.
+///
+/// Schema registration (the estate's dimension, named-space dims, the collection
+/// registry) is written immediately, not through the batch, and so is **not**
+/// rolled back by a CANCEL. This is deliberate and safe: those are monotonic
+/// declarations, and a canceled registration leaves at most an empty collection
+/// name or a learned dimension with no rows — which every index reads as "no
+/// members", i.e. consistent. The *data* indexes (postings, payload, sparse,
+/// named/multi vectors, collection membership, doc/token counts, changefeed) all
+/// live in `tx.batch` and roll back exactly.
+fn upsert_into(
+    tx: &mut crate::txn::Transaction,
     db: &Db,
     analyzer: &rro_core::text::Analyzer,
     records: Vec<VectorRecord>,
@@ -590,14 +748,35 @@ fn upsert_blocking(
         }
     }
 
-    let mut doc_count = db.get_u64(META_DOC_COUNT)?;
-    let mut total_tokens = db.get_u64(META_TOTAL_TOKENS)?;
-    let mut feed_seq = db.get_u64(META_FEED_SEQ)?;
-    let mut shapes: BTreeMap<String, u64> = db.get_json(CF_META, META_SHAPES)?.unwrap_or_default();
+    // Schemafull enforcement: a record whose collection has declared field types
+    // must satisfy them, or the whole upsert is rejected (rolled back — nothing
+    // durable has landed yet). A field not present is allowed; only a present,
+    // wrong-typed value fails, so schemas can be added to a live collection.
+    let schema: std::collections::BTreeMap<String, std::collections::BTreeMap<String, String>> =
+        db.get_json(CF_META, keys::META_SCHEMA)?.unwrap_or_default();
+    if !schema.is_empty() {
+        for r in &records {
+            let Some(coll) = &r.collection else { continue };
+            let Some(fields) = schema.get(coll) else {
+                continue;
+            };
+            for (field, ty) in fields {
+                if let Some(value) = r.metadata.get(field) {
+                    if !crate::estate::value_matches_type(value, ty) {
+                        return Err(RroError::msg(format!(
+                            "schemafull violation: `{coll}.{field}` must be {ty}, \
+                             got {value} for record `{}`",
+                            r.id.as_str()
+                        )));
+                    }
+                }
+            }
+        }
+    }
 
+    tx.touch_counters();
     // Postings are one row per (term, doc): every index write below is a
     // blind put/delete — no read-modify-write, flat cost as terms grow.
-    let mut batch = rocksdb::WriteBatch::default();
     let docs_cf = db.cf(CF_DOCS)?;
     let vecs_cf = db.cf(CF_VECS)?;
     let terms_cf = db.cf(CF_TERMS)?;
@@ -667,39 +846,48 @@ fn upsert_blocking(
 
     for r in records {
         let id = r.id.as_str().to_string();
+        // Key-length guard (both backends, so behavior never diverges): a doc id
+        // keys `docs`/`vecs`/postings directly, so an over-limit id is rejected up
+        // front rather than accepted by RocksDB and refused by Fjall.
+        if keys::key_too_long(id.as_bytes()) {
+            return Err(RroError::Recall(format!(
+                "document id exceeds {} bytes",
+                keys::MAX_KEY_LEN
+            )));
+        }
 
         // Overwrite semantics: retract the old version's postings (lexical
         // and sparse), payload index rows, and counters.
         if let Some(old) = db.get_json::<StoredDoc>(CF_DOCS, id.as_bytes())? {
             let mut seen = std::collections::HashSet::new();
             for term in analyzer.analyze(&old.text) {
-                batch.delete_cf(terms_cf, keys::term_key(&term, &id));
+                tx.batch.delete_cf(terms_cf, keys::term_key(&term, &id));
                 if seen.insert(term.clone()) {
                     *df_delta.entry(term).or_insert(0) -= 1;
                 }
             }
             for dim in &old.sparse_dims {
-                batch.delete_cf(sparse_cf, keys::sparse_key(*dim, &id));
+                tx.batch.delete_cf(sparse_cf, keys::sparse_key(*dim, &id));
             }
             for space in &old.named_spaces {
-                batch.delete_cf(nvecs_cf, keys::nvec_key(space, &id));
+                tx.batch.delete_cf(nvecs_cf, keys::nvec_key(space, &id));
             }
             if old.multi_len > 0 {
-                batch.delete_cf(mvecs_cf, id.as_bytes());
+                tx.batch.delete_cf(mvecs_cf, id.as_bytes());
             }
             if let Some(c) = &old.collection {
-                batch.delete_cf(coll_cf, keys::coll_key(c, &id));
+                tx.batch.delete_cf(coll_cf, keys::coll_key(c, &id));
             }
             for field in &indexed_fields {
                 if let Some(v) = old.metadata.get(field) {
-                    batch.delete_cf(pidx_cf, keys::pidx_key(field, v, &id));
+                    tx.batch.delete_cf(pidx_cf, keys::pidx_key(field, v, &id));
                 }
             }
-            total_tokens = total_tokens.saturating_sub(old.token_len as u64);
-            if let Some(n) = shapes.get_mut(&old.shape.key()) {
+            tx.total_tokens = tx.total_tokens.saturating_sub(old.token_len as u64);
+            if let Some(n) = tx.shapes.get_mut(&old.shape.key()) {
                 *n = n.saturating_sub(1);
             }
-            doc_count = doc_count.saturating_sub(1);
+            tx.doc_count = tx.doc_count.saturating_sub(1);
         }
 
         let tokens = analyzer.analyze(&r.text);
@@ -713,19 +901,28 @@ fn upsert_blocking(
             let mut v = [0u8; 8];
             v[..4].copy_from_slice(&f.to_le_bytes());
             v[4..].copy_from_slice(&token_len.to_le_bytes());
-            batch.put_cf(terms_cf, keys::term_key(&term, &id), v);
+            tx.batch.put_cf(terms_cf, keys::term_key(&term, &id), v);
             *df_delta.entry(term).or_insert(0) += 1;
         }
 
         let shape = Shape::of(&r.metadata);
-        *shapes.entry(shape.key()).or_insert(0) += 1;
-        doc_count += 1;
-        total_tokens += token_len as u64;
+        *tx.shapes.entry(shape.key()).or_insert(0) += 1;
+        tx.doc_count += 1;
+        tx.total_tokens += token_len as u64;
 
-        // Payload index rows for indexed fields — blind puts, same batch.
+        // Payload index rows for indexed fields — blind puts, same tx.batch.
         for field in &indexed_fields {
             if let Some(v) = r.metadata.get(field) {
-                batch.put_cf(pidx_cf, keys::pidx_key(field, v, &id), []);
+                // `pidx` keys embed an arbitrary metadata value — the one
+                // unbounded key path — so guard the composed key on both backends.
+                let key = keys::pidx_key(field, v, &id);
+                if keys::key_too_long(&key) {
+                    return Err(RroError::Recall(format!(
+                        "payload-index key for field `{field}` exceeds {} bytes",
+                        keys::MAX_KEY_LEN
+                    )));
+                }
+                tx.batch.put_cf(pidx_cf, key, []);
             }
         }
 
@@ -734,7 +931,8 @@ fn upsert_blocking(
         if let Some(sv) = &r.sparse {
             sparse_dims.reserve(sv.nnz());
             for (dim, w) in sv.iter() {
-                batch.put_cf(sparse_cf, keys::sparse_key(dim, &id), w.to_le_bytes());
+                tx.batch
+                    .put_cf(sparse_cf, keys::sparse_key(dim, &id), w.to_le_bytes());
                 sparse_dims.push(dim);
             }
         }
@@ -742,7 +940,7 @@ fn upsert_blocking(
         // Named vectors: one row per (space, doc) — blind puts.
         let mut named_spaces = Vec::with_capacity(r.named.len());
         for (name, v) in &r.named {
-            batch.put_cf(
+            tx.batch.put_cf(
                 nvecs_cf,
                 keys::nvec_key(name, &id),
                 keys::encode_vec(v.as_slice()),
@@ -754,11 +952,12 @@ fn upsert_blocking(
         let multi_len = r.multi.len() as u32;
         if multi_len > 0 {
             let raw: Vec<Vec<f32>> = r.multi.iter().map(|e| e.0.clone()).collect();
-            batch.put_cf(mvecs_cf, id.as_bytes(), keys::encode_multi(&raw));
+            tx.batch
+                .put_cf(mvecs_cf, id.as_bytes(), keys::encode_multi(&raw));
         }
 
         if let Some(c) = &r.collection {
-            batch.put_cf(coll_cf, keys::coll_key(c, &id), []);
+            tx.batch.put_cf(coll_cf, keys::coll_key(c, &id), []);
         }
 
         let doc = StoredDoc {
@@ -774,43 +973,43 @@ fn upsert_blocking(
             multi_len,
             collection: r.collection,
         };
-        batch.put_cf(docs_cf, id.as_bytes(), serde_json::to_vec(&doc)?);
-        batch.put_cf(
+        tx.batch
+            .put_cf(docs_cf, id.as_bytes(), serde_json::to_vec(&doc)?);
+        tx.batch.put_cf(
             vecs_cf,
             id.as_bytes(),
             keys::encode_vec(r.embedding.as_slice()),
         );
+        // Deferred: the vector enters the ANN graph only when the tx commits.
+        tx.push_graph(crate::txn::GraphOp::Upsert(
+            rro_core::Id(id.clone()),
+            r.embedding.clone(),
+        ));
 
         // Changefeed row, atomic with the write itself.
         let change = crate::model::Change {
-            seq: feed_seq,
+            seq: tx.feed_seq,
             op: crate::model::ChangeOp::Upsert,
             doc_id: id.clone(),
             at: crate::model::now_ms(),
         };
-        batch.put_cf(
+        tx.batch.put_cf(
             feed_cf,
-            feed_seq.to_be_bytes(),
+            tx.feed_seq.to_be_bytes(),
             serde_json::to_vec(&change)?,
         );
-        feed_seq += 1;
+        tx.feed_seq += 1;
     }
 
     if lexical_stats {
         for (term, delta) in df_delta {
             if delta != 0 {
-                batch.merge_cf(tdf_cf, term.as_bytes(), delta.to_le_bytes());
+                tx.batch.merge_df(tdf_cf, term.as_bytes(), delta);
             }
         }
     }
 
-    let meta_cf = db.cf(CF_META)?;
-    batch.put_cf(meta_cf, META_DOC_COUNT, doc_count.to_le_bytes());
-    batch.put_cf(meta_cf, META_TOTAL_TOKENS, total_tokens.to_le_bytes());
-    batch.put_cf(meta_cf, META_SHAPES, serde_json::to_vec(&shapes)?);
-    batch.put_cf(meta_cf, META_FEED_SEQ, feed_seq.to_le_bytes());
-
-    db.write(batch)
+    Ok(())
 }
 
 /// Decode a posting value: 8-byte binary (tf, len — the current format)
@@ -831,11 +1030,8 @@ fn scan_postings(db: &Db, term: &str) -> Result<Postings> {
     let terms_cf = db.cf(CF_TERMS)?;
     let prefix = keys::term_prefix(term);
     let mut out = Postings::new();
-    for item in db.0.iterator_cf(
-        terms_cf,
-        rocksdb::IteratorMode::From(&prefix, rocksdb::Direction::Forward),
-    ) {
-        let (k, v) = item.map_err(rocks_err)?;
+    for item in db.iter_from(terms_cf, &prefix) {
+        let (k, v) = item?;
         if !k.starts_with(&prefix) {
             break;
         }
@@ -857,21 +1053,30 @@ fn dense_blocking(
     query: &Embedding,
     top_k: usize,
     fetch_payload: bool,
-    rescore: bool,
+    quantizer: recall::Quantizer,
 ) -> Result<Vec<Candidate>> {
-    // Quantized graphs return approximate scores; over-fetch, then rescore
-    // the candidates exactly from the durable vectors before cutting to k.
-    let fetch = if rescore {
-        top_k.saturating_mul(2)
-    } else {
-        top_k
+    use recall::Quantizer;
+    // Lossy graphs return approximate scores; over-fetch, then rescore the
+    // candidates exactly from the durable vectors before cutting to k. BQ is
+    // far coarser than SQ8 (1 bit vs 1 byte per dim), so it over-fetches wider
+    // and widens `ef` too — otherwise its top-k misses too many true neighbours
+    // for rescore to recover them. (Measured: at `×2`/`ef 64` BQ recall@10 is
+    // ~0.64; at `×8`/`ef 200` it clears the estate gate.)
+    let rescore = quantizer.is_lossy();
+    let (factor, ef_floor) = match quantizer {
+        Quantizer::None => (1, 64),
+        Quantizer::Sq8 => (2, 64),
+        // PQ sits between SQ8 and BQ in coarseness; BQ is the coarsest.
+        Quantizer::Pq { .. } => (6, 200),
+        Quantizer::Bq => (8, 200),
     };
+    let fetch = top_k.saturating_mul(factor);
     let mut scored: Vec<(String, f32)>;
     {
         let graph = ann.read().expect("ann lock");
         if graph.len() >= ANN_MIN_CORPUS {
             scored = graph
-                .search(query, fetch, fetch.max(64))
+                .search(query, fetch, fetch.max(ef_floor))
                 .into_iter()
                 .map(|(id, score)| (id.as_str().to_string(), score))
                 .collect();
@@ -893,7 +1098,7 @@ fn dense_blocking(
             if rescore {
                 let vecs_cf = db.cf(CF_VECS)?;
                 for (id, s) in scored.iter_mut() {
-                    if let Some(bytes) = db.0.get_cf(vecs_cf, id.as_bytes()).map_err(rocks_err)? {
+                    if let Some(bytes) = db.get_cf(vecs_cf, id.as_bytes())? {
                         *s = query.cosine(&Embedding(keys::decode_vec(&bytes)));
                     }
                 }
@@ -905,8 +1110,8 @@ fn dense_blocking(
             // current (writes land in `vecs` before enqueueing), no overlay.
             let vecs_cf = db.cf(CF_VECS)?;
             scored = Vec::new();
-            for item in db.0.iterator_cf(vecs_cf, rocksdb::IteratorMode::Start) {
-                let (k, v) = item.map_err(rocks_err)?;
+            for item in db.iter_all(vecs_cf) {
+                let (k, v) = item?;
                 let emb = Embedding(keys::decode_vec(&v));
                 scored.push((String::from_utf8_lossy(&k).into_owned(), query.cosine(&emb)));
             }
@@ -955,12 +1160,7 @@ fn lexical_topk_blocking(
     top_k: usize,
 ) -> Result<Vec<Candidate>> {
     let meta_cf = db.cf(CF_META)?;
-    if db
-        .0
-        .get_cf(meta_cf, keys::META_LEXSTATS)
-        .map_err(rocks_err)?
-        .is_none()
-    {
+    if db.get_cf(meta_cf, keys::META_LEXSTATS)?.is_none() {
         return lexical_blocking(db, params, terms, top_k);
     }
     let n_docs = db.get_u64(META_DOC_COUNT)?;
@@ -979,15 +1179,14 @@ fn lexical_topk_blocking(
         if !seen.insert(t.clone()) {
             continue;
         }
-        let df =
-            db.0.get_cf(tdf_cf, t.as_bytes())
-                .map_err(rocks_err)?
-                .map(|b| {
-                    let mut a = [0u8; 8];
-                    a[..b.len().min(8)].copy_from_slice(&b[..b.len().min(8)]);
-                    i64::from_le_bytes(a)
-                })
-                .unwrap_or(0);
+        let df = db
+            .get_cf(tdf_cf, t.as_bytes())?
+            .map(|b| {
+                let mut a = [0u8; 8];
+                a[..b.len().min(8)].copy_from_slice(&b[..b.len().min(8)]);
+                i64::from_le_bytes(a)
+            })
+            .unwrap_or(0);
         if df <= 0 {
             continue; // term absent from the corpus
         }
@@ -1014,11 +1213,8 @@ fn lexical_topk_blocking(
         }
         let (term, idf, _) = &infos[idx];
         let prefix = keys::term_prefix(term);
-        for item in db.0.iterator_cf(
-            terms_cf,
-            rocksdb::IteratorMode::From(&prefix, rocksdb::Direction::Forward),
-        ) {
-            let (k, v) = item.map_err(rocks_err)?;
+        for item in db.iter_from(terms_cf, &prefix) {
+            let (k, v) = item?;
             if !k.starts_with(&prefix) {
                 break;
             }
@@ -1039,10 +1235,7 @@ fn lexical_topk_blocking(
     // Pruned tail: complete every candidate's score by point lookups.
     for (term, idf, _) in &infos[idx..] {
         for (doc_id, score) in acc.iter_mut() {
-            if let Some(v) =
-                db.0.get_cf(terms_cf, keys::term_key(term, doc_id))
-                    .map_err(rocks_err)?
-            {
+            if let Some(v) = db.get_cf(terms_cf, keys::term_key(term, doc_id))? {
                 *score += bm25_term(params, *idf, decode_posting(&v)?, avgdl);
             }
         }
@@ -1088,7 +1281,10 @@ fn lexical_blocking(
     Ok(out)
 }
 
-pub(crate) fn remove_blocking(
+/// Apply a removal into a transaction (see [`upsert_into`] for the shape). The
+/// deferred graph op is a tombstone, applied to the ANN index at commit.
+fn remove_into(
+    tx: &mut crate::txn::Transaction,
     db: &Db,
     analyzer: &rro_core::text::Analyzer,
     id: &str,
@@ -1097,70 +1293,74 @@ pub(crate) fn remove_blocking(
     let Some(old) = db.get_json::<StoredDoc>(CF_DOCS, id.as_bytes())? else {
         return Ok(());
     };
-
-    let mut batch = rocksdb::WriteBatch::default();
+    tx.touch_counters();
     let terms_cf = db.cf(CF_TERMS)?;
     let tdf_cf = db.cf(keys::CF_TDF)?;
     let mut seen = std::collections::HashSet::new();
     for term in analyzer.analyze(&old.text) {
-        batch.delete_cf(terms_cf, keys::term_key(&term, id));
+        tx.batch.delete_cf(terms_cf, keys::term_key(&term, id));
         if lexical_stats && seen.insert(term.clone()) {
-            batch.merge_cf(tdf_cf, term.as_bytes(), (-1i64).to_le_bytes());
+            tx.batch.merge_df(tdf_cf, term.as_bytes(), -1);
         }
     }
     let pidx_cf = db.cf(CF_PIDX)?;
     for field in crate::filter::indexed_fields(db)? {
         if let Some(v) = old.metadata.get(&field) {
-            batch.delete_cf(pidx_cf, keys::pidx_key(&field, v, id));
+            tx.batch.delete_cf(pidx_cf, keys::pidx_key(&field, v, id));
         }
     }
     let sparse_cf = db.cf(keys::CF_SPARSE)?;
     for dim in &old.sparse_dims {
-        batch.delete_cf(sparse_cf, keys::sparse_key(*dim, id));
+        tx.batch.delete_cf(sparse_cf, keys::sparse_key(*dim, id));
     }
     let nvecs_cf = db.cf(keys::CF_NVECS)?;
     for space in &old.named_spaces {
-        batch.delete_cf(nvecs_cf, keys::nvec_key(space, id));
+        tx.batch.delete_cf(nvecs_cf, keys::nvec_key(space, id));
     }
     if old.multi_len > 0 {
-        batch.delete_cf(db.cf(keys::CF_MVECS)?, id.as_bytes());
+        tx.batch.delete_cf(db.cf(keys::CF_MVECS)?, id.as_bytes());
     }
     if let Some(c) = &old.collection {
-        batch.delete_cf(db.cf(keys::CF_COLL)?, keys::coll_key(c, id));
+        tx.batch
+            .delete_cf(db.cf(keys::CF_COLL)?, keys::coll_key(c, id));
     }
-    batch.delete_cf(db.cf(CF_DOCS)?, id.as_bytes());
-    batch.delete_cf(db.cf(CF_VECS)?, id.as_bytes());
+    tx.batch.delete_cf(db.cf(CF_DOCS)?, id.as_bytes());
+    tx.batch.delete_cf(db.cf(CF_VECS)?, id.as_bytes());
 
     // Changefeed row, atomic with the removal.
-    let mut feed_seq = db.get_u64(META_FEED_SEQ)?;
     let change = crate::model::Change {
-        seq: feed_seq,
+        seq: tx.feed_seq,
         op: crate::model::ChangeOp::Remove,
         doc_id: id.to_string(),
         at: crate::model::now_ms(),
     };
-    batch.put_cf(
+    tx.batch.put_cf(
         db.cf(CF_FEED)?,
-        feed_seq.to_be_bytes(),
+        tx.feed_seq.to_be_bytes(),
         serde_json::to_vec(&change)?,
     );
-    feed_seq += 1;
+    tx.feed_seq += 1;
 
-    let meta_cf = db.cf(CF_META)?;
-    batch.put_cf(meta_cf, META_FEED_SEQ, feed_seq.to_le_bytes());
-    let doc_count = db.get_u64(META_DOC_COUNT)?.saturating_sub(1);
-    let total_tokens = db
-        .get_u64(META_TOTAL_TOKENS)?
-        .saturating_sub(old.token_len as u64);
-    let mut shapes: BTreeMap<String, u64> = db.get_json(CF_META, META_SHAPES)?.unwrap_or_default();
-    if let Some(n) = shapes.get_mut(&old.shape.key()) {
+    tx.doc_count = tx.doc_count.saturating_sub(1);
+    tx.total_tokens = tx.total_tokens.saturating_sub(old.token_len as u64);
+    if let Some(n) = tx.shapes.get_mut(&old.shape.key()) {
         *n = n.saturating_sub(1);
     }
-    batch.put_cf(meta_cf, META_DOC_COUNT, doc_count.to_le_bytes());
-    batch.put_cf(meta_cf, META_TOTAL_TOKENS, total_tokens.to_le_bytes());
-    batch.put_cf(meta_cf, META_SHAPES, serde_json::to_vec(&shapes)?);
+    tx.push_graph(crate::txn::GraphOp::Remove(rro_core::Id(id.to_string())));
+    Ok(())
+}
 
-    db.write(batch)
+/// One-statement removal (the estate's direct-delete path uses this).
+pub(crate) fn remove_blocking(
+    db: &Db,
+    pending: &crate::pending::Pending,
+    analyzer: &rro_core::text::Analyzer,
+    id: &str,
+    lexical_stats: bool,
+) -> Result<()> {
+    let mut tx = crate::txn::Transaction::begin(db, pending)?;
+    remove_into(&mut tx, db, analyzer, id, lexical_stats)?;
+    tx.commit()
 }
 
 impl ConnXRecall {
@@ -1209,7 +1409,7 @@ impl ConnXRecall {
             let Some(mut doc) = db.get_json::<StoredDoc>(CF_DOCS, id.as_bytes())? else {
                 return Err(RroError::Recall(format!("no such document: {id}")));
             };
-            let mut batch = rocksdb::WriteBatch::default();
+            let mut batch = Batch::new();
             let pidx_cf = db.cf(CF_PIDX)?;
             let indexed = crate::filter::indexed_fields(&db)?;
 

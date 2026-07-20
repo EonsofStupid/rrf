@@ -96,7 +96,24 @@ pub async fn apply(estate: &Arc<connxism::Estate>, stmt: Statement) -> Result<Sq
                 what: format!("alias {alias} -> {collection}"),
             })
         }
+        Statement::Define(Define::Field {
+            field,
+            collection,
+            ty,
+        }) => {
+            estate.define_field(&collection, &field, ty.as_str())?;
+            Ok(SqlOutcome::Defined {
+                what: format!("field {collection}.{field} type {}", ty.as_str()),
+            })
+        }
 
+        Statement::Remove(Remove::Field { field, collection }) => {
+            estate.remove_field(&collection, &field)?;
+            Ok(SqlOutcome::Removed {
+                what: format!("field {collection}.{field}"),
+                count: None,
+            })
+        }
         Statement::Remove(Remove::Alias { alias }) => {
             estate.delete_alias(&alias)?;
             Ok(SqlOutcome::Removed {
@@ -177,11 +194,12 @@ pub async fn apply(estate: &Arc<connxism::Estate>, stmt: Statement) -> Result<Sq
         }),
 
         // LIVE is a STREAM, not a value. It cannot be a SqlOutcome without
-        // pretending a subscription is a reply — the a2a `watch` verb already
-        // serves it, and callers route LIVE there.
+        // pretending a subscription is a reply — the a2a `live` verb serves it
+        // (Client::live), streaming change frames from the LIVE cursor.
         Statement::Live(_) => Err(RroError::msg(
-            "LIVE opens a push stream, not a one-shot reply — route it to the a2a \
-             `watch` verb (Client::watch), which resumes by feed sequence",
+            "LIVE opens a push stream, not a one-shot reply — send it to the a2a \
+             `live` verb (Client::live), which streams change frames from the \
+             LIVE cursor",
         )),
     }
 }
@@ -277,6 +295,35 @@ mod tests {
                 .contains(&"team".to_string()),
             "the index must actually exist afterwards, not just be reported"
         );
+    }
+
+    #[tokio::test]
+    async fn define_field_reaches_the_estate_and_binds_the_type() {
+        let (_d, estate) = estate_with_a_doc().await;
+        let out = run(&estate, "DEFINE FIELD price ON products TYPE float")
+            .await
+            .unwrap();
+        assert_eq!(
+            out,
+            SqlOutcome::Defined {
+                what: "field products.price type float".into()
+            }
+        );
+        // The constraint actually exists in the estate's schema afterwards.
+        let schema = estate.schema().unwrap();
+        assert_eq!(
+            schema
+                .get("products")
+                .and_then(|f| f.get("price"))
+                .map(String::as_str),
+            Some("float")
+        );
+
+        // REMOVE FIELD via RRQL clears it.
+        run(&estate, "REMOVE FIELD price ON products")
+            .await
+            .unwrap();
+        assert!(estate.schema().unwrap().is_empty());
     }
 
     #[tokio::test]
@@ -457,11 +504,12 @@ mod tests {
     }
 
     /// LIVE is a subscription. Returning it as a one-shot value would be
-    /// pretending a stream is a reply.
+    /// pretending a stream is a reply — the one-shot path refuses and names the
+    /// `live` stream verb (which the a2a handler now serves).
     #[tokio::test]
-    async fn live_is_refused_here_and_points_at_watch() {
+    async fn live_is_refused_here_and_points_at_the_live_stream() {
         let (_d, estate) = graph().await;
         let e = run(&estate, "LIVE").await.unwrap_err();
-        assert!(e.to_string().contains("watch"), "names the right seam: {e}");
+        assert!(e.to_string().contains("live"), "names the right seam: {e}");
     }
 }

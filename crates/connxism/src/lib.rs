@@ -17,30 +17,38 @@
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
+mod catalog;
 mod estate;
 mod filter;
 pub mod index;
 pub mod keys;
+mod kv;
 pub mod model;
 mod pending;
 mod query;
 mod rels;
 mod store;
 mod strategies;
+mod txn;
 
-pub use estate::{Estate, EstateConfig, FeedStats, HealthReport, Issue, Quotas};
+pub use catalog::Catalog;
+pub use estate::{
+    Estate, EstateConfig, FeedStats, GraphCompaction, GraphNodes, HealthReport, Issue, Quotas,
+};
+pub use recall::Quantizer;
 
 /// How many column families one estate manages (ops surface sizing).
 pub const COLUMN_FAMILY_COUNT: usize = keys::COLUMN_FAMILIES.len();
 pub use index::{Bm25Params, Posting, Postings};
 pub use model::{
-    now_ms, now_ns, Change, ChangeOp, ConnectorInfo, ConnectorKind, EstateInfo, NodeInfo, Shape,
-    StoredDoc, SyncState, SyncStatus, Transport, TrendPoint, WarpPoint,
+    now_ms, now_ns, Change, ChangeOp, ConnectorInfo, ConnectorKind, EstateInfo, NodeInfo,
+    ReplEntry, ReplRecord, Shape, StoredDoc, SyncState, SyncStatus, Transport, TrendPoint,
+    WarpPoint,
 };
 pub use rels::{Relation, TraversalSpec};
 /// Re-exported from the core contract so estate consumers keep one import.
-pub use rro_core::{Condition, EstateQuery, Filter, HybridWeights};
-pub use store::ConnXRecall;
+pub use rro_core::{Condition, EstateQuery, Filter, FusionMode, HybridWeights};
+pub use store::{ConnXRecall, WriteOp};
 pub use strategies::Group;
 
 /// Re-export so downstream crates can name the trait without a second dep.

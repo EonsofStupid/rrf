@@ -21,7 +21,9 @@ serde_json = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "io-std", "io-util"] }
 
 [dev-dependencies]
-connxism = { workspace = true }
+# dev-only (integration tests spin up an in-process engine); pin a backend since
+# the workspace dep is default-features off.
+connxism = { workspace = true, features = ["kvs-fjall"] }
 rro-engine = { workspace = true }
 tempfile = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }

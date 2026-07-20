@@ -81,6 +81,31 @@ else
   skip=$((skip+1))
 fi
 
+# Filter-aware HNSW correctness at scale (200k–300k docs). No server or weights
+# needed — just too slow for CI's debug build (~90 s each), so #[ignore]d and run
+# in release here. The mechanism is also unit-tested fast in-CI
+# (recall::ann::filter_aware_tests); these are the full-scale correctness gates.
+run filter_aware_hnsw cargo test -p connxism --release --test filter_aware_hnsw -- --ignored --nocapture
+
+# Indexed-filter-vs-scan timing gate at 10k docs. Correctness is asserted, timing
+# reported. ~25 s debug — past nextest's 60 s slow-kill on a 2-core CI runner, so
+# #[ignore]d and run in release here alongside the other scale gates.
+run filter_scan_10k cargo test -p connxism --release --test filters p9_gate_indexed_filter_vs_scan_at_10k -- --ignored --nocapture
+
+# 6b scale gate: a 73 MiB dataset reopens paged with an 8 MiB vector cache —
+# proves the graph loads (not rebuilds), restart is fast, the vector heap stays
+# bounded by the cache (not the dataset), and paged answers are identical to
+# in-RAM. ~85 s in release; the RAM-bounded property is scale-invariant, so this
+# proves what 10M would without an hours-long build.
+run graph_paged_scale cargo test -p connxism --release --test graph_persist scale_gate_paged_reopen_ram_bounded -- --ignored --nocapture
+
+# Product quantization trains a codebook (k-means over >4k vectors), too slow for
+# CI's debug build — #[ignore]d and run in release here. recall@byte between SQ8
+# and BQ; both the recall-crate gate and the estate gate (PQ codes + exact
+# rescore) assert recall holds.
+run pq_recall cargo test -p recall --release --lib pq_recall_gate_memory_and_rescored_recall -- --ignored --nocapture
+run pq_estate cargo test -p connxism --release --test quantized product_quantized_estate_recall_gate -- --ignored --nocapture
+
 echo
 echo "gates: $pass passed, $skip skipped, $fail failed"
 [ "$fail" -eq 0 ]
